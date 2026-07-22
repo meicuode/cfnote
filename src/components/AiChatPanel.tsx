@@ -538,38 +538,41 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                   </div>
                 )}
 
-                {/* Sources */}
+                {/* Sources:每行一条,标题 + 引用段落片段(同一篇文章可能命中多个段落) */}
                 {msg.sources && msg.sources.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
+                  <div className="mt-1.5 space-y-0.5">
                     {msg.sources.map((s, i) => (
                       <button
                         key={`${s.article_id}-${i}`}
                         onClick={() => onOpenArticle(s.article_id, s.chunk_text)}
-                        className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md px-2 py-0.5 transition-colors truncate max-w-[180px]"
-                        title={s.article_title}
+                        className="w-full flex items-baseline gap-1.5 text-left text-xs bg-emerald-50 hover:bg-emerald-100 rounded-md px-2 py-1 transition-colors overflow-hidden"
+                        title={s.chunk_text}
                       >
-                        [{i + 1}] {s.article_title}
+                        <span className="shrink-0 text-emerald-700 font-medium">[{i + 1}]</span>
+                        <span className="shrink-0 max-w-[45%] truncate text-emerald-700 font-medium">{s.article_title}</span>
+                        <span className="truncate text-emerald-600/70">{s.chunk_text}</span>
                       </button>
                     ))}
                   </div>
                 )}
 
-                {/* Web sources */}
+                {/* Web sources:每行一条 */}
                 {webSourcesMap.has(msg.id) && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
+                  <div className="mt-1.5 space-y-0.5">
                     {webSourcesMap.get(msg.id)!.map((ws, i) => (
                       <a
                         key={`${ws.url}-${i}`}
                         href={ws.url}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md px-2 py-0.5 transition-colors truncate max-w-[200px] inline-flex items-center gap-0.5"
+                        className="w-full flex items-center gap-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-md px-2 py-1 transition-colors overflow-hidden"
                         title={ws.url}
                       >
                         <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                         </svg>
-                        [{i + 1}] {ws.title || ws.url}
+                        <span className="shrink-0 font-medium">[{i + 1}]</span>
+                        <span className="truncate">{ws.title || ws.url}</span>
                       </a>
                     ))}
                   </div>

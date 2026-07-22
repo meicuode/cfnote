@@ -5,7 +5,7 @@
   scrollbar-width: thin;
   scrollbar-color: #d1d5db transparent;
 }
-*::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar { width: 3px; height: 3px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 999px; }
 *::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
