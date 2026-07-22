@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import ConfirmDialog from './ConfirmDialog'
 import type { Notebook } from '../types'
 
 interface Props {
@@ -16,6 +17,7 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
+  const [confirmId, setConfirmId] = useState<number | null>(null)
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -31,13 +33,9 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
     setContextMenu({ id, x: e.clientX, y: e.clientY })
   }
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!contextMenu) return
-    if (!confirm('确定删除此笔记本？其中的所有文章将被一并删除。')) {
-      setContextMenu(null)
-      return
-    }
-    await onDelete(contextMenu.id)
+    setConfirmId(contextMenu.id)
     setContextMenu(null)
   }
 
@@ -114,6 +112,15 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
             删除笔记本
           </button>
         </div>
+      )}
+
+      {confirmId !== null && (
+        <ConfirmDialog
+          title="删除此笔记本？"
+          message="其中的所有文章及其向量索引将被一并删除，此操作不可撤销。"
+          onConfirm={() => { const id = confirmId; setConfirmId(null); onDelete(id) }}
+          onCancel={() => setConfirmId(null)}
+        />
       )}
     </div>
   )

@@ -121,8 +121,8 @@ export default function Layout({ token, username, onLogout }: Props) {
   }, [activeNotebook])
   useEffect(() => {
     if (!restoredRef.current) return
-    if (activeArticle) localStorage.setItem('cfnote-last-article', String(activeArticle.id))
-    else localStorage.removeItem('cfnote-last-article')
+    if (activeArticle && activeArticle.id > 0) localStorage.setItem('cfnote-last-article', String(activeArticle.id))
+    else if (!activeArticle) localStorage.removeItem('cfnote-last-article')
   }, [activeArticle])
 
   const createNotebook = async (name: string) => {
@@ -142,15 +142,25 @@ export default function Layout({ token, username, onLogout }: Props) {
 
   const createArticle = async () => {
     if (!activeNotebook) return
+    // 乐观切换:立即打开临时空文章(只读),创建成功后无缝替换为真实文章
+    const temp: Article = {
+      id: -1, notebook_id: activeNotebook.id, title: '无标题文章', content: '',
+      is_vectorized: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    } as Article
+    setActiveArticle(temp)
+    setArticleLoading(true)
     const res = await post<Article>('/articles', {
       notebook_id: activeNotebook.id,
       title: '无标题文章',
       content: '',
     })
+    setArticleLoading(false)
     if (res.ok && res.data) {
       setActiveArticle(res.data)
       loadArticles(activeNotebook.id)
       loadNotebooks()
+    } else {
+      setActiveArticle(null)
     }
   }
 
@@ -163,16 +173,22 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
+  const [deletingArticleId, setDeletingArticleId] = useState<number | null>(null)
   const deleteArticle = async (id: number) => {
-    const res = await del(`/articles/${id}`)
-    if (res.ok) {
-      if (activeArticle?.id === id) setActiveArticle(null)
-      if (activeNotebook) {
-        loadArticles(activeNotebook.id)
-        loadNotebooks()
+    setDeletingArticleId(id)
+    try {
+      const res = await del(`/articles/${id}`)
+      if (res.ok) {
+        if (activeArticle?.id === id) setActiveArticle(null)
+        if (activeNotebook) {
+          await loadArticles(activeNotebook.id)
+          loadNotebooks()
+        }
       }
+      return res
+    } finally {
+      setDeletingArticleId(null)
     }
-    return res
   }
 
   // Import article from URL
@@ -193,6 +209,48 @@ export default function Layout({ token, username, onLogout }: Props) {
       }
     } finally {
       setImporting(false)
+    }
+  }
+
+  // 批量导入本地文档(.md/.markdown/.txt):复用备份导入接口 + 分批建索引
+  const [importProgress, setImportProgress] = useState('')
+  const importLocalFiles = async (files: File[]) => {
+    if (!activeNotebook || files.length === 0) return
+    setImporting(true)
+    setImportProgress(`正在读取 ${files.length} 个文件...`)
+    try {
+      const arts: { id: number; notebook_id: number; title: string; content: string }[] = []
+      for (const f of files) {
+        const content = await f.text()
+        const title = f.name.replace(/\.(md|markdown|txt)$/i, '') || f.name
+        arts.push({ id: arts.length + 1, notebook_id: 1, title, content })
+      }
+      setImportProgress('正在导入文章...')
+      const res = await post<{ articles_imported: number; articles_skipped: number }>('/import', {
+        app: 'cfnote',
+        export_version: 1,
+        notebooks: [{ id: 1, name: activeNotebook.name }],
+        articles: arts,
+      })
+      if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
+      const { articles_imported } = res.data
+
+      // 分批建立向量索引(每批一次独立请求;剩余不再减少说明持续失败,停止)
+      let lastRemaining = Infinity
+      while (articles_imported > 0) {
+        const r = await post<{ processed: number; remaining: number }>('/reindex', {})
+        if (!r.ok || !r.data) break
+        if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
+        lastRemaining = r.data.remaining
+        setImportProgress(`正在建立向量索引... 剩余 ${r.data.remaining} 篇`)
+      }
+
+      setShowImport(false)
+      loadArticles(activeNotebook.id)
+      loadNotebooks()
+    } finally {
+      setImporting(false)
+      setImportProgress('')
     }
   }
 
@@ -284,6 +342,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             articles={articles}
             activeArticle={activeArticle}
             notebookName={activeNotebook?.name}
+            deletingId={deletingArticleId}
             onSelect={openArticle}
             onCreate={createArticle}
             onDelete={deleteArticle}
@@ -345,7 +404,13 @@ export default function Layout({ token, username, onLogout }: Props) {
       )}
 
       {showImport && (
-        <ImportDialog loading={importing} onImport={importArticle} onClose={() => !importing && setShowImport(false)} />
+        <ImportDialog
+          loading={importing}
+          progress={importProgress}
+          onImport={importArticle}
+          onImportFiles={importLocalFiles}
+          onClose={() => !importing && setShowImport(false)}
+        />
       )}
     </div>
   )
