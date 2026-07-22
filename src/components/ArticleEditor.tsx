@@ -152,7 +152,7 @@ export default function ArticleEditor({ article, onSave, highlight }: Props) {
         if (norm(el.textContent || '').includes(needle)) {
           el.classList.add('cfnote-highlight')
           el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          setTimeout(() => el.classList.remove('cfnote-highlight'), 3000)
+          setTimeout(() => el.classList.remove('cfnote-highlight'), 6000)
           break
         }
       }

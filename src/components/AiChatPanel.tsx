@@ -167,11 +167,31 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
       const ctype = res.headers.get('Content-Type') || ''
 
       if (ctype.includes('text/event-stream') && res.body) {
-        // ---- 流式:逐事件解析,delta 渐进渲染 ----
+        // ---- 流式:逐事件解析,think/delta 渐进渲染 ----
         let acc = ''
+        let thinkAcc = ''
         let donePayload: SendMessageResponse | null = null
         let errorMessage = ''
         let placeholderAdded = false
+
+        // 临时消息内容:有思考时拼成 <think>...</think>正文,复用 parseThink 渲染
+        const updateTemp = () => {
+          const content = thinkAcc ? `<think>${thinkAcc}</think>${acc}` : acc
+          setStreamingStarted(true)
+          if (!placeholderAdded) {
+            placeholderAdded = true
+            setMessages((prev) => [...prev, {
+              id: tempAssistantId,
+              conversation_id: convId,
+              role: 'assistant',
+              content,
+              sources: null,
+              created_at: new Date().toISOString(),
+            }])
+          } else {
+            setMessages((prev) => prev.map((m) => m.id === tempAssistantId ? { ...m, content } : m))
+          }
+        }
 
         const reader = res.body.getReader()
         const decoder = new TextDecoder()
@@ -189,20 +209,10 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
             try { evt = JSON.parse(l.slice(5).trim()) } catch { continue }
             if (evt.type === 'delta') {
               acc += evt.text
-              setStreamingStarted(true)
-              if (!placeholderAdded) {
-                placeholderAdded = true
-                setMessages((prev) => [...prev, {
-                  id: tempAssistantId,
-                  conversation_id: convId,
-                  role: 'assistant',
-                  content: acc,
-                  sources: null,
-                  created_at: new Date().toISOString(),
-                }])
-              } else {
-                setMessages((prev) => prev.map((m) => m.id === tempAssistantId ? { ...m, content: acc } : m))
-              }
+              updateTemp()
+            } else if (evt.type === 'think') {
+              thinkAcc += evt.text
+              updateTemp()
             } else if (evt.type === 'status') {
               // 真实的联网搜索状态事件(不再靠超时猜测)
               setWebSearching(true)
@@ -455,16 +465,23 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                   </div>
                 )}
 
-                {/* 思考过程(推理模型,折叠展示) */}
+                {/* 思考过程(推理模型,折叠展示;流式生成中默认展开) */}
                 {msg.role === 'assistant' && parseThink(msg.content).think && (
-                  <details className="mb-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
-                    <summary className="cursor-pointer select-none text-gray-400 hover:text-gray-600">💭 思考过程</summary>
+                  <details
+                    key={`think-${msg.id}-${msg.id < 0 ? 'open' : 'closed'}`}
+                    open={msg.id < 0}
+                    className="mb-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5"
+                  >
+                    <summary className="cursor-pointer select-none text-gray-400 hover:text-gray-600">
+                      💭 思考过程{msg.id < 0 && !parseThink(msg.content).answer ? '(思考中...)' : ''}
+                    </summary>
                     <div className="mt-1.5 whitespace-pre-wrap leading-relaxed text-gray-500 max-h-60 overflow-y-auto">
                       {parseThink(msg.content).think}
                     </div>
                   </details>
                 )}
 
+                {(msg.role === 'user' || parseThink(msg.content).answer || msg.id > 0) && (
                 <div
                   className={`rounded-xl px-3 py-2 text-sm ${
                     msg.role === 'user'
@@ -482,6 +499,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                     <span className="whitespace-pre-wrap">{msg.content}</span>
                   )}
                 </div>
+                )}
 
                 {/* 复制 / 重新生成(仅已落库的助手消息;重新生成只对最后一条) */}
                 {msg.role === 'assistant' && msg.id > 0 && (

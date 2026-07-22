@@ -214,7 +214,8 @@ async function persistAssistantMessage(
 }
 
 // POST /api/conversations/:id/messages - Send message and get AI response.
-// 请求体带 stream:true 且非推理模型时返回 SSE(delta/status/done/error 事件),否则返回原 JSON。
+// 请求体带 stream:true 时返回 SSE(think/delta/status/done/error 事件),否则返回原 JSON。
+// 推理模型的思考内容以 think 事件流式下发,</think> 之后的正文走 delta。
 conversations.post('/:id/messages', async (c) => {
   const user = c.get('user')
   const conversationId = Number(c.req.param('id'))
@@ -292,8 +293,7 @@ conversations.post('/:id/messages', async (c) => {
       { role: 'user', content: userPrompt },
     ]
 
-    // 推理模型的 <think> 标签需要完整输出后清理,不走流式
-    const wantStream = !!body.stream && !isReasoningModel(modelId)
+    const wantStream = !!body.stream
 
     // ---- 非流式路径(原有行为) ----
     if (!wantStream) {
@@ -345,14 +345,16 @@ conversations.post('/:id/messages', async (c) => {
           60000, 'AI 生成回答',
         )
 
-        let assistantContent = ''
+        const reasoning = isReasoningModel(modelId)
+        let rawContent = ''       // 模型原始全文(含思考)
+        let answerContent = ''    // 剔除思考后的正文(WEB_SEARCH 判定与非推理持久化用)
         let gateBuffer = ''
         let gateDecided = false
         let isWebSearch = false
 
         // WEB_SEARCH 门控:攒够字符判断开头是不是搜索标记,再决定是否向客户端转发增量
-        const onToken = async (tok: string) => {
-          assistantContent += tok
+        const onAnswerToken = async (tok: string) => {
+          answerContent += tok
           if (gateDecided) {
             if (!isWebSearch) await send({ type: 'delta', text: tok })
             return
@@ -366,6 +368,35 @@ conversations.post('/:id/messages', async (c) => {
           } else if (t.length > 0 && !WEB_SEARCH_TAG.startsWith(t)) {
             gateDecided = true
             await send({ type: 'delta', text: gateBuffer })
+          }
+        }
+
+        // 推理模型思考阶段:</think> 之前的内容以 think 事件流式下发(开头 <think> 可能缺失)
+        const CLOSE_TAG = '</think>'
+        let thinkPhase = reasoning
+        let thinkBuf = ''
+        let openChecked = false
+        const onToken = async (tok: string) => {
+          rawContent += tok
+          if (!thinkPhase) { await onAnswerToken(tok); return }
+          thinkBuf += tok
+          if (!openChecked) {
+            const t = thinkBuf.trimStart()
+            if (t.startsWith('<think>')) { thinkBuf = t.slice('<think>'.length); openChecked = true }
+            else if (t.length > 0 && !'<think>'.startsWith(t.slice(0, 7))) openChecked = true
+            else return // 还不足以判断是否有开头标签,继续攒
+          }
+          const idx = thinkBuf.indexOf(CLOSE_TAG)
+          if (idx >= 0) {
+            if (idx > 0) await send({ type: 'think', text: thinkBuf.slice(0, idx) })
+            thinkPhase = false
+            const rest = thinkBuf.slice(idx + CLOSE_TAG.length)
+            thinkBuf = ''
+            if (rest) await onAnswerToken(rest.replace(/^\s+/, ''))
+          } else if (thinkBuf.length > CLOSE_TAG.length) {
+            // 留住尾部,防止 </think> 被拆在两个 token 里
+            await send({ type: 'think', text: thinkBuf.slice(0, -CLOSE_TAG.length) })
+            thinkBuf = thinkBuf.slice(-CLOSE_TAG.length)
           }
         }
 
@@ -391,37 +422,42 @@ conversations.post('/:id/messages', async (c) => {
           }
         }
 
+        // 到结束仍在思考阶段:把余量当思考流完(模型没输出 </think>,正文按空处理,落库时兜底)
+        if (thinkPhase && thinkBuf) await send({ type: 'think', text: thinkBuf })
+
         // 极短回复可能到结束都未触发门控判定
         if (!gateDecided && gateBuffer) {
           isWebSearch = gateBuffer.trimStart().startsWith(WEB_SEARCH_TAG)
           if (!isWebSearch) await send({ type: 'delta', text: gateBuffer })
         }
-        if (!assistantContent) {
-          assistantContent = '无法生成回答'
-          await send({ type: 'delta', text: assistantContent })
+        if (!rawContent) {
+          rawContent = answerContent = '无法生成回答'
+          await send({ type: 'delta', text: answerContent })
         }
 
         let isWebSearchResponse = false
         let webQuery = ''
         let webSources: { title: string; url: string }[] = []
+        // 落库内容:推理模型保留规范化后的思考过程,其余仅正文
+        let persistContent = reasoning ? normalizeThinkTags(rawContent) : answerContent
 
         if (isWebSearch) {
-          webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
+          webQuery = answerContent.trim().slice(WEB_SEARCH_TAG.length).trim()
           if (webQuery) {
             isWebSearchResponse = true
             await send({ type: 'status', message: '正在联网搜索...' })
             const r = await performWebSearch(env, modelId, webQuery, userContent)
-            assistantContent = r.content
+            persistContent = r.content
             webSources = r.webSources
-            await send({ type: 'delta', text: assistantContent })
+            await send({ type: 'delta', text: persistContent })
           } else {
             // 标记后没有关键词:按普通回复处理,把被门控扣住的内容补发给客户端
-            await send({ type: 'delta', text: assistantContent })
+            await send({ type: 'delta', text: answerContent })
           }
         }
 
         const payload = await persistAssistantMessage(env, {
-          conversationId, userId: user.id, userMessage, assistantContent, sources,
+          conversationId, userId: user.id, userMessage, assistantContent: persistContent, sources,
           isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: userContent,
         })
         await send({ type: 'done', ...payload })

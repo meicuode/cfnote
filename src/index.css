@@ -96,9 +96,13 @@
 }
 .cfnote-cite:hover { text-decoration: underline; }
 
-/* 引用定位:命中段落短暂高亮 */
+/* 引用定位:命中段落高亮(立即显色,停留后缓慢淡出,总时长约 6s) */
 .cfnote-highlight {
-  background: #fef3c7;
   border-radius: 4px;
-  transition: background 1.2s ease;
+  animation: cfnote-flash 6s ease forwards;
+}
+@keyframes cfnote-flash {
+  0% { background: #fde68a; }
+  70% { background: #fef3c7; }
+  100% { background: transparent; }
 }
