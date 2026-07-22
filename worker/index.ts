@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { err, getUser } from './utils'
 import { runScheduledArchive } from './archive'
-import { vectorizeBacklog } from './routes/articles'
 import { system } from './routes/system'
 import { auth } from './routes/auth'
 import { notebooks } from './routes/notebooks'
@@ -43,9 +42,7 @@ app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
 // - not_found_handling = "single-page-application" 提供 SPA 回退
 export default {
   fetch: (request, env, ctx) => app.fetch(request, env, ctx),
-  scheduled: (event, env, ctx) => {
-    // 月度 cron 才跑归档;所有 cron(含每 5 分钟一次)都顺带补建未向量化文章
-    if (event.cron === '47 2 2 * *') ctx.waitUntil(runScheduledArchive(env))
-    ctx.waitUntil(vectorizeBacklog(env).catch(() => {}))
+  scheduled: (_event, env, ctx) => {
+    ctx.waitUntil(runScheduledArchive(env))
   },
 } satisfies ExportedHandler<Env>

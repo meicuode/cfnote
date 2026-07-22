@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
-import { vectorizeArticle, vectorizeBacklog } from './articles'
+import { vectorizeArticle } from './articles'
 import type { AppEnv } from '../types'
 
 export const system = new Hono<AppEnv>()
@@ -302,10 +302,6 @@ system.post('/import', async (c) => {
     logSystem(c.env, 'info', 'import', '备份导入完成', {
       notebooks_created: toCreate.length, articles_imported: inserts.length, articles_skipped: skipped,
     })
-    // 响应返回后在后台先补建一批向量(不阻塞响应);剩余积压由每 5 分钟的 cron 清完
-    if (inserts.length > 0) {
-      c.executionCtx.waitUntil(vectorizeBacklog(c.env, 8).catch(() => {}))
-    }
     return ok({
       notebooks_created: toCreate.length,
       articles_imported: inserts.length,

@@ -11,11 +11,9 @@ directory = "./dist"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
-# 定时任务(worker/index.ts scheduled 按 cron 表达式分发):
-# - 每月 2 日 02:47 UTC 归档上月用量(见 worker/archive.ts,未配置统计凭据时自动跳过)
-# - 每 5 分钟为未向量化的文章补建向量(导入大批文章后自动在后台清空积压)
+# 每月 2 日 02:47 UTC 自动归档上月用量(见 worker/archive.ts,未配置统计凭据时自动跳过)
 [triggers]
-crons = ["47 2 2 * *", "*/5 * * * *"]
+crons = ["47 2 2 * *"]
 
 [observability]
 enabled = true

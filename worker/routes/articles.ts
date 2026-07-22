@@ -195,16 +195,6 @@ articles.delete('/:id', async (c) => {
   }
 })
 
-// 每日 cron 兜底:为遗留的未向量化文章补建向量(导入后分批重建被中断/失败时自动补偿)
-export async function vectorizeBacklog(env: Env, limit = 10): Promise<void> {
-  const { results } = await env.DB.prepare(
-    "SELECT id, user_id, notebook_id, title, content FROM articles WHERE is_vectorized = 0 AND TRIM(content) != '' ORDER BY id LIMIT ?"
-  ).bind(limit).all<{ id: number; user_id: number; notebook_id: number; title: string; content: string }>()
-  for (const a of results) {
-    await vectorizeArticle(env, a.id, a.user_id, a.notebook_id, a.title, a.content)
-  }
-}
-
 // Helper: vectorize an article's content. Returns error message or null on success.
 // userId is passed for usage logging.
 export async function vectorizeArticle(

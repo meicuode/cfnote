@@ -60,6 +60,37 @@ export default function SettingsPanel({ token, onClose }: Props) {
     setSaving(false)
   }
 
+  // 分批触发向量索引直到没有剩余;剩余不再减少说明持续失败,停止。返回失败信息列表。
+  // 导入后的首次建立与手动重试共用同一逻辑。
+  const runReindexLoop = async (onProgress: (remaining: number) => void): Promise<string[]> => {
+    let lastRemaining = Infinity
+    const errors: string[] = []
+    while (true) {
+      const r = await api.post<{ processed: number; remaining: number; errors: string[] }>('/reindex', {})
+      if (!r.ok || !r.data) break
+      errors.push(...r.data.errors)
+      if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
+      lastRemaining = r.data.remaining
+      onProgress(r.data.remaining)
+    }
+    return errors
+  }
+
+  const handleReindex = async () => {
+    setImporting(true)
+    setImportMsg('正在检查并建立向量索引...')
+    setError('')
+    try {
+      const errors = await runReindexLoop((n) => setImportMsg(`正在建立向量索引... 剩余 ${n} 篇`))
+      setImportMsg(errors.length > 0 ? `索引重建结束，${errors.length} 篇失败：${errors[0]}` : '向量索引已全部建立')
+    } catch (e: any) {
+      setError(e.message)
+      setImportMsg('')
+    } finally {
+      setImporting(false)
+    }
+  }
+
   // 导入备份:上传 JSON → 合并导入 → 分批补建向量
   const handleImportFile = async (file: File) => {
     setImporting(true)
@@ -74,10 +105,15 @@ export default function SettingsPanel({ token, onClose }: Props) {
       if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
       const { notebooks_created, articles_imported, articles_skipped } = res.data
 
+      // 导入成功后由前端分批触发向量索引(每批一次独立请求,直到没有剩余)
+      const vecErrors = articles_imported > 0
+        ? await runReindexLoop((n) => setImportMsg(`正在建立向量索引... 剩余 ${n} 篇`))
+        : []
+
       setImportMsg(
         `导入完成：新建笔记本 ${notebooks_created} 个，导入文章 ${articles_imported} 篇` +
         (articles_skipped > 0 ? `，跳过重复 ${articles_skipped} 篇` : '') +
-        (articles_imported > 0 ? '。向量索引正在后台自动重建，几分钟内生效。' : '')
+        (vecErrors.length > 0 ? `；${vecErrors.length} 篇索引失败，可点击下方按钮重试` : '')
       )
     } catch (e: any) {
       setError(e.message)
@@ -261,8 +297,15 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   />
                 </label>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动重建向量索引。
+                  合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动建立向量索引。
                 </p>
+                <button
+                  onClick={handleReindex}
+                  disabled={importing}
+                  className="mt-2 text-xs text-emerald-600 hover:text-emerald-700 hover:underline disabled:opacity-50"
+                >
+                  补建缺失的向量索引（导入中断/失败后重试）
+                </button>
                 {importMsg && <p className="text-xs text-emerald-600 mt-2">{importMsg}</p>}
               </div>
             </>
