@@ -95,3 +95,10 @@
   padding: 0 1px;
 }
 .cfnote-cite:hover { text-decoration: underline; }
+
+/* 引用定位:命中段落短暂高亮 */
+.cfnote-highlight {
+  background: #fef3c7;
+  border-radius: 4px;
+  transition: background 1.2s ease;
+}

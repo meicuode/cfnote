@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { ok, err, ragSearch, withTimeout, getSettingValue, DEFAULT_MODEL, isReasoningModel, stripThinkTags, logSystem, jinaSearch, trackEvent, type RagSource } from '../utils'
+import { ok, err, ragSearch, withTimeout, getSettingValue, DEFAULT_MODEL, isReasoningModel, normalizeThinkTags, stripThinkTags, logSystem, jinaSearch, trackEvent, type RagSource } from '../utils'
 import type { AppEnv } from '../types'
 
 export const conversations = new Hono<AppEnv>()
@@ -148,7 +148,7 @@ async function performWebSearch(
     )
 
     let content = secondResult.response || '无法总结搜索结果'
-    if (isReasoningModel(modelId)) content = stripThinkTags(content)
+    if (isReasoningModel(modelId)) content = normalizeThinkTags(content)
     return { content, webSources }
   } catch (e: any) {
     logSystem(env, 'error', 'web_search', '联网搜索失败', { error: e.message, query: webQuery })
@@ -304,15 +304,18 @@ conversations.post('/:id/messages', async (c) => {
 
       let assistantContent = firstResult.response || '无法生成回答'
       if (isReasoningModel(modelId)) {
-        assistantContent = stripThinkTags(assistantContent)
+        // 保留思考过程(前端折叠展示),仅规范化缺失的开头标签
+        assistantContent = normalizeThinkTags(assistantContent)
       }
 
       let isWebSearchResponse = false
       let webQuery = ''
       let webSources: { title: string; url: string }[] = []
 
-      if (assistantContent.trim().startsWith(WEB_SEARCH_TAG)) {
-        webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
+      // WEB_SEARCH 标记检测基于剔除思考过程后的文本(推理模型的标记出现在 </think> 之后)
+      const visibleContent = isReasoningModel(modelId) ? stripThinkTags(assistantContent) : assistantContent
+      if (visibleContent.trim().startsWith(WEB_SEARCH_TAG)) {
+        webQuery = visibleContent.trim().slice(WEB_SEARCH_TAG.length).trim()
         if (webQuery) {
           isWebSearchResponse = true
           const r = await performWebSearch(c.env, modelId, webQuery, userContent)

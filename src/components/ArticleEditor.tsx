@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { marked } from 'marked'
+import { marked } from '../lib/markdown'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
 
@@ -8,6 +8,7 @@ const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fen
 interface Props {
   article: Article
   onSave: (id: number, data: { title?: string; content?: string }) => Promise<any>
+  highlight?: { text: string; ts: number } | null
 }
 
 // ---- Markdown insertion helper ----
@@ -124,7 +125,7 @@ function ToolbarIcon({ k }: { k: string }) {
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, onSave }: Props) {
+export default function ArticleEditor({ article, onSave, highlight }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
@@ -134,6 +135,30 @@ export default function ArticleEditor({ article, onSave }: Props) {
   const saveRef = useRef(onSave)
   saveRef.current = onSave
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+
+  // 来自 AI 引用/搜索的定位请求:切到预览,滚动到匹配段落并短暂高亮
+  useEffect(() => {
+    if (!highlight) return
+    setMode('preview')
+    const t = setTimeout(() => {
+      const root = previewRef.current
+      if (!root) return
+      const norm = (s: string) => s.replace(/[\s#*`>\-|~_[\]()（）,，。:：;；]/g, '')
+      const needle = norm(highlight.text).slice(0, 24)
+      if (!needle) return
+      const els = root.querySelectorAll('p, li, td, th, h1, h2, h3, h4, blockquote, pre')
+      for (const el of els) {
+        if (norm(el.textContent || '').includes(needle)) {
+          el.classList.add('cfnote-highlight')
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          setTimeout(() => el.classList.remove('cfnote-highlight'), 3000)
+          break
+        }
+      }
+    }, 150)
+    return () => clearTimeout(t)
+  }, [highlight?.ts, article.id])
 
   useEffect(() => {
     setTitle(article.title)
@@ -289,6 +314,7 @@ export default function ArticleEditor({ article, onSave }: Props) {
           />
         ) : (
           <div
+            ref={previewRef}
             className="cfnote-preview prose prose-sm max-w-none h-full overflow-y-auto text-gray-700"
             dangerouslySetInnerHTML={renderMarkdown()}
           />

@@ -44,6 +44,12 @@ export function stripThinkTags(text: string): string {
   return t.trim()
 }
 
+// 规范化思考标签:保留思考内容供前端折叠展示,只修复缺失的开头 <think>
+export function normalizeThinkTags(text: string): string {
+  if (text.includes('</think>') && !text.includes('<think>')) return '<think>' + text
+  return text
+}
+
 export function isReasoningModel(modelId: string): boolean {
   return ALLOWED_MODELS.find(m => m.id === modelId)?.isReasoning ?? false
 }

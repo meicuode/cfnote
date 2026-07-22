@@ -31,6 +31,37 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [showChat, setShowChat] = useState(false)
+  const [chatWidth, setChatWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('cfnote-chat-width'))
+    return saved >= 300 && saved <= 720 ? saved : 380
+  })
+  const [chatDragging, setChatDragging] = useState(false)
+  const [highlight, setHighlight] = useState<{ text: string; ts: number } | null>(null)
+
+  // 拖拽调整 AI 对话面板宽度
+  const startChatResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setChatDragging(true)
+    const startX = e.clientX
+    const startW = chatWidth
+    const onMove = (ev: MouseEvent) => {
+      setChatWidth(Math.min(720, Math.max(300, startW + (startX - ev.clientX))))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setChatDragging(false)
+      setChatWidth((w) => { localStorage.setItem('cfnote-chat-width', String(w)); return w })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // 从 AI 对话/搜索打开文章:可携带引用片段用于定位高亮
+  const openArticleWithSnippet = (id: number, snippet?: string) => {
+    loadArticleDetail(id)
+    if (snippet) setHighlight({ text: snippet, ts: Date.now() })
+  }
 
   const loadNotebooks = useCallback(async () => {
     const res = await get<Notebook[]>('/notebooks')
@@ -227,7 +258,7 @@ export default function Layout({ token, username, onLogout }: Props) {
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} onSave={saveArticle} />
+            <ArticleEditor article={activeArticle} onSave={saveArticle} highlight={highlight} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">
@@ -240,20 +271,30 @@ export default function Layout({ token, username, onLogout }: Props) {
           )}
         </div>
 
-        {/* AI Chat Panel */}
-        <div className={`${showChat ? 'w-[380px]' : 'w-0'} transition-all duration-300 overflow-hidden border-l border-gray-200 shrink-0`}>
-          <div className="w-[380px] h-full">
+        {/* AI Chat Panel(宽度可拖拽,300-720px) */}
+        <div
+          className={`relative ${chatDragging ? '' : 'transition-[width] duration-300'} overflow-hidden border-l border-gray-200 shrink-0`}
+          style={{ width: showChat ? chatWidth : 0 }}
+        >
+          {showChat && (
+            <div
+              onMouseDown={startChatResize}
+              className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors"
+              title="拖拽调整宽度"
+            />
+          )}
+          <div style={{ width: chatWidth }} className="h-full">
             <AiChatPanel
               token={token}
               onClose={() => setShowChat(false)}
-              onOpenArticle={(id) => { loadArticleDetail(id); setShowChat(false) }}
+              onOpenArticle={openArticleWithSnippet}
             />
           </div>
         </div>
       </div>
 
       {showSearch && (
-        <SearchPanel token={token} onClose={() => setShowSearch(false)} onOpenArticle={(id) => { loadArticleDetail(id); setShowSearch(false) }} />
+        <SearchPanel token={token} onClose={() => setShowSearch(false)} onOpenArticle={(id, snippet) => { openArticleWithSnippet(id, snippet); setShowSearch(false) }} />
       )}
 
       {showStats && (

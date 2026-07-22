@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { marked } from 'marked'
+import { marked } from '../lib/markdown'
 import { useApi } from '../hooks/useApi'
 import type { Conversation, Message, SendMessageResponse, Notebook, Article } from '../types'
 
 interface Props {
   token: string
   onClose: () => void
-  onOpenArticle: (id: number) => void
+  onOpenArticle: (id: number, snippet?: string) => void
 }
 
 export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
@@ -245,7 +245,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
 
   const copyMessage = async (msg: Message) => {
     try {
-      await navigator.clipboard.writeText(msg.content)
+      await navigator.clipboard.writeText(parseThink(msg.content).answer || msg.content)
       setCopiedMsgId(msg.id)
       setTimeout(() => setCopiedMsgId((prev) => prev === msg.id ? null : prev), 2000)
     } catch { /* 剪贴板权限被拒 */ }
@@ -307,11 +307,22 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
     return { __html: marked.parse(text) as string }
   }
 
+  // 拆分思考过程与正文(推理模型输出 <think>...</think> 前缀,后端已规范化)
+  const parseThink = (content: string): { think: string | null; answer: string } => {
+    if (!content.startsWith('<think>')) return { think: null, answer: content }
+    const end = content.indexOf('</think>')
+    if (end < 0) return { think: content.slice('<think>'.length).trim(), answer: '' }
+    return {
+      think: content.slice('<think>'.length, end).trim(),
+      answer: content.slice(end + '</think>'.length).trim(),
+    }
+  }
+
   // 助手消息:把 [n] 引用渲染为可点击元素(知识库来源打开文章,联网来源打开 URL)
   const renderAssistant = (msg: Message) => {
     const web = webSourcesMap.get(msg.id)
     const n = web?.length ?? msg.sources?.length ?? 0
-    let text = msg.content
+    let text = parseThink(msg.content).answer
     if (n > 0) {
       text = text.replace(/\[(\d+)\]/g, (m, d) => {
         const i = Number(d)
@@ -327,7 +338,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
     const i = Number(el.dataset.cite) - 1
     const web = webSourcesMap.get(msg.id)
     if (web?.[i]) { window.open(web[i].url, '_blank', 'noreferrer'); return }
-    if (msg.sources?.[i]) onOpenArticle(msg.sources[i].article_id)
+    if (msg.sources?.[i]) onOpenArticle(msg.sources[i].article_id, msg.sources[i].chunk_text)
   }
 
   // ---- List View ----
@@ -444,6 +455,16 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                   </div>
                 )}
 
+                {/* 思考过程(推理模型,折叠展示) */}
+                {msg.role === 'assistant' && parseThink(msg.content).think && (
+                  <details className="mb-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
+                    <summary className="cursor-pointer select-none text-gray-400 hover:text-gray-600">💭 思考过程</summary>
+                    <div className="mt-1.5 whitespace-pre-wrap leading-relaxed text-gray-500 max-h-60 overflow-y-auto">
+                      {parseThink(msg.content).think}
+                    </div>
+                  </details>
+                )}
+
                 <div
                   className={`rounded-xl px-3 py-2 text-sm ${
                     msg.role === 'user'
@@ -505,7 +526,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                     {msg.sources.map((s, i) => (
                       <button
                         key={`${s.article_id}-${i}`}
-                        onClick={() => onOpenArticle(s.article_id)}
+                        onClick={() => onOpenArticle(s.article_id, s.chunk_text)}
                         className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md px-2 py-0.5 transition-colors truncate max-w-[180px]"
                         title={s.article_title}
                       >

@@ -5,7 +5,7 @@ import type { SearchResult } from '../types'
 interface Props {
   token: string
   onClose: () => void
-  onOpenArticle: (id: number) => void
+  onOpenArticle: (id: number, snippet?: string) => void
 }
 
 export default function SearchPanel({ token, onClose, onOpenArticle }: Props) {
@@ -86,7 +86,7 @@ export default function SearchPanel({ token, onClose, onOpenArticle }: Props) {
                 {results.map((r, i) => (
                   <button
                     key={`${r.article_id}-${i}`}
-                    onClick={() => onOpenArticle(r.article_id)}
+                    onClick={() => onOpenArticle(r.article_id, r.chunk_text)}
                     className="w-full text-left bg-gray-50 hover:bg-gray-100 rounded-xl p-3 transition-colors"
                   >
                     <div className="flex items-center justify-between mb-1">
