@@ -7,6 +7,7 @@ const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fen
 
 interface Props {
   article: Article
+  token: string
   onSave: (id: number, data: { title?: string; content?: string }) => Promise<any>
   highlight?: { text: string; ts: number } | null
   loadingContent?: boolean
@@ -126,12 +127,14 @@ function ToolbarIcon({ k }: { k: string }) {
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, onSave, highlight, loadingContent }: Props) {
+export default function ArticleEditor({ article, token, onSave, highlight, loadingContent }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveRef = useRef(onSave)
   saveRef.current = onSave
@@ -162,8 +165,12 @@ export default function ArticleEditor({ article, onSave, highlight, loadingConte
   }, [highlight?.ts, article.id])
 
   // 切换文章立即重置;完整正文异步到达时(loadingContent 翻转)再同步一次。
-  // 加载期间编辑器只读,不存在本地修改被覆盖的问题。
+  // 草稿(id<0)首次保存后被真实文章替换,此时保留本地正在编辑的内容,不重置。
+  const prevIdRef = useRef(article.id)
   useEffect(() => {
+    const wasDraft = prevIdRef.current < 0 && article.id > 0
+    prevIdRef.current = article.id
+    if (wasDraft) return
     setTitle(article.title)
     setContent(article.content)
     setSaved(true)
@@ -201,8 +208,57 @@ export default function ArticleEditor({ article, onSave, highlight, loadingConte
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
   }, [handleSave, saved])
 
-  // Handle paste: convert HTML to Markdown
+  // ---- 附件上传(R2):图片插入 ![](url),其他文件插入 [📎 name](url) ----
+
+  const insertAtCursor = useCallback((text: string) => {
+    const ta = textareaRef.current
+    if (!ta) {
+      setContent((prev) => prev + (prev && !prev.endsWith('\n') ? '\n' : '') + text)
+      return
+    }
+    const { selectionStart: start, selectionEnd: end, value } = ta
+    setContent(value.slice(0, start) + text + value.slice(end))
+    requestAnimationFrame(() => {
+      ta.focus()
+      const pos = start + text.length
+      ta.setSelectionRange(pos, pos)
+    })
+  }, [])
+
+  const handleUpload = useCallback(async (file: File) => {
+    setUploadError('')
+    setUploading(true)
+    try {
+      const res = await fetch('/api/files', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': file.type || 'application/octet-stream',
+          'x-filename': encodeURIComponent(file.name),
+        },
+        body: file,
+      })
+      const j: any = await res.json()
+      if (!j.ok) throw new Error(j.error || `上传失败 (${res.status})`)
+      const info = j.data as { url: string; name: string; content_type: string }
+      if (info.content_type.startsWith('image/')) insertAtCursor(`![${info.name}](${info.url})`)
+      else insertAtCursor(`[📎 ${info.name}](${info.url})`)
+    } catch (e: any) {
+      setUploadError(e.message)
+      setTimeout(() => setUploadError(''), 5000)
+    } finally {
+      setUploading(false)
+    }
+  }, [token, insertAtCursor])
+
+  // Handle paste: 剪贴板中的图片直接上传插入;HTML 转 Markdown
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const imgFile = Array.from(e.clipboardData.files).find((f) => f.type.startsWith('image/'))
+    if (imgFile) {
+      e.preventDefault()
+      handleUpload(imgFile)
+      return
+    }
     const html = e.clipboardData.getData('text/html')
     if (!html) return // plain text paste, let browser handle it
     e.preventDefault()
@@ -216,7 +272,7 @@ export default function ArticleEditor({ article, onSave, highlight, loadingConte
       const pos = start + md.length
       ta.setSelectionRange(pos, pos)
     })
-  }, [])
+  }, [handleUpload])
 
   const handleToolbar = (key: string) => {
     const action = ACTIONS[key]
@@ -290,6 +346,29 @@ export default function ArticleEditor({ article, onSave, highlight, loadingConte
               ))}
             </div>
           ))}
+          {/* 图片 / 附件上传 */}
+          <div className="w-px h-5 bg-gray-200 mx-1" />
+          <label title="插入图片(也可直接粘贴截图)" className={`px-2 py-1 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <input type="file" accept="image/*" className="hidden" disabled={uploading}
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleUpload(f) }} />
+          </label>
+          <label title="插入附件(任意文件,≤10MB)" className={`px-2 py-1 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+            <input type="file" className="hidden" disabled={uploading}
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleUpload(f) }} />
+          </label>
+          {uploading && (
+            <span className="flex items-center gap-1 text-xs text-gray-400 ml-1">
+              <span className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+              上传中...
+            </span>
+          )}
+          {uploadError && <span className="text-xs text-red-500 ml-1 truncate max-w-[240px]" title={uploadError}>{uploadError}</span>}
         </div>
       )}
 

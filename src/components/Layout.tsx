@@ -140,31 +140,31 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
-  const createArticle = async () => {
+  const createArticle = () => {
     if (!activeNotebook) return
-    // 乐观切换:立即打开临时空文章(只读),创建成功后无缝替换为真实文章
-    const temp: Article = {
-      id: -1, notebook_id: activeNotebook.id, title: '无标题文章', content: '',
+    // 本地草稿:不落库。用户首次输入触发保存时才真正创建记录(见 saveArticle 的 id<0 分支)
+    setActiveArticle({
+      id: -Date.now(), notebook_id: activeNotebook.id, title: '无标题文章', content: '',
       is_vectorized: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    } as Article
-    setActiveArticle(temp)
-    setArticleLoading(true)
-    const res = await post<Article>('/articles', {
-      notebook_id: activeNotebook.id,
-      title: '无标题文章',
-      content: '',
-    })
-    setArticleLoading(false)
-    if (res.ok && res.data) {
-      setActiveArticle(res.data)
-      loadArticles(activeNotebook.id)
-      loadNotebooks()
-    } else {
-      setActiveArticle(null)
-    }
+    } as Article)
   }
 
   const saveArticle = async (id: number, data: { title?: string; content?: string }) => {
+    // 草稿首次保存:创建真实文章并替换草稿
+    if (id < 0) {
+      if (!activeNotebook) return { ok: false, error: '未选择笔记本' }
+      const res = await post<Article>('/articles', {
+        notebook_id: activeNotebook.id,
+        title: data.title?.trim() || '无标题文章',
+        content: data.content ?? '',
+      })
+      if (res.ok && res.data) {
+        setActiveArticle(res.data)
+        loadArticles(activeNotebook.id)
+        loadNotebooks()
+      }
+      return res
+    }
     const res = await put<Article>(`/articles/${id}`, data)
     if (res.ok && res.data) {
       setActiveArticle(res.data)
@@ -352,7 +352,7 @@ export default function Layout({ token, username, onLogout }: Props) {
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} />
+            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">

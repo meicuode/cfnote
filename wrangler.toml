@@ -33,3 +33,10 @@ binding = "AI"
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 dataset = "cfnote_usage"
+
+# 附件存储(图片/文件,免费额度 10GB)。
+# 注意:R2 需先在 Cloudflare Dashboard 开通(免费,但可能要求验证支付方式),
+# 并创建名为 cfnote-files 的桶,否则部署会失败(旧版本继续在线,创建桶后重试部署即可)。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "cfnote-files"

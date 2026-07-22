@@ -71,7 +71,7 @@
 点击 README 顶部的 **Deploy to Cloudflare** 按钮：
 
 1. Cloudflare 会把代码克隆成你 GitHub/GitLab 账号下的一个**独立新仓库**，并接好自动构建（以后 push 即部署）
-2. 向导中选择或创建 D1 数据库（`cfnote-db`）和 Vectorize 索引（`cfnote-index`）
+2. 向导中选择或创建 D1 数据库（`cfnote-db`）、Vectorize 索引（`cfnote-index`）和 R2 存储桶（`cfnote-files`，用于图片/附件；R2 需在账号中先开通，免费额度 10GB）
 3. 新建 Vectorize 索引时，dimensions 填 **`1024`**，metric 选 **`cosine`**（1024 是嵌入模型 `@cf/baai/bge-m3` 的输出维度）。注意这两项创建后不可修改：dimensions 填错向量化会直接报错，metric 选错搜索排序会完全失真，只能删除索引后重建
 4. 部署向导中按提示填写 `JWT_SECRET`（随机字符串即可）；部署完成后到 Worker 的 **Settings → Variables and Secrets** 确认它以 **Secret** 类型存在，没有就补加一条
 5. 访问站点，按引导完成初始化：建表 → 创建账户 → 进入主界面
@@ -81,7 +81,7 @@
 ### 方式二：Fork + 仪表盘连接 Git（推荐，可持续更新）
 
 1. Fork 本仓库到你的 GitHub 账号
-2. Cloudflare 仪表盘中创建 D1 数据库 `cfnote-db` 和 Vectorize 索引 `cfnote-index`（1024 维，cosine）
+2. Cloudflare 仪表盘中创建 D1 数据库 `cfnote-db`、Vectorize 索引 `cfnote-index`（1024 维，cosine）和 R2 存储桶 `cfnote-files`（需先在 R2 页面开通，免费额度 10GB；不创建该桶部署会失败，创建后重试构建即可）
 3. Workers 页面选择「连接 Git 仓库」指向你的 fork（构建命令 `npm run build`，部署命令 `npx wrangler deploy`）。`wrangler.toml` 按名称绑定资源，fork 无需修改任何文件；若首次构建报 database_id 相关错误，把仪表盘中 D1 详情页的 ID 填入 `wrangler.toml` 再 push 一次即可
 4. 在 Worker 的 Settings → Variables and Secrets 中添加 Secret `JWT_SECRET`（以及可选的 `CF_API_TOKEN` / `CF_ACCOUNT_ID`）
 5. 访问站点，按引导完成初始化
@@ -93,6 +93,7 @@
 wrangler login
 wrangler d1 create cfnote-db
 wrangler vectorize create cfnote-index --dimensions=1024 --metric=cosine
+wrangler r2 bucket create cfnote-files
 wrangler secret put JWT_SECRET
 npm install && npm run deploy    # 部署按名称绑定资源,如提示选择数据库,选刚创建的 cfnote-db
 ```

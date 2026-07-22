@@ -4,6 +4,7 @@ export interface Env {
   VECTORIZE: VectorizeIndex
   AI: Ai
   ANALYTICS?: AnalyticsEngineDataset
+  BUCKET?: R2Bucket
   JWT_SECRET: string
   CF_API_TOKEN?: string
   CF_ACCOUNT_ID?: string
