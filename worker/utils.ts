@@ -37,7 +37,11 @@ export async function getApiKey(env: Env, keyName: string): Promise<string | und
 }
 
 export function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  let t = text.replace(/<think>[\s\S]*?<\/think>/g, '')
+  // QwQ 等推理模型常漏掉开头的 <think>,只输出结尾的 </think>:丢弃闭合标签之前的全部内容
+  const close = t.lastIndexOf('</think>')
+  if (close >= 0 && !t.includes('<think>')) t = t.slice(close + '</think>'.length)
+  return t.trim()
 }
 
 export function isReasoningModel(modelId: string): boolean {

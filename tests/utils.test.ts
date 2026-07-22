@@ -144,6 +144,11 @@ describe('stripThinkTags', () => {
   it('无标签时原样返回(仅修剪)', () => {
     expect(stripThinkTags('  普通回答  ')).toBe('普通回答')
   })
+
+  it('缺少开头 <think> 只有结尾 </think> 时丢弃前部(QwQ 常见输出)', () => {
+    expect(stripThinkTags('好的,用户问...需要引用[1][2]。</think>正式回答内容')).toBe('正式回答内容')
+    expect(stripThinkTags('思考A</think>中间</think>答案')).toBe('答案')
+  })
 })
 
 // ---- 模型白名单 ----
