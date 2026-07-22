@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useApi } from '../hooks/useApi'
 import Sidebar from './Sidebar'
 import ArticleList from './ArticleList'
@@ -31,21 +31,24 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [showChat, setShowChat] = useState(false)
+  const chatMaxWidth = () => Math.max(300, Math.floor(window.innerWidth / 2))
   const [chatWidth, setChatWidth] = useState(() => {
     const saved = Number(localStorage.getItem('cfnote-chat-width'))
-    return saved >= 300 && saved <= 720 ? saved : 380
+    return saved >= 300 && saved <= chatMaxWidth() ? saved : 380
   })
   const [chatDragging, setChatDragging] = useState(false)
   const [highlight, setHighlight] = useState<{ text: string; ts: number } | null>(null)
+  const restoredRef = useRef(false)
 
-  // 拖拽调整 AI 对话面板宽度
+  // 拖拽调整 AI 对话面板宽度(上限为屏幕一半)
   const startChatResize = (e: React.MouseEvent) => {
     e.preventDefault()
     setChatDragging(true)
     const startX = e.clientX
     const startW = chatWidth
+    const max = chatMaxWidth()
     const onMove = (ev: MouseEvent) => {
-      setChatWidth(Math.min(720, Math.max(300, startW + (startX - ev.clientX))))
+      setChatWidth(Math.min(max, Math.max(300, startW + (startX - ev.clientX))))
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
@@ -89,6 +92,29 @@ export default function Layout({ token, username, onLogout }: Props) {
     const res = await get<Article>(`/articles/${articleId}`)
     if (res.ok && res.data) setActiveArticle(res.data)
   }, [get])
+
+  // 首次加载完笔记本列表后,恢复上次打开的笔记本与文章
+  useEffect(() => {
+    if (restoredRef.current || notebooks.length === 0) return
+    restoredRef.current = true
+    const nb = notebooks.find((n) => n.id === Number(localStorage.getItem('cfnote-last-notebook')))
+    if (!nb) return
+    setActiveNotebook(nb)
+    const artId = Number(localStorage.getItem('cfnote-last-article'))
+    if (artId) loadArticleDetail(artId)
+  }, [notebooks, loadArticleDetail])
+
+  // 记住当前打开的笔记本/文章(恢复完成后才开始写,避免覆盖已存值)
+  useEffect(() => {
+    if (!restoredRef.current) return
+    if (activeNotebook) localStorage.setItem('cfnote-last-notebook', String(activeNotebook.id))
+    else localStorage.removeItem('cfnote-last-notebook')
+  }, [activeNotebook])
+  useEffect(() => {
+    if (!restoredRef.current) return
+    if (activeArticle) localStorage.setItem('cfnote-last-article', String(activeArticle.id))
+    else localStorage.removeItem('cfnote-last-article')
+  }, [activeArticle])
 
   const createNotebook = async (name: string) => {
     const res = await post<Notebook>('/notebooks', { name })
@@ -271,7 +297,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           )}
         </div>
 
-        {/* AI Chat Panel(宽度可拖拽,300-720px) */}
+        {/* AI Chat Panel(宽度可拖拽,300px ~ 屏幕一半) */}
         <div
           className={`relative ${chatDragging ? '' : 'transition-[width] duration-300'} overflow-hidden border-l border-gray-200 shrink-0`}
           style={{ width: showChat ? chatWidth : 0 }}
