@@ -90,6 +90,7 @@ export interface SearchResult {
   notebook_name: string
   chunk_text: string
   score: number
+  match?: 'vector' | 'keyword' | 'both'
 }
 
 export interface AiSearchResult {

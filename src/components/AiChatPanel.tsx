@@ -18,6 +18,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [sendingLong, setSendingLong] = useState(false)
+  const [streamingStarted, setStreamingStarted] = useState(false)
   const [loading, setLoading] = useState(false)
   const sendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -87,69 +88,138 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
     }
   }
 
-  // Send message
+  // Send message (streaming SSE with JSON fallback)
   const sendMessage = async () => {
     if (!input.trim() || !activeConversation || sending) return
     const content = input.trim()
+    const convId = activeConversation.id
     setInput('')
     setSending(true)
     setSendingLong(false)
+    setStreamingStarted(false)
     sendingTimerRef.current = setTimeout(() => setSendingLong(true), 5000)
 
-    // Optimistic user message
+    // Optimistic user message + streaming assistant placeholder
     const tempUserMsg: Message = {
       id: -Date.now(),
-      conversation_id: activeConversation.id,
+      conversation_id: convId,
       role: 'user',
       content,
       sources: null,
       created_at: new Date().toISOString(),
     }
+    const tempAssistantId = -(Date.now() + 1)
     setMessages((prev) => [...prev, tempUserMsg])
 
-    const res = await api.post<SendMessageResponse>(`/conversations/${activeConversation.id}/messages`, { content })
-
-    if (res.ok && res.data) {
-      // Replace optimistic message with real ones
+    const applyDone = (data: SendMessageResponse) => {
       setMessages((prev) => [
-        ...prev.filter((m) => m.id !== tempUserMsg.id),
-        res.data!.user_message,
-        res.data!.assistant_message,
+        ...prev.filter((m) => m.id !== tempUserMsg.id && m.id !== tempAssistantId),
+        data.user_message,
+        data.assistant_message,
       ])
-      // Track web search messages
-      if (res.data.is_web_search) {
-        const msgId = res.data.assistant_message.id
+      if (data.is_web_search) {
+        const msgId = data.assistant_message.id
         setWebSearchMsgIds((prev) => new Set(prev).add(msgId))
-        if (res.data.web_sources?.length) {
-          setWebSourcesMap((prev) => new Map(prev).set(msgId, res.data!.web_sources!))
+        if (data.web_sources?.length) {
+          setWebSourcesMap((prev) => new Map(prev).set(msgId, data.web_sources!))
         }
       }
-      // Update title if changed
-      if (res.data.title_updated) {
-        setActiveConversation((prev) => prev ? { ...prev, title: res.data!.title_updated! } : prev)
+      if (data.title_updated) {
+        setActiveConversation((prev) => prev ? { ...prev, title: data.title_updated! } : prev)
         setConversations((prev) =>
-          prev.map((c) => c.id === activeConversation.id ? { ...c, title: res.data!.title_updated! } : c)
+          prev.map((c) => c.id === convId ? { ...c, title: data.title_updated! } : c)
         )
       }
-    } else {
-      // Replace optimistic message with kept user msg + error msg
+    }
+
+    const applyError = (message: string) => {
       const errorMsg: Message = {
-        id: -(Date.now() + 1),
-        conversation_id: activeConversation.id,
+        id: -(Date.now() + 2),
+        conversation_id: convId,
         role: 'assistant',
-        content: `**请求失败**：${res.error || '未知错误'}`,
+        content: `**请求失败**：${message || '未知错误'}`,
         sources: null,
         created_at: new Date().toISOString(),
       }
       setMessages((prev) => [
-        ...prev.filter((m) => m.id !== tempUserMsg.id),
-        { ...tempUserMsg, id: -(Date.now() + 2) },
+        ...prev.filter((m) => m.id !== tempUserMsg.id && m.id !== tempAssistantId),
+        { ...tempUserMsg, id: -(Date.now() + 3) },
         errorMsg,
       ])
     }
 
+    try {
+      const res = await fetch(`/api/conversations/${convId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ content, stream: true }),
+      })
+
+      const ctype = res.headers.get('Content-Type') || ''
+
+      if (ctype.includes('text/event-stream') && res.body) {
+        // ---- 流式:逐事件解析,delta 渐进渲染 ----
+        let acc = ''
+        let donePayload: SendMessageResponse | null = null
+        let errorMessage = ''
+        let placeholderAdded = false
+
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n')
+          buf = lines.pop() ?? ''
+          for (const line of lines) {
+            const l = line.trim()
+            if (!l.startsWith('data:')) continue
+            let evt: any
+            try { evt = JSON.parse(l.slice(5).trim()) } catch { continue }
+            if (evt.type === 'delta') {
+              acc += evt.text
+              setStreamingStarted(true)
+              if (!placeholderAdded) {
+                placeholderAdded = true
+                setMessages((prev) => [...prev, {
+                  id: tempAssistantId,
+                  conversation_id: convId,
+                  role: 'assistant',
+                  content: acc,
+                  sources: null,
+                  created_at: new Date().toISOString(),
+                }])
+              } else {
+                setMessages((prev) => prev.map((m) => m.id === tempAssistantId ? { ...m, content: acc } : m))
+              }
+            } else if (evt.type === 'status') {
+              setSendingLong(true)
+              setStreamingStarted(false)
+            } else if (evt.type === 'done') {
+              donePayload = evt as SendMessageResponse
+            } else if (evt.type === 'error') {
+              errorMessage = evt.message
+            }
+          }
+        }
+
+        if (donePayload) applyDone(donePayload)
+        else applyError(errorMessage || '连接中断，请刷新对话查看结果')
+      } else {
+        // ---- 非流式(推理模型等):原 JSON 行为 ----
+        const json = await res.json() as any
+        if (json.ok && json.data) applyDone(json.data as SendMessageResponse)
+        else applyError(json.error || `请求失败 (${res.status})`)
+      }
+    } catch (e: any) {
+      applyError(e.message)
+    }
+
     setSending(false)
     setSendingLong(false)
+    setStreamingStarted(false)
     if (sendingTimerRef.current) { clearTimeout(sendingTimerRef.current); sendingTimerRef.current = null }
   }
 
@@ -439,8 +509,8 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
           ))
         )}
 
-        {/* Sending indicator */}
-        {sending && (
+        {/* Sending indicator(流式内容开始渲染后隐藏) */}
+        {sending && !streamingStarted && (
           <div className="flex justify-start">
             <div className="bg-gray-100 rounded-xl px-4 py-3">
               {sendingLong ? (

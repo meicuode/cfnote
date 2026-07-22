@@ -195,6 +195,50 @@ system.put('/settings', async (c) => {
   }
 })
 
+// ---- Export ----
+
+// GET /api/export - 全量数据备份(JSON 附件下载;敏感设置不导出)
+system.get('/export', async (c) => {
+  const user = c.get('user')
+  try {
+    const [notebooks, articles, convs, msgs, settingsRows] = await Promise.all([
+      c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT id, notebook_id, title, content, created_at, updated_at FROM articles WHERE user_id = ? ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
+    ])
+
+    const settings: Record<string, string> = {}
+    for (const r of settingsRows.results ?? []) {
+      if (SENSITIVE_PATTERNS.test(r.key)) continue
+      settings[r.key] = r.value
+    }
+
+    const payload = {
+      app: 'cfnote',
+      export_version: 1,
+      exported_at: new Date().toISOString(),
+      username: user.username,
+      notebooks: notebooks.results ?? [],
+      articles: articles.results ?? [],
+      conversations: convs.results ?? [],
+      messages: (msgs.results ?? []).map((m: any) => ({ ...m, sources: m.sources ? JSON.parse(m.sources) : null })),
+      settings,
+    }
+
+    const date = new Date().toISOString().slice(0, 10)
+    return new Response(JSON.stringify(payload, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="cfnote-export-${date}.json"`,
+      },
+    })
+  } catch (e: any) {
+    return err('导出失败: ' + e.message, 500)
+  }
+})
+
 // ---- System Logs ----
 
 // GET /api/system-logs - Query system logs with pagination and filters

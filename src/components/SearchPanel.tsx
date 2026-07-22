@@ -92,7 +92,7 @@ export default function SearchPanel({ token, onClose, onOpenArticle }: Props) {
                     <div className="flex items-center justify-between mb-1">
                       <span className="font-medium text-sm text-gray-900">{r.article_title}</span>
                       <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
-                        {scorePercent(r.score)}%
+                        {r.match === 'keyword' ? '关键词' : `${scorePercent(r.score)}%`}
                       </span>
                     </div>
                     <p className="text-xs text-gray-400 mb-1">{r.notebook_name}</p>

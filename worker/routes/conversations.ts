@@ -118,13 +118,107 @@ conversations.delete('/:id', async (c) => {
   }
 })
 
-// POST /api/conversations/:id/messages - Send message and get AI response
+// ---- 共享:联网搜索 + LLM 总结(流式与非流式路径共用) ----
+async function performWebSearch(
+  env: AppEnv['Bindings'],
+  modelId: string,
+  webQuery: string,
+  originalQuestion: string,
+): Promise<{ content: string; webSources: { title: string; url: string }[] }> {
+  try {
+    const results = await withTimeout(jinaSearch(env, webQuery), 30000, '联网搜索')
+    if (results.length === 0) return { content: '联网搜索未找到相关结果。', webSources: [] }
+
+    const webSources = results.map(r => ({ title: r.title, url: r.url }))
+    const searchContext = results.map((r, i) =>
+      `[${i + 1}] ${r.title}\n来源: ${r.url}\n${r.content}`
+    ).join('\n\n')
+
+    const secondResult: any = await withTimeout(
+      env.AI.run(modelId as any, {
+        messages: [
+          { role: 'system', content: WEB_SEARCH_SUMMARY_PROMPT },
+          { role: 'user', content: `网络搜索结果:\n${searchContext}\n\n用户原始问题: ${originalQuestion}` },
+        ],
+        max_tokens: 1024,
+      }),
+      60000, 'AI 总结搜索结果',
+    )
+
+    let content = secondResult.response || '无法总结搜索结果'
+    if (isReasoningModel(modelId)) content = stripThinkTags(content)
+    return { content, webSources }
+  } catch (e: any) {
+    logSystem(env, 'error', 'web_search', '联网搜索失败', { error: e.message, query: webQuery })
+    return { content: `联网搜索失败：${e.message}`, webSources: [] }
+  }
+}
+
+// ---- 共享:助手消息落库 + 标题更新 + 埋点 + 构造响应负载 ----
+async function persistAssistantMessage(
+  env: AppEnv['Bindings'],
+  opts: {
+    conversationId: number
+    userId: number
+    userMessage: any
+    assistantContent: string
+    sources: RagSource[]
+    isWebSearch: boolean
+    webQuery: string
+    webSources: { title: string; url: string }[]
+    modelId: string
+    userContent: string
+  },
+) {
+  const { conversationId, userId, userMessage, assistantContent, sources, isWebSearch, webQuery, webSources, modelId, userContent } = opts
+
+  const assistantMsgResult = await env.DB.prepare(
+    'INSERT INTO messages (conversation_id, role, content, sources) VALUES (?, ?, ?, ?)'
+  ).bind(
+    conversationId,
+    'assistant',
+    assistantContent,
+    sources.length > 0 && !isWebSearch ? JSON.stringify(sources) : null,
+  ).run()
+
+  const assistantMessage = await env.DB.prepare(
+    'SELECT * FROM messages WHERE id = ?'
+  ).bind(assistantMsgResult.meta.last_row_id).first<any>()
+
+  let titleUpdated: string | undefined
+  const msgCount = await env.DB.prepare(
+    'SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND role = ?'
+  ).bind(conversationId, 'user').first<{ cnt: number }>()
+
+  if (msgCount && msgCount.cnt === 1) {
+    const newTitle = userContent.slice(0, 50)
+    await env.DB.prepare(
+      'UPDATE conversations SET title = ? WHERE id = ?'
+    ).bind(newTitle, conversationId).run()
+    titleUpdated = newTitle
+  }
+
+  trackEvent(env, isWebSearch ? 'web_search' : 'ai_chat', userId, modelId)
+
+  return {
+    user_message: { ...userMessage, sources: null },
+    assistant_message: {
+      ...assistantMessage,
+      sources: assistantMessage.sources ? JSON.parse(assistantMessage.sources) : null,
+    },
+    title_updated: titleUpdated,
+    ...(isWebSearch ? { is_web_search: true, web_query: webQuery, web_sources: webSources } : {}),
+  }
+}
+
+// POST /api/conversations/:id/messages - Send message and get AI response.
+// 请求体带 stream:true 且非推理模型时返回 SSE(delta/status/done/error 事件),否则返回原 JSON。
 conversations.post('/:id/messages', async (c) => {
   const user = c.get('user')
   const conversationId = Number(c.req.param('id'))
 
   try {
-    const { content } = await c.req.json<{ content: string }>()
+    const { content, stream } = await c.req.json<{ content: string; stream?: boolean }>()
     if (!content?.trim()) return err('消息内容不能为空')
 
     // 1. Verify conversation belongs to user
@@ -168,7 +262,7 @@ conversations.post('/:id/messages', async (c) => {
       sources = rag.sources
     }
 
-    // 5. Build first LLM call — may return normal answer or [WEB_SEARCH] tag
+    // 5. Build LLM messages
     let userPrompt: string
     if (contextParts.length > 0) {
       userPrompt = `参考内容:\n${contextParts.join('\n\n')}\n\n问题: ${content.trim()}`
@@ -179,112 +273,156 @@ conversations.post('/:id/messages', async (c) => {
     }
 
     const modelId = await getSettingValue(c.env, 'llm_model', DEFAULT_MODEL)
+    const llmMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...history,
+      { role: 'user', content: userPrompt },
+    ]
 
-    const firstResult: any = await withTimeout(
-      c.env.AI.run(modelId as any, {
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          ...history,
-          { role: 'user', content: userPrompt },
-        ],
-        max_tokens: 512,
-      }),
-      60000, 'AI 生成回答',
-    )
+    // 推理模型的 <think> 标签需要完整输出后清理,不走流式
+    const wantStream = !!stream && !isReasoningModel(modelId)
 
-    let assistantContent = firstResult.response || '无法生成回答'
-    if (isReasoningModel(modelId)) {
-      assistantContent = stripThinkTags(assistantContent)
+    // ---- 非流式路径(原有行为) ----
+    if (!wantStream) {
+      const firstResult: any = await withTimeout(
+        c.env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 512 }),
+        60000, 'AI 生成回答',
+      )
+
+      let assistantContent = firstResult.response || '无法生成回答'
+      if (isReasoningModel(modelId)) {
+        assistantContent = stripThinkTags(assistantContent)
+      }
+
+      let isWebSearchResponse = false
+      let webQuery = ''
+      let webSources: { title: string; url: string }[] = []
+
+      if (assistantContent.trim().startsWith(WEB_SEARCH_TAG)) {
+        webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
+        if (webQuery) {
+          isWebSearchResponse = true
+          const r = await performWebSearch(c.env, modelId, webQuery, content.trim())
+          assistantContent = r.content
+          webSources = r.webSources
+        }
+      }
+
+      const payload = await persistAssistantMessage(c.env, {
+        conversationId, userId: user.id, userMessage, assistantContent, sources,
+        isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: content.trim(),
+      })
+      return ok(payload)
     }
 
-    // 6. Check if LLM wants web search
-    let isWebSearchResponse = false
-    let webQuery = ''
-    let webSources: { title: string; url: string }[] = []
+    // ---- 流式路径(SSE) ----
+    const env = c.env
+    const encoder = new TextEncoder()
+    const { readable, writable } = new TransformStream()
+    const writer = writable.getWriter()
+    const send = (obj: unknown) => writer.write(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`))
 
-    if (assistantContent.trim().startsWith(WEB_SEARCH_TAG)) {
-      webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
-      if (webQuery) {
-        isWebSearchResponse = true
-        try {
-          const results = await withTimeout(
-            jinaSearch(c.env, webQuery),
-            30000, '联网搜索',
-          )
+    const produce = async () => {
+      try {
+        const aiStream = await withTimeout(
+          env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 512, stream: true }) as Promise<ReadableStream>,
+          60000, 'AI 生成回答',
+        )
 
-          if (results.length > 0) {
-            webSources = results.map(r => ({ title: r.title, url: r.url }))
-            const searchContext = results.map((r, i) =>
-              `[${i + 1}] ${r.title}\n来源: ${r.url}\n${r.content}`
-            ).join('\n\n')
+        let assistantContent = ''
+        let gateBuffer = ''
+        let gateDecided = false
+        let isWebSearch = false
 
-            // Second LLM call — summarize search results
-            const secondResult: any = await withTimeout(
-              c.env.AI.run(modelId as any, {
-                messages: [
-                  { role: 'system', content: WEB_SEARCH_SUMMARY_PROMPT },
-                  { role: 'user', content: `网络搜索结果:\n${searchContext}\n\n用户原始问题: ${content.trim()}` },
-                ],
-                max_tokens: 1024,
-              }),
-              60000, 'AI 总结搜索结果',
-            )
-
-            assistantContent = secondResult.response || '无法总结搜索结果'
-            if (isReasoningModel(modelId)) {
-              assistantContent = stripThinkTags(assistantContent)
-            }
-          } else {
-            assistantContent = '联网搜索未找到相关结果。'
+        // WEB_SEARCH 门控:攒够字符判断开头是不是搜索标记,再决定是否向客户端转发增量
+        const onToken = async (tok: string) => {
+          assistantContent += tok
+          if (gateDecided) {
+            if (!isWebSearch) await send({ type: 'delta', text: tok })
+            return
           }
-        } catch (e: any) {
-          logSystem(c.env, 'error', 'web_search', '联网搜索失败', { error: e.message, query: webQuery })
-          assistantContent = `联网搜索失败：${e.message}`
+          gateBuffer += tok
+          const t = gateBuffer.trimStart()
+          if (t.length >= WEB_SEARCH_TAG.length) {
+            gateDecided = true
+            isWebSearch = t.startsWith(WEB_SEARCH_TAG)
+            if (!isWebSearch) await send({ type: 'delta', text: gateBuffer })
+          } else if (t.length > 0 && !WEB_SEARCH_TAG.startsWith(t)) {
+            gateDecided = true
+            await send({ type: 'delta', text: gateBuffer })
+          }
         }
+
+        // 解析 Workers AI 返回的 SSE 字节流(data: {"response":"..."} / data: [DONE])
+        const reader = aiStream.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          const lines = buf.split('\n')
+          buf = lines.pop() ?? ''
+          for (const line of lines) {
+            const l = line.trim()
+            if (!l.startsWith('data:')) continue
+            const data = l.slice(5).trim()
+            if (data === '[DONE]') continue
+            try {
+              const j: any = JSON.parse(data)
+              if (typeof j.response === 'string' && j.response) await onToken(j.response)
+            } catch { /* 跳过无法解析的行 */ }
+          }
+        }
+
+        // 极短回复可能到结束都未触发门控判定
+        if (!gateDecided && gateBuffer) {
+          isWebSearch = gateBuffer.trimStart().startsWith(WEB_SEARCH_TAG)
+          if (!isWebSearch) await send({ type: 'delta', text: gateBuffer })
+        }
+        if (!assistantContent) {
+          assistantContent = '无法生成回答'
+          await send({ type: 'delta', text: assistantContent })
+        }
+
+        let isWebSearchResponse = false
+        let webQuery = ''
+        let webSources: { title: string; url: string }[] = []
+
+        if (isWebSearch) {
+          webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
+          if (webQuery) {
+            isWebSearchResponse = true
+            await send({ type: 'status', message: '正在联网搜索...' })
+            const r = await performWebSearch(env, modelId, webQuery, content.trim())
+            assistantContent = r.content
+            webSources = r.webSources
+            await send({ type: 'delta', text: assistantContent })
+          } else {
+            // 标记后没有关键词:按普通回复处理,把被门控扣住的内容补发给客户端
+            await send({ type: 'delta', text: assistantContent })
+          }
+        }
+
+        const payload = await persistAssistantMessage(env, {
+          conversationId, userId: user.id, userMessage, assistantContent, sources,
+          isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: content.trim(),
+        })
+        await send({ type: 'done', ...payload })
+      } catch (e: any) {
+        try { await send({ type: 'error', message: e.message }) } catch { /* 客户端可能已断开 */ }
+      } finally {
+        try { await writer.close() } catch { /* 已关闭 */ }
       }
     }
 
-    // 7. Insert assistant message
-    const assistantMsgResult = await c.env.DB.prepare(
-      'INSERT INTO messages (conversation_id, role, content, sources) VALUES (?, ?, ?, ?)'
-    ).bind(
-      conversationId,
-      'assistant',
-      assistantContent,
-      sources.length > 0 && !isWebSearchResponse ? JSON.stringify(sources) : null,
-    ).run()
+    c.executionCtx.waitUntil(produce())
 
-    const assistantMessage = await c.env.DB.prepare(
-      'SELECT * FROM messages WHERE id = ?'
-    ).bind(assistantMsgResult.meta.last_row_id).first<any>()
-
-    // 8. Auto-update title on first user message
-    let titleUpdated: string | undefined
-    const msgCount = await c.env.DB.prepare(
-      'SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND role = ?'
-    ).bind(conversationId, 'user').first<{ cnt: number }>()
-
-    if (msgCount && msgCount.cnt === 1) {
-      const newTitle = content.trim().slice(0, 50)
-      await c.env.DB.prepare(
-        'UPDATE conversations SET title = ? WHERE id = ?'
-      ).bind(newTitle, conversationId).run()
-      titleUpdated = newTitle
-    }
-
-    // 9. Fire-and-forget usage tracking
-    const action = isWebSearchResponse ? 'web_search' : 'ai_chat'
-    trackEvent(c.env, action, user.id, modelId)
-
-    // 10. Return both messages
-    return ok({
-      user_message: { ...userMessage, sources: null },
-      assistant_message: {
-        ...assistantMessage,
-        sources: assistantMessage.sources ? JSON.parse(assistantMessage.sources) : null,
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
       },
-      title_updated: titleUpdated,
-      ...(isWebSearchResponse ? { is_web_search: true, web_query: webQuery, web_sources: webSources } : {}),
     })
   } catch (e: any) {
     return err('发送消息失败: ' + e.message, 500)
