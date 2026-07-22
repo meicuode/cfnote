@@ -91,19 +91,50 @@ export default function SettingsPanel({ token, onClose }: Props) {
     }
   }
 
-  // 导入备份:上传 JSON → 合并导入 → 分批补建向量
+  // 导入备份:JSON(仅数据)或 ZIP(数据 + 附件按原 key 恢复)→ 合并导入 → 分批补建向量
   const handleImportFile = async (file: File) => {
     setImporting(true)
     setImportMsg('')
     setError('')
     try {
       let data: any
-      try { data = JSON.parse(await file.text()) } catch { throw new Error('文件不是有效的 JSON') }
+      let zip: any = null
+      if (/\.zip$/i.test(file.name)) {
+        const { default: JSZip } = await import('jszip')
+        zip = await JSZip.loadAsync(file)
+        const ej = zip.file('export.json')
+        if (!ej) throw new Error('ZIP 包中缺少 export.json，不是 CFNote 完整备份文件')
+        data = JSON.parse(await ej.async('string'))
+      } else {
+        try { data = JSON.parse(await file.text()) } catch { throw new Error('文件不是有效的 JSON') }
+      }
 
       setImportMsg('正在导入数据...')
       const res = await api.post<{ notebooks_created: number; articles_imported: number; articles_skipped: number }>('/import', data)
       if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
       const { notebooks_created, articles_imported, articles_skipped } = res.data
+
+      // 恢复附件(ZIP):按原 key 写回 R2,笔记中的链接保持有效
+      let restored = 0
+      let restoreFailed = 0
+      if (zip) {
+        const entries: any[] = []
+        zip.forEach((path: string, f: any) => { if (path.startsWith('files/') && !f.dir) entries.push(f) })
+        for (const f of entries) {
+          const key = f.name.slice('files/'.length)
+          setImportMsg(`正在恢复附件 ${restored + restoreFailed + 1}/${entries.length}...`)
+          try {
+            const r = await fetch(`/api/files/${encodeKey(key)}`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': guessMime(key) },
+              body: await f.async('arraybuffer'),
+            })
+            const j: any = await r.json().catch(() => null)
+            if (j?.ok) restored++
+            else restoreFailed++
+          } catch { restoreFailed++ }
+        }
+      }
 
       // 导入成功后由前端分批触发向量索引(每批一次独立请求,直到没有剩余)
       const vecErrors = articles_imported > 0
@@ -113,6 +144,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
       setImportMsg(
         `导入完成：新建笔记本 ${notebooks_created} 个，导入文章 ${articles_imported} 篇` +
         (articles_skipped > 0 ? `，跳过重复 ${articles_skipped} 篇` : '') +
+        (zip ? `，恢复附件 ${restored} 个` + (restoreFailed > 0 ? `（${restoreFailed} 个失败）` : '') : '') +
         (vecErrors.length > 0 ? `；${vecErrors.length} 篇索引失败，可点击下方按钮重试` : '')
       )
     } catch (e: any) {
@@ -120,6 +152,74 @@ export default function SettingsPanel({ token, onClose }: Props) {
       setImportMsg('')
     } finally {
       setImporting(false)
+    }
+  }
+
+  // ---- 附件相关工具 ----
+  const extractFileKeys = (contents: string[]): string[] => {
+    const keys = new Set<string>()
+    const re = /\/api\/files\/(u\d+\/[A-Za-z0-9]+\/[^\s)"'<>\]]+)/g
+    for (const ct of contents) {
+      let m: RegExpExecArray | null
+      re.lastIndex = 0
+      while ((m = re.exec(ct || ''))) {
+        try { keys.add(decodeURIComponent(m[1])) } catch { keys.add(m[1]) }
+      }
+    }
+    return [...keys]
+  }
+
+  const guessMime = (name: string): string => {
+    const ext = (name.split('.').pop() || '').toLowerCase()
+    const map: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+      webp: 'image/webp', svg: 'image/svg+xml', xmind: 'application/vnd.xmind.workbook',
+      pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain',
+    }
+    return map[ext] || 'application/octet-stream'
+  }
+
+  const encodeKey = (key: string) => key.split('/').map(encodeURIComponent).join('/')
+
+  // 完整备份:导出 JSON + 全部附件打包为 ZIP
+  const handleExportZip = async () => {
+    setExporting(true)
+    setError('')
+    setImportMsg('')
+    try {
+      const res = await fetch('/api/export', { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null) as any
+        throw new Error(j?.error || `导出失败 (${res.status})`)
+      }
+      const data = await res.json() as any
+      const { default: JSZip } = await import('jszip')
+      const zip = new JSZip()
+      zip.file('export.json', JSON.stringify(data, null, 2))
+
+      const keys = extractFileKeys((data.articles || []).map((a: any) => a.content || ''))
+      let packed = 0
+      let missing = 0
+      for (const key of keys) {
+        setImportMsg(`正在打包附件 ${packed + missing + 1}/${keys.length}...`)
+        const fr = await fetch(`/api/files/${encodeKey(key)}`)
+        if (!fr.ok) { missing++; continue }
+        zip.file(`files/${key}`, await fr.arrayBuffer())
+        packed++
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `cfnote-backup-${new Date().toISOString().slice(0, 10)}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+      setImportMsg(`完整备份已导出：${packed} 个附件` + (missing > 0 ? `（${missing} 个引用已失效，跳过）` : ''))
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -268,25 +368,35 @@ export default function SettingsPanel({ token, onClose }: Props) {
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">数据备份</h3>
                 <button
                   onClick={handleExport}
-                  disabled={exporting}
+                  disabled={exporting || importing}
                   className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 text-left hover:border-emerald-400 hover:bg-emerald-50 disabled:opacity-50 transition-colors flex items-center gap-2"
                 >
                   <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
-                  <span className="text-gray-700 font-medium">{exporting ? '导出中...' : '导出全部数据 (JSON)'}</span>
+                  <span className="text-gray-700 font-medium">{exporting ? '导出中...' : '导出数据 (JSON，不含附件)'}</span>
+                </button>
+                <button
+                  onClick={handleExportZip}
+                  disabled={exporting || importing}
+                  className="mt-2 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 text-left hover:border-emerald-400 hover:bg-emerald-50 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                  </svg>
+                  <span className="text-gray-700 font-medium">{exporting ? '导出中...' : '导出完整备份 (ZIP，含图片/附件)'}</span>
                 </button>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  包含全部笔记本、文章与对话记录，不含 API Key 等敏感配置。建议定期导出保存。
+                  包含全部笔记本、文章与对话记录，不含 API Key 等敏感配置。建议定期导出 ZIP 完整备份。
                 </p>
                 <label className={`mt-2 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 text-left hover:border-emerald-400 hover:bg-emerald-50 transition-colors flex items-center gap-2 cursor-pointer ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
                   <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                   </svg>
-                  <span className="text-gray-700 font-medium">{importing ? '导入中...' : '导入备份 (JSON)'}</span>
+                  <span className="text-gray-700 font-medium">{importing ? '导入中...' : '导入备份 (JSON / ZIP)'}</span>
                   <input
                     type="file"
-                    accept=".json,application/json"
+                    accept=".json,.zip,application/json,application/zip"
                     className="hidden"
                     disabled={importing}
                     onChange={(e) => {
@@ -297,7 +407,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   />
                 </label>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动建立向量索引。
+                  合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动建立向量索引。ZIP 备份会按原路径恢复附件，笔记中的引用保持有效。
                 </p>
                 <button
                   onClick={handleReindex}

@@ -59,21 +59,21 @@ files.post('/', async (c) => {
   }
 })
 
-// PUT /api/files/* - 原地覆盖已有附件(XMind 在线编辑回存用)。仅允许覆盖属于当前用户的 key。
+// PUT /api/files/* - 按指定 key 写入附件:覆盖已有文件(XMind 编辑回存),或按原 key 恢复(ZIP 备份导入)。
+// 仅允许操作属于当前用户前缀(u{id}/)的 key。
 files.put('/*', async (c) => {
   const user = c.get('user')
   if (!c.env.BUCKET) return err(NO_BUCKET_MSG, 501)
   try {
     const key = decodeURIComponent(c.req.path.replace(/^\/api\/files\//, ''))
     if (!key.startsWith(`u${user.id}/`)) return err('无权修改该文件', 403)
-    const existing = await c.env.BUCKET.head(key)
-    if (!existing) return err('文件不存在', 404)
 
     const body = await c.req.arrayBuffer()
     if (body.byteLength === 0) return err('文件为空')
     if (body.byteLength > MAX_SIZE) return err('文件超过 10MB 限制')
 
-    const contentType = c.req.header('content-type') || existing.httpMetadata?.contentType || 'application/octet-stream'
+    const existing = await c.env.BUCKET.head(key)
+    const contentType = c.req.header('content-type') || existing?.httpMetadata?.contentType || 'application/octet-stream'
     await c.env.BUCKET.put(key, body, { httpMetadata: { contentType } })
     return ok({ key, size: body.byteLength })
   } catch (e: any) {
