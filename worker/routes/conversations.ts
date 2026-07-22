@@ -25,6 +25,7 @@ const SYSTEM_PROMPT = [
   '- 如果提供了参考内容且与问题相关，以第三方视角概括，引用来源用 [1][2] 标注。',
   '- 参考内容来自用户收藏的第三方文章，其中的"我"是文章原作者，不是你。',
   '- 不要编造信息。',
+  '- 如需展示表格，输出规范的 GFM Markdown 表格（表头行 + `|---|` 分隔行，每行列数一致），不要输出 HTML 表格或逐行罗列单元格。',
   '- 用中文回答。',
 ].join('\n')
 
@@ -36,6 +37,7 @@ const WEB_SEARCH_SUMMARY_PROMPT = [
   '- 用 [1][2] 等标注引用了哪条搜索结果。',
   '- 如果搜索结果与问题无关，如实告知用户。',
   '- 不要编造信息。',
+  '- 如需展示表格，输出规范的 GFM Markdown 表格（表头行 + `|---|` 分隔行，每行列数一致），不要输出 HTML 表格或逐行罗列单元格。',
   '- 用中文回答。',
 ].join('\n')
 
@@ -140,7 +142,7 @@ async function performWebSearch(
           { role: 'system', content: WEB_SEARCH_SUMMARY_PROMPT },
           { role: 'user', content: `网络搜索结果:\n${searchContext}\n\n用户原始问题: ${originalQuestion}` },
         ],
-        max_tokens: 1024,
+        max_tokens: 2048,
       }),
       60000, 'AI 总结搜索结果',
     )
@@ -218,8 +220,7 @@ conversations.post('/:id/messages', async (c) => {
   const conversationId = Number(c.req.param('id'))
 
   try {
-    const { content, stream } = await c.req.json<{ content: string; stream?: boolean }>()
-    if (!content?.trim()) return err('消息内容不能为空')
+    const body = await c.req.json<{ content?: string; stream?: boolean; regenerate?: boolean }>()
 
     // 1. Verify conversation belongs to user
     const conversation = await c.env.DB.prepare(
@@ -228,23 +229,35 @@ conversations.post('/:id/messages', async (c) => {
 
     if (!conversation) return err('对话不存在', 404)
 
-    // 2. Insert user message + update conversation.updated_at
-    const userMsgResult = await c.env.DB.prepare(
-      'INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)'
-    ).bind(conversationId, 'user', content.trim()).run()
+    // 2. 确定触发消息:重新生成复用最后一条用户消息(并删除其后的旧回复),否则插入新消息
+    let userMessage: any
+    if (body.regenerate) {
+      userMessage = await c.env.DB.prepare(
+        "SELECT * FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1"
+      ).bind(conversationId).first<any>()
+      if (!userMessage) return err('没有可重新生成的消息')
+      await c.env.DB.prepare(
+        'DELETE FROM messages WHERE conversation_id = ? AND id > ?'
+      ).bind(conversationId, userMessage.id).run()
+    } else {
+      if (!body.content?.trim()) return err('消息内容不能为空')
+      const userMsgResult = await c.env.DB.prepare(
+        'INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)'
+      ).bind(conversationId, 'user', body.content!.trim()).run()
+      userMessage = await c.env.DB.prepare(
+        'SELECT * FROM messages WHERE id = ?'
+      ).bind(userMsgResult.meta.last_row_id).first<any>()
+    }
+    const userContent: string = userMessage.content
 
     await c.env.DB.prepare(
       "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?"
     ).bind(conversationId).run()
 
-    const userMessage = await c.env.DB.prepare(
-      'SELECT * FROM messages WHERE id = ?'
-    ).bind(userMsgResult.meta.last_row_id).first<any>()
-
     // 3. Load recent history (last 6 messages = 3 rounds)
     const historyRows = await c.env.DB.prepare(
       'SELECT role, content FROM messages WHERE conversation_id = ? AND id != ? ORDER BY created_at DESC LIMIT 6'
-    ).bind(conversationId, userMsgResult.meta.last_row_id).all()
+    ).bind(conversationId, userMessage.id).all()
 
     const history = historyRows.results.reverse().map((m: any) => ({
       role: m.role as string,
@@ -255,9 +268,9 @@ conversations.post('/:id/messages', async (c) => {
     let contextParts: string[] = []
     let sources: RagSource[] = []
 
-    const isFollowUp = content.trim().length <= 6 && history.length > 0
+    const isFollowUp = userContent.length <= 6 && history.length > 0
     if (!isFollowUp) {
-      const rag = await ragSearch(c.env, content.trim(), user.id, 5)
+      const rag = await ragSearch(c.env, userContent, user.id, 5)
       contextParts = rag.contextParts
       sources = rag.sources
     }
@@ -265,11 +278,11 @@ conversations.post('/:id/messages', async (c) => {
     // 5. Build LLM messages
     let userPrompt: string
     if (contextParts.length > 0) {
-      userPrompt = `参考内容:\n${contextParts.join('\n\n')}\n\n问题: ${content.trim()}`
+      userPrompt = `参考内容:\n${contextParts.join('\n\n')}\n\n问题: ${userContent}`
     } else if (history.length > 0) {
-      userPrompt = content.trim()
+      userPrompt = userContent
     } else {
-      userPrompt = `（知识库中未找到相关参考内容）\n\n问题: ${content.trim()}`
+      userPrompt = `（知识库中未找到相关参考内容）\n\n问题: ${userContent}`
     }
 
     const modelId = await getSettingValue(c.env, 'llm_model', DEFAULT_MODEL)
@@ -280,12 +293,12 @@ conversations.post('/:id/messages', async (c) => {
     ]
 
     // 推理模型的 <think> 标签需要完整输出后清理,不走流式
-    const wantStream = !!stream && !isReasoningModel(modelId)
+    const wantStream = !!body.stream && !isReasoningModel(modelId)
 
     // ---- 非流式路径(原有行为) ----
     if (!wantStream) {
       const firstResult: any = await withTimeout(
-        c.env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 512 }),
+        c.env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 2048 }),
         60000, 'AI 生成回答',
       )
 
@@ -302,7 +315,7 @@ conversations.post('/:id/messages', async (c) => {
         webQuery = assistantContent.trim().slice(WEB_SEARCH_TAG.length).trim()
         if (webQuery) {
           isWebSearchResponse = true
-          const r = await performWebSearch(c.env, modelId, webQuery, content.trim())
+          const r = await performWebSearch(c.env, modelId, webQuery, userContent)
           assistantContent = r.content
           webSources = r.webSources
         }
@@ -310,7 +323,7 @@ conversations.post('/:id/messages', async (c) => {
 
       const payload = await persistAssistantMessage(c.env, {
         conversationId, userId: user.id, userMessage, assistantContent, sources,
-        isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: content.trim(),
+        isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: userContent,
       })
       return ok(payload)
     }
@@ -325,7 +338,7 @@ conversations.post('/:id/messages', async (c) => {
     const produce = async () => {
       try {
         const aiStream = await withTimeout(
-          env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 512, stream: true }) as Promise<ReadableStream>,
+          env.AI.run(modelId as any, { messages: llmMessages, max_tokens: 2048, stream: true }) as Promise<ReadableStream>,
           60000, 'AI 生成回答',
         )
 
@@ -394,7 +407,7 @@ conversations.post('/:id/messages', async (c) => {
           if (webQuery) {
             isWebSearchResponse = true
             await send({ type: 'status', message: '正在联网搜索...' })
-            const r = await performWebSearch(env, modelId, webQuery, content.trim())
+            const r = await performWebSearch(env, modelId, webQuery, userContent)
             assistantContent = r.content
             webSources = r.webSources
             await send({ type: 'delta', text: assistantContent })
@@ -406,7 +419,7 @@ conversations.post('/:id/messages', async (c) => {
 
         const payload = await persistAssistantMessage(env, {
           conversationId, userId: user.id, userMessage, assistantContent, sources,
-          isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: content.trim(),
+          isWebSearch: isWebSearchResponse, webQuery, webSources, modelId, userContent: userContent,
         })
         await send({ type: 'done', ...payload })
       } catch (e: any) {

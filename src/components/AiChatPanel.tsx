@@ -19,6 +19,8 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
   const [sending, setSending] = useState(false)
   const [sendingLong, setSendingLong] = useState(false)
   const [streamingStarted, setStreamingStarted] = useState(false)
+  const [webSearching, setWebSearching] = useState(false)
+  const [copiedMsgId, setCopiedMsgId] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const sendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -88,18 +90,18 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
     }
   }
 
-  // Send message (streaming SSE with JSON fallback)
-  const sendMessage = async () => {
-    if (!input.trim() || !activeConversation || sending) return
-    const content = input.trim()
+  // Send / regenerate (streaming SSE with JSON fallback)
+  const runChat = async (opts: { content?: string; regenerate?: boolean }) => {
+    if (!activeConversation || sending) return
+    const content = opts.content ?? ''
     const convId = activeConversation.id
-    setInput('')
     setSending(true)
     setSendingLong(false)
     setStreamingStarted(false)
+    setWebSearching(false)
     sendingTimerRef.current = setTimeout(() => setSendingLong(true), 5000)
 
-    // Optimistic user message + streaming assistant placeholder
+    // 重新生成:本地先移除末尾的旧助手回复;发送:乐观插入用户消息
     const tempUserMsg: Message = {
       id: -Date.now(),
       conversation_id: convId,
@@ -109,11 +111,18 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
       created_at: new Date().toISOString(),
     }
     const tempAssistantId = -(Date.now() + 1)
-    setMessages((prev) => [...prev, tempUserMsg])
+    if (opts.regenerate) {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        return last?.role === 'assistant' ? prev.slice(0, -1) : prev
+      })
+    } else {
+      setMessages((prev) => [...prev, tempUserMsg])
+    }
 
     const applyDone = (data: SendMessageResponse) => {
       setMessages((prev) => [
-        ...prev.filter((m) => m.id !== tempUserMsg.id && m.id !== tempAssistantId),
+        ...prev.filter((m) => m.id !== tempUserMsg.id && m.id !== tempAssistantId && m.id !== data.user_message.id),
         data.user_message,
         data.assistant_message,
       ])
@@ -143,7 +152,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
       }
       setMessages((prev) => [
         ...prev.filter((m) => m.id !== tempUserMsg.id && m.id !== tempAssistantId),
-        { ...tempUserMsg, id: -(Date.now() + 3) },
+        ...(opts.regenerate ? [] : [{ ...tempUserMsg, id: -(Date.now() + 3) }]),
         errorMsg,
       ])
     }
@@ -152,7 +161,7 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
       const res = await fetch(`/api/conversations/${convId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ content, stream: true }),
+        body: JSON.stringify(opts.regenerate ? { regenerate: true, stream: true } : { content, stream: true }),
       })
 
       const ctype = res.headers.get('Content-Type') || ''
@@ -195,7 +204,8 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                 setMessages((prev) => prev.map((m) => m.id === tempAssistantId ? { ...m, content: acc } : m))
               }
             } else if (evt.type === 'status') {
-              setSendingLong(true)
+              // 真实的联网搜索状态事件(不再靠超时猜测)
+              setWebSearching(true)
               setStreamingStarted(false)
             } else if (evt.type === 'done') {
               donePayload = evt as SendMessageResponse
@@ -220,7 +230,25 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
     setSending(false)
     setSendingLong(false)
     setStreamingStarted(false)
+    setWebSearching(false)
     if (sendingTimerRef.current) { clearTimeout(sendingTimerRef.current); sendingTimerRef.current = null }
+  }
+
+  const sendMessage = async () => {
+    if (!input.trim()) return
+    const content = input.trim()
+    setInput('')
+    await runChat({ content })
+  }
+
+  const regenerateLast = () => runChat({ regenerate: true })
+
+  const copyMessage = async (msg: Message) => {
+    try {
+      await navigator.clipboard.writeText(msg.content)
+      setCopiedMsgId(msg.id)
+      setTimeout(() => setCopiedMsgId((prev) => prev === msg.id ? null : prev), 2000)
+    } catch { /* 剪贴板权限被拒 */ }
   }
 
   // Save web search result as note
@@ -277,6 +305,29 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
 
   const renderMarkdown = (text: string) => {
     return { __html: marked.parse(text) as string }
+  }
+
+  // 助手消息:把 [n] 引用渲染为可点击元素(知识库来源打开文章,联网来源打开 URL)
+  const renderAssistant = (msg: Message) => {
+    const web = webSourcesMap.get(msg.id)
+    const n = web?.length ?? msg.sources?.length ?? 0
+    let text = msg.content
+    if (n > 0) {
+      text = text.replace(/\[(\d+)\]/g, (m, d) => {
+        const i = Number(d)
+        return i >= 1 && i <= n ? `<sup class="cfnote-cite" data-cite="${i}">[${i}]</sup>` : m
+      })
+    }
+    return { __html: marked.parse(text) as string }
+  }
+
+  const handleCiteClick = (msg: Message) => (e: React.MouseEvent) => {
+    const el = (e.target as HTMLElement).closest('.cfnote-cite') as HTMLElement | null
+    if (!el) return
+    const i = Number(el.dataset.cite) - 1
+    const web = webSourcesMap.get(msg.id)
+    if (web?.[i]) { window.open(web[i].url, '_blank', 'noreferrer'); return }
+    if (msg.sources?.[i]) onOpenArticle(msg.sources[i].article_id)
   }
 
   // ---- List View ----
@@ -380,8 +431,8 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
             <p className="text-xs mt-1">基于知识库回答，或输入"搜索 xxx"联网查找</p>
           </div>
         ) : (
-          messages.map((msg) => (
-            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          messages.map((msg, idx) => (
+            <div key={msg.id} className={`group flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[85%] ${msg.role === 'user' ? 'order-1' : ''}`}>
                 {/* Web search badge */}
                 {msg.role === 'assistant' && webSearchMsgIds.has(msg.id) && (
@@ -403,12 +454,50 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
                   {msg.role === 'assistant' ? (
                     <div
                       className="cfnote-preview prose prose-sm max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-                      dangerouslySetInnerHTML={renderMarkdown(msg.content)}
+                      onClick={handleCiteClick(msg)}
+                      dangerouslySetInnerHTML={renderAssistant(msg)}
                     />
                   ) : (
                     <span className="whitespace-pre-wrap">{msg.content}</span>
                   )}
                 </div>
+
+                {/* 复制 / 重新生成(仅已落库的助手消息;重新生成只对最后一条) */}
+                {msg.role === 'assistant' && msg.id > 0 && (
+                  <div className="flex items-center gap-2 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => copyMessage(msg)}
+                      className="text-[11px] text-gray-400 hover:text-gray-600 flex items-center gap-0.5"
+                    >
+                      {copiedMsgId === msg.id ? (
+                        <>
+                          <svg className="w-3 h-3 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          已复制
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                          复制
+                        </>
+                      )}
+                    </button>
+                    {idx === messages.length - 1 && !sending && (
+                      <button
+                        onClick={regenerateLast}
+                        className="text-[11px] text-gray-400 hover:text-gray-600 flex items-center gap-0.5"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        重新生成
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {/* Sources */}
                 {msg.sources && msg.sources.length > 0 && (
@@ -513,13 +602,21 @@ export default function AiChatPanel({ token, onClose, onOpenArticle }: Props) {
         {sending && !streamingStarted && (
           <div className="flex justify-start">
             <div className="bg-gray-100 rounded-xl px-4 py-3">
-              {sendingLong ? (
+              {webSearching ? (
                 <div className="flex items-center gap-2">
                   <svg className="w-4 h-4 text-blue-500 animate-spin" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
                   <span className="text-xs text-blue-600">联网搜索中...</span>
+                </div>
+              ) : sendingLong ? (
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="text-xs text-gray-500">生成中，请稍候...</span>
                 </div>
               ) : (
                 <div className="flex items-center gap-1.5">

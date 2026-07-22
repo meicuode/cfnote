@@ -86,3 +86,12 @@
 .cfnote-preview ol { list-style: decimal; padding-left: 1.5em; margin: 0.5em 0; }
 .cfnote-preview li { margin: 0.25em 0; }
 .cfnote-preview p { margin: 0.5em 0; line-height: 1.75; }
+
+/* AI 回复中的 [n] 引用角标(点击跳转来源) */
+.cfnote-cite {
+  color: #059669;
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0 1px;
+}
+.cfnote-cite:hover { text-decoration: underline; }
