@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { marked } from '../lib/markdown'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
@@ -306,6 +306,34 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
+  // 字数(不含空白字符)与目录(H1-H4,≥2 条时预览模式显示)
+  const charCount = useMemo(() => (content || '').replace(/\s/g, '').length, [content])
+  const headings = useMemo(() => {
+    const out: { level: number; text: string }[] = []
+    let inCode = false
+    for (const line of (content || '').split('\n')) {
+      if (/^\s*```/.test(line)) { inCode = !inCode; continue }
+      if (inCode) continue
+      const m = /^(#{1,4})\s+(.+?)\s*#*\s*$/.exec(line)
+      if (m) out.push({ level: m[1].length, text: m[2].replace(/[*_`~[\]]/g, '') })
+    }
+    return out
+  }, [content])
+
+  const scrollToHeading = (h: { level: number; text: string }) => {
+    const root = previewRef.current
+    if (!root) return
+    const norm = (s: string) => s.replace(/\s/g, '')
+    for (const el of root.querySelectorAll(`h${h.level}`)) {
+      if (norm(el.textContent || '').includes(norm(h.text).slice(0, 20))) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        el.classList.add('cfnote-highlight')
+        setTimeout(() => el.classList.remove('cfnote-highlight'), 2000)
+        break
+      }
+    }
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* Top bar: mode toggle + save status */}
@@ -325,6 +353,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           </button>
         </div>
         <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-300">{charCount} 字</span>
           {article.is_vectorized ? (
             <span className="text-xs text-emerald-500 flex items-center gap-1">
               <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
@@ -414,12 +443,31 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             placeholder="开始写作... (支持 Markdown 语法)"
           />
         ) : (
-          <div
-            ref={previewRef}
-            className="cfnote-preview prose prose-sm max-w-none h-full overflow-y-auto text-gray-700"
-            onClick={handlePreviewClick}
-            dangerouslySetInnerHTML={renderMarkdown()}
-          />
+          <div className="h-full flex gap-4">
+            <div
+              ref={previewRef}
+              className="cfnote-preview prose prose-sm max-w-none h-full overflow-y-auto text-gray-700 flex-1 min-w-0"
+              onClick={handlePreviewClick}
+              dangerouslySetInnerHTML={renderMarkdown()}
+            />
+            {/* 目录(标题 ≥2 条时显示) */}
+            {headings.length >= 2 && (
+              <nav className="w-44 shrink-0 hidden lg:block overflow-y-auto border-l border-gray-100 pl-3 py-1">
+                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">目录</p>
+                {headings.map((h, i) => (
+                  <button
+                    key={`${h.text}-${i}`}
+                    onClick={() => scrollToHeading(h)}
+                    className="block w-full text-left text-xs text-gray-500 hover:text-emerald-600 py-1 truncate transition-colors"
+                    style={{ paddingLeft: (h.level - 1) * 12 }}
+                    title={h.text}
+                  >
+                    {h.text}
+                  </button>
+                ))}
+              </nav>
+            )}
+          </div>
         )}
       </div>
 
