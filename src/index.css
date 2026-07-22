@@ -5,10 +5,10 @@
   scrollbar-width: thin;
   scrollbar-color: #d1d5db transparent;
 }
-*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar { width: 4px; height: 4px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 999px; }
-*::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+*::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 999px; }
+*::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
 
 /* Markdown preview styles */
 .cfnote-preview h1 { font-size: 1.75em; font-weight: 700; margin: 1em 0 0.5em; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.3em; }
