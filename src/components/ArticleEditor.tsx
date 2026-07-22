@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { marked } from '../lib/markdown'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
+
+// 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
+const XmindViewer = lazy(() => import('./XmindViewer'))
 
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
 
@@ -135,6 +138,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   const [saved, setSaved] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [xmindFile, setXmindFile] = useState<{ url: string; name: string } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveRef = useRef(onSave)
   saveRef.current = onSave
@@ -288,6 +292,20 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
+  // 预览中点击 .xmind 附件链接:弹出全屏思维导图预览而非下载
+  const handlePreviewClick = (e: React.MouseEvent) => {
+    const a = (e.target as HTMLElement).closest('a')
+    if (!a) return
+    const href = a.getAttribute('href') || ''
+    if (/\.xmind$/i.test(href)) {
+      e.preventDefault()
+      const rawName = href.split('/').pop() || 'mindmap.xmind'
+      let fileName = rawName
+      try { fileName = decodeURIComponent(rawName) } catch { /* 保留原始名 */ }
+      setXmindFile({ url: href, name: fileName })
+    }
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* Top bar: mode toggle + save status */}
@@ -399,10 +417,22 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           <div
             ref={previewRef}
             className="cfnote-preview prose prose-sm max-w-none h-full overflow-y-auto text-gray-700"
+            onClick={handlePreviewClick}
             dangerouslySetInnerHTML={renderMarkdown()}
           />
         )}
       </div>
+
+      {/* XMind 全屏预览 */}
+      {xmindFile && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[70] bg-white/80 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <XmindViewer url={xmindFile.url} name={xmindFile.name} onClose={() => setXmindFile(null)} />
+        </Suspense>
+      )}
     </div>
   )
 }
