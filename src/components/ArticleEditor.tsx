@@ -430,7 +430,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
           </div>
         }>
-          <XmindViewer url={xmindFile.url} name={xmindFile.name} onClose={() => setXmindFile(null)} />
+          <XmindViewer url={xmindFile.url} name={xmindFile.name} token={token} onClose={() => setXmindFile(null)} />
         </Suspense>
       )}
     </div>
