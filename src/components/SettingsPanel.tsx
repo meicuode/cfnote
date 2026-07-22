@@ -74,24 +74,10 @@ export default function SettingsPanel({ token, onClose }: Props) {
       if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
       const { notebooks_created, articles_imported, articles_skipped } = res.data
 
-      // 分批补向量,直到没有剩余;若一轮后剩余不再减少(持续失败)则停止
-      let lastRemaining = Infinity
-      let vectorized = 0
-      const vecErrors: string[] = []
-      while (true) {
-        const r = await api.post<{ processed: number; remaining: number; errors: string[] }>('/reindex', {})
-        if (!r.ok || !r.data) break
-        vectorized += r.data.processed - r.data.errors.length
-        vecErrors.push(...r.data.errors)
-        if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
-        lastRemaining = r.data.remaining
-        setImportMsg(`正在重建向量索引... 剩余 ${r.data.remaining} 篇`)
-      }
-
       setImportMsg(
         `导入完成：新建笔记本 ${notebooks_created} 个，导入文章 ${articles_imported} 篇` +
         (articles_skipped > 0 ? `，跳过重复 ${articles_skipped} 篇` : '') +
-        (vecErrors.length > 0 ? `；${vecErrors.length} 篇向量化失败（可稍后重新保存文章触发）` : '')
+        (articles_imported > 0 ? '。向量索引正在后台自动重建，几分钟内生效。' : '')
       )
     } catch (e: any) {
       setError(e.message)
