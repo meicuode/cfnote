@@ -93,6 +93,15 @@ export default function Layout({ token, username, onLogout }: Props) {
     if (res.ok && res.data) setActiveArticle(res.data)
   }, [get])
 
+  // 从列表选中文章:立即用列表项(标题+摘要)切换显示,正文异步补全,不阻塞界面
+  const [articleLoading, setArticleLoading] = useState(false)
+  const openArticle = (a: Article) => {
+    if (activeArticle?.id === a.id) return
+    setActiveArticle({ ...a, content: (a as any).summary ?? '' })
+    setArticleLoading(true)
+    loadArticleDetail(a.id).finally(() => setArticleLoading(false))
+  }
+
   // 首次加载完笔记本列表后,恢复上次打开的笔记本与文章
   useEffect(() => {
     if (restoredRef.current || notebooks.length === 0) return
@@ -275,7 +284,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             articles={articles}
             activeArticle={activeArticle}
             notebookName={activeNotebook?.name}
-            onSelect={(a) => loadArticleDetail(a.id)}
+            onSelect={openArticle}
             onCreate={createArticle}
             onDelete={deleteArticle}
             onImport={() => setShowImport(true)}
@@ -284,7 +293,7 @@ export default function Layout({ token, username, onLogout }: Props) {
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} onSave={saveArticle} highlight={highlight} />
+            <ArticleEditor article={activeArticle} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">

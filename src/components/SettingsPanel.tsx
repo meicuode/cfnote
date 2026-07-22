@@ -22,6 +22,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -56,6 +58,47 @@ export default function SettingsPanel({ token, onClose }: Props) {
       setError(res.error || '保存失败')
     }
     setSaving(false)
+  }
+
+  // 导入备份:上传 JSON → 合并导入 → 分批补建向量
+  const handleImportFile = async (file: File) => {
+    setImporting(true)
+    setImportMsg('')
+    setError('')
+    try {
+      let data: any
+      try { data = JSON.parse(await file.text()) } catch { throw new Error('文件不是有效的 JSON') }
+
+      setImportMsg('正在导入数据...')
+      const res = await api.post<{ notebooks_created: number; articles_imported: number; articles_skipped: number }>('/import', data)
+      if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
+      const { notebooks_created, articles_imported, articles_skipped } = res.data
+
+      // 分批补向量,直到没有剩余;若一轮后剩余不再减少(持续失败)则停止
+      let lastRemaining = Infinity
+      let vectorized = 0
+      const vecErrors: string[] = []
+      while (true) {
+        const r = await api.post<{ processed: number; remaining: number; errors: string[] }>('/reindex', {})
+        if (!r.ok || !r.data) break
+        vectorized += r.data.processed - r.data.errors.length
+        vecErrors.push(...r.data.errors)
+        if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
+        lastRemaining = r.data.remaining
+        setImportMsg(`正在重建向量索引... 剩余 ${r.data.remaining} 篇`)
+      }
+
+      setImportMsg(
+        `导入完成：新建笔记本 ${notebooks_created} 个，导入文章 ${articles_imported} 篇` +
+        (articles_skipped > 0 ? `，跳过重复 ${articles_skipped} 篇` : '') +
+        (vecErrors.length > 0 ? `；${vecErrors.length} 篇向量化失败（可稍后重新保存文章触发）` : '')
+      )
+    } catch (e: any) {
+      setError(e.message)
+      setImportMsg('')
+    } finally {
+      setImporting(false)
+    }
   }
 
   const handleExport = async () => {
@@ -214,6 +257,27 @@ export default function SettingsPanel({ token, onClose }: Props) {
                 <p className="text-[11px] text-gray-400 mt-1">
                   包含全部笔记本、文章与对话记录，不含 API Key 等敏感配置。建议定期导出保存。
                 </p>
+                <label className={`mt-2 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 text-left hover:border-emerald-400 hover:bg-emerald-50 transition-colors flex items-center gap-2 cursor-pointer ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  <span className="text-gray-700 font-medium">{importing ? '导入中...' : '导入备份 (JSON)'}</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    className="hidden"
+                    disabled={importing}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      e.target.value = ''
+                      if (f) handleImportFile(f)
+                    }}
+                  />
+                </label>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动重建向量索引。
+                </p>
+                {importMsg && <p className="text-xs text-emerald-600 mt-2">{importMsg}</p>}
               </div>
             </>
           )}

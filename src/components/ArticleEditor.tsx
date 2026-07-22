@@ -9,6 +9,7 @@ interface Props {
   article: Article
   onSave: (id: number, data: { title?: string; content?: string }) => Promise<any>
   highlight?: { text: string; ts: number } | null
+  loadingContent?: boolean
 }
 
 // ---- Markdown insertion helper ----
@@ -125,7 +126,7 @@ function ToolbarIcon({ k }: { k: string }) {
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, onSave, highlight }: Props) {
+export default function ArticleEditor({ article, onSave, highlight, loadingContent }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
@@ -160,11 +161,13 @@ export default function ArticleEditor({ article, onSave, highlight }: Props) {
     return () => clearTimeout(t)
   }, [highlight?.ts, article.id])
 
+  // 切换文章立即重置;完整正文异步到达时(loadingContent 翻转)再同步一次。
+  // 加载期间编辑器只读,不存在本地修改被覆盖的问题。
   useEffect(() => {
     setTitle(article.title)
     setContent(article.content)
     setSaved(true)
-  }, [article.id])
+  }, [article.id, loadingContent])
 
   useEffect(() => {
     const changed = title !== article.title || content !== article.content
@@ -257,7 +260,7 @@ export default function ArticleEditor({ article, onSave, highlight }: Props) {
             </span>
           ) : null}
           <span className={`text-xs ${saved ? 'text-gray-400' : 'text-amber-500'}`}>
-            {saving ? '保存中...' : saved ? '已保存' : '未保存'}
+            {loadingContent ? '加载中...' : saving ? '保存中...' : saved ? '已保存' : '未保存'}
           </span>
           <button
             onClick={handleSave}
@@ -307,6 +310,7 @@ export default function ArticleEditor({ article, onSave, highlight }: Props) {
           <textarea
             ref={textareaRef}
             value={content}
+            readOnly={loadingContent}
             onChange={(e) => setContent(e.target.value)}
             onPaste={handlePaste}
             className="w-full h-full resize-none border-none outline-none text-gray-700 leading-relaxed text-[15px] font-mono bg-transparent placeholder:text-gray-300"

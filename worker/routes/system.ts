@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { ok, err, isAllowedModel, DEFAULT_MODEL } from '../utils'
+import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
+import { vectorizeArticle } from './articles'
 import type { AppEnv } from '../types'
 
 export const system = new Hono<AppEnv>()
@@ -236,6 +237,103 @@ system.get('/export', async (c) => {
     })
   } catch (e: any) {
     return err('导出失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/import - 导入备份(JSON):合并式导入笔记本与文章。
+// 同名笔记本复用;同标题+同内容的文章跳过(可重复导入不产生重复数据)。
+// 文章先以未向量化状态入库(避免单请求内大量 AI 调用超限),由前端随后分批调用 /api/reindex 补向量。
+system.post('/import', async (c) => {
+  const user = c.get('user')
+  try {
+    const data = await c.req.json<any>()
+    if (data?.app !== 'cfnote' || !Array.isArray(data.notebooks) || !Array.isArray(data.articles)) {
+      return err('文件格式不正确：请选择 CFNote 导出的 JSON 备份文件')
+    }
+
+    // 1. 笔记本:同名复用,否则创建(单条 batch 完成全部插入)
+    const { results: existingNbs } = await c.env.DB.prepare(
+      'SELECT id, name FROM notebooks WHERE user_id = ?'
+    ).bind(user.id).all<{ id: number; name: string }>()
+    const nbByName = new Map(existingNbs.map((n) => [n.name, n.id]))
+
+    const nbMap = new Map<number, number>() // 备份中的 id -> 本库 id
+    const toCreate: { oldId: number; name: string }[] = []
+    for (const nb of data.notebooks) {
+      if (typeof nb?.name !== 'string' || !nb.name) continue
+      const existed = nbByName.get(nb.name)
+      if (existed) nbMap.set(nb.id, existed)
+      else toCreate.push({ oldId: nb.id, name: nb.name })
+    }
+    if (toCreate.length > 0) {
+      const created = await c.env.DB.batch(toCreate.map((nb) =>
+        c.env.DB.prepare('INSERT INTO notebooks (user_id, name) VALUES (?, ?)').bind(user.id, nb.name)
+      ))
+      created.forEach((r, i) => nbMap.set(toCreate[i].oldId, r.meta.last_row_id as number))
+    }
+
+    // 2. 文章:按 标题+内容哈希 去重后批量插入(未向量化)
+    const { results: existingArts } = await c.env.DB.prepare(
+      'SELECT title, content_hash FROM articles WHERE user_id = ?'
+    ).bind(user.id).all<{ title: string; content_hash: string }>()
+    const existingKeys = new Set(existingArts.map((a) => `${a.title} ${a.content_hash}`))
+
+    const inserts: D1PreparedStatement[] = []
+    let skipped = 0
+    for (const a of data.articles) {
+      const nbId = nbMap.get(a?.notebook_id)
+      if (!nbId || typeof a?.title !== 'string' || !a.title) { skipped++; continue }
+      const content = typeof a.content === 'string' ? a.content : ''
+      const hash = await contentHash(content)
+      const key = `${a.title} ${hash}`
+      if (existingKeys.has(key)) { skipped++; continue }
+      existingKeys.add(key)
+      inserts.push(c.env.DB.prepare(
+        'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized) VALUES (?, ?, ?, ?, ?, 0)'
+      ).bind(nbId, user.id, a.title, content, hash))
+    }
+    if (inserts.length > 0) {
+      await c.env.DB.batch(inserts)
+      await c.env.DB.prepare(
+        "UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = notebooks.id), updated_at = datetime('now') WHERE user_id = ?"
+      ).bind(user.id).run()
+    }
+
+    logSystem(c.env, 'info', 'import', '备份导入完成', {
+      notebooks_created: toCreate.length, articles_imported: inserts.length, articles_skipped: skipped,
+    })
+    return ok({
+      notebooks_created: toCreate.length,
+      articles_imported: inserts.length,
+      articles_skipped: skipped,
+    })
+  } catch (e: any) {
+    return err('导入失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/reindex - 为未向量化的文章补建向量,每次最多处理 3 篇,返回剩余数量。
+// 前端循环调用直到 remaining 为 0(每篇一次嵌入调用,分批避免超单请求限制)。
+system.post('/reindex', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      "SELECT id, notebook_id, title, content FROM articles WHERE user_id = ? AND is_vectorized = 0 AND TRIM(content) != '' ORDER BY id LIMIT 3"
+    ).bind(user.id).all<{ id: number; notebook_id: number; title: string; content: string }>()
+
+    const errors: string[] = []
+    for (const a of results) {
+      const e = await vectorizeArticle(c.env, a.id, user.id, a.notebook_id, a.title, a.content)
+      if (e) errors.push(`《${a.title}》: ${e}`)
+    }
+
+    const remaining = await c.env.DB.prepare(
+      "SELECT COUNT(*) as cnt FROM articles WHERE user_id = ? AND is_vectorized = 0 AND TRIM(content) != ''"
+    ).bind(user.id).first<{ cnt: number }>()
+
+    return ok({ processed: results.length, remaining: remaining?.cnt ?? 0, errors })
+  } catch (e: any) {
+    return err('重建向量失败: ' + e.message, 500)
   }
 })
 

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { err, getUser } from './utils'
 import { runScheduledArchive } from './archive'
+import { vectorizeBacklog } from './routes/articles'
 import { system } from './routes/system'
 import { auth } from './routes/auth'
 import { notebooks } from './routes/notebooks'
@@ -44,5 +45,6 @@ export default {
   fetch: (request, env, ctx) => app.fetch(request, env, ctx),
   scheduled: (_event, env, ctx) => {
     ctx.waitUntil(runScheduledArchive(env))
+    ctx.waitUntil(vectorizeBacklog(env).catch(() => {}))
   },
 } satisfies ExportedHandler<Env>
