@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import JSZip from 'jszip'
 import MindMap from 'simple-mind-map'
+import Drag from 'simple-mind-map/src/plugins/Drag.js'
 import ConfirmDialog from './ConfirmDialog'
+
+// 拖拽节点调整层级/顺序(编辑模式)
+MindMap.usePlugin(Drag)
 
 interface Props {
   url: string
@@ -232,7 +236,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
 
         {editMode && (
           <span className="hidden md:inline text-[11px] text-gray-400 mr-1">
-            双击编辑文本 · Tab 子节点 · Enter 同级节点 · Delete 删除
+            双击编辑文本 · Tab 子节点 · Enter 同级节点 · Delete 删除 · 拖拽移动节点
           </span>
         )}
         {error && <span className="text-xs text-red-500 truncate max-w-[220px]" title={error}>{error}</span>}

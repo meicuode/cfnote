@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err } from '../utils'
+import { deleteAttachmentsOf } from './files'
 import type { AppEnv } from '../types'
 
 export const notebooks = new Hono<AppEnv>()
@@ -79,6 +80,12 @@ notebooks.delete('/:id', async (c) => {
         await c.env.VECTORIZE.deleteByIds(vectorIds.slice(i, i + 100))
       }
     }
+
+    // 同步清理笔记本内所有文章引用的 R2 附件
+    const { results: arts } = await c.env.DB.prepare(
+      'SELECT content FROM articles WHERE notebook_id = ?'
+    ).bind(id).all<{ content: string }>()
+    await deleteAttachmentsOf(c.env, user.id, arts.map((a) => a.content || ''))
 
     // D1 cascade will handle articles and chunks
     await c.env.DB.prepare('DELETE FROM notebooks WHERE id = ?').bind(id).run()

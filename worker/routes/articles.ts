@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
+import { deleteAttachmentsOf } from './files'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -183,6 +184,9 @@ articles.delete('/:id', async (c) => {
     if (chunks.length > 0 && c.env.VECTORIZE) {
       try { await c.env.VECTORIZE.deleteByIds(chunks.map((ch) => ch.vector_id)) } catch {}
     }
+
+    // 同步清理文中引用的 R2 附件
+    await deleteAttachmentsOf(c.env, user.id, [article.content || ''])
 
     await c.env.DB.prepare('DELETE FROM articles WHERE id = ?').bind(id).run()
     await c.env.DB.prepare(

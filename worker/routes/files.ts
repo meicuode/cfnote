@@ -8,6 +8,27 @@ const MAX_SIZE = 10 * 1024 * 1024 // 10MB
 
 const NO_BUCKET_MSG = '未配置附件存储：请在 Cloudflare Dashboard 开通 R2 并创建名为 cfnote-files 的桶，然后重新部署'
 
+// 从文章 Markdown 中提取当前用户的附件 key(/api/files/u{id}/<rand>/<name>),用于删除文章时同步清理 R2
+export function extractFileKeys(content: string, userId: number): string[] {
+  const keys = new Set<string>()
+  const re = /\/api\/files\/(u(\d+)\/[A-Za-z0-9]+\/[^\s)"'<>\]]+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content || ''))) {
+    if (Number(m[2]) !== userId) continue
+    try { keys.add(decodeURIComponent(m[1])) } catch { keys.add(m[1]) }
+  }
+  return [...keys]
+}
+
+// 删除一批文章内容所引用的附件(失败静默:附件 key 不可枚举,残留只占容量不泄露)
+export async function deleteAttachmentsOf(env: AppEnv['Bindings'], userId: number, contents: string[]): Promise<void> {
+  if (!env.BUCKET) return
+  const keys = [...new Set(contents.flatMap((ct) => extractFileKeys(ct, userId)))]
+  for (let i = 0; i < keys.length; i += 500) {
+    try { await env.BUCKET.delete(keys.slice(i, i + 500)) } catch { /* 静默 */ }
+  }
+}
+
 // POST /api/files - 上传附件。请求体为文件原始字节,x-filename 头传 URL 编码的文件名。
 // key 含 32 位随机段(不可猜测),因此下载接口可免登录访问(用于 <img> 直接引用)。
 files.post('/', async (c) => {

@@ -2,6 +2,7 @@
 declare module 'simple-mind-map' {
   export default class MindMap {
     constructor(options: Record<string, unknown>)
+    static usePlugin(plugin: unknown): void
     view?: { fit: () => void }
     getData(withConfig?: boolean): any
     setData(data: any): void
@@ -10,4 +11,9 @@ declare module 'simple-mind-map' {
     off(event: string, handler: (...args: any[]) => void): void
     destroy(): void
   }
+}
+
+declare module 'simple-mind-map/src/plugins/Drag.js' {
+  const Drag: unknown
+  export default Drag
 }
