@@ -22,6 +22,7 @@ interface Props {
   name: string
   token: string
   onClose: () => void
+  onSaved?: () => void
 }
 
 interface MenuState {
@@ -38,11 +39,11 @@ interface MenuState {
 const clampX = (x: number, w: number) => Math.max(8, Math.min(x, window.innerWidth - w - 8))
 const clampY = (y: number, h: number) => Math.max(8, Math.min(y, window.innerHeight - h - 8))
 
-// 全屏预览/编辑 .xmind:兼容 XMind 8(XML)与 Zen/2020+(JSON),多画布;
+// 窗口化预览/编辑 .xmind(默认占屏约 80%,可切全屏):兼容 XMind 8(XML)与 Zen/2020+(JSON),多画布;
 // 编辑能力:文本/层级/拖拽 + 右键菜单(备注/超链接/图片/图标/增删节点);
 // 保存以 Zen 格式原地覆盖 R2 中的文件,未变更的富属性保持原样(XMind 8 来源会转存为新版格式)。
 // 解析/保存/资源管理的纯逻辑在 src/lib/xmind.ts(tests/xmind.test.ts 覆盖)。
-export default function XmindViewer({ url, name, token, onClose }: Props) {
+export default function XmindViewer({ url, name, token, onClose, onSaved }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mindMapRef = useRef<MindMap | null>(null)
   const originalZenRef = useRef<any>(null) // 原始 content.json(保留主题/样式等未知字段)
@@ -54,6 +55,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
   const [sheets, setSheets] = useState<Sheet[]>([])
   const [active, setActive] = useState(0)
   const [editMode, setEditMode] = useState(false)
+  const [fullscreen, setFullscreen] = useState(false)
   const [edited, setEdited] = useState(false)
   const [saving, setSaving] = useState(false)
   const [savedTip, setSavedTip] = useState(false)
@@ -253,6 +255,28 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
     return () => window.removeEventListener('paste', handler)
   }, [editMode])
 
+  // 窗口/全屏尺寸变化时让画布重新适配容器
+  useEffect(() => {
+    const mm = mindMapRef.current as any
+    if (!mm) return
+    const t = setTimeout(() => {
+      try { mm.resize?.(); mm.view?.fit() } catch { /* 实例已销毁 */ }
+    }, 60)
+    return () => clearTimeout(t)
+  }, [fullscreen])
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onResize = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        try { (mindMapRef.current as any)?.resize?.() } catch { /* */ }
+      }, 200)
+    }
+    window.addEventListener('resize', onResize)
+    return () => { clearTimeout(timer); window.removeEventListener('resize', onResize) }
+  }, [])
+
   const switchSheet = (i: number) => {
     if (i === active) return
     closeOverlays()
@@ -373,6 +397,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
       originalZenRef.current = json
       setEdited(false)
       setSavedTip(true)
+      onSaved?.()
       setTimeout(() => setSavedTip(false), 2000)
     } catch (e: any) {
       setError(e.message)
@@ -388,7 +413,15 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
   const pickerIcons: string[] = pickerNode?.nodeData?.data?.icon || []
 
   return (
-    <div className="fixed inset-0 z-[70] bg-white flex flex-col">
+    <div
+      className={`fixed inset-0 z-[70] ${fullscreen ? 'bg-white' : 'bg-black/50 flex items-center justify-center p-4 md:p-6'}`}
+      onMouseDown={fullscreen ? undefined : (e) => { if (e.target === e.currentTarget) requestClose() }}
+    >
+      <div
+        className={`bg-white flex flex-col overflow-hidden ${
+          fullscreen ? 'w-full h-full' : 'w-[86vw] max-w-[1400px] h-[80vh] rounded-2xl shadow-2xl border border-gray-200'
+        }`}
+      >
       {/* Header */}
       <div className="h-12 border-b border-gray-200 flex items-center px-4 shrink-0 gap-2">
         <svg className="w-5 h-5 text-emerald-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -450,6 +483,21 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
           </button>
         )}
         <button
+          onClick={() => setFullscreen((f) => !f)}
+          className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-emerald-600 transition-colors"
+          title={fullscreen ? '退出全屏' : '全屏'}
+        >
+          {fullscreen ? (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 4v3a2 2 0 01-2 2H4m16 0h-3a2 2 0 01-2-2V4m0 16v-3a2 2 0 012-2h3M4 15h3a2 2 0 012 2v3" />
+            </svg>
+          ) : (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V5a1 1 0 011-1h3m8 0h3a1 1 0 011 1v3m0 8v3a1 1 0 01-1 1h-3m-8 0H5a1 1 0 01-1-1v-3" />
+            </svg>
+          )}
+        </button>
+        <button
           onClick={() => mindMapRef.current?.view?.fit()}
           className="text-xs text-gray-500 hover:text-emerald-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors"
           title="适应窗口"
@@ -504,6 +552,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
           ))}
         </div>
       )}
+      </div>
 
       {/* 右键菜单 */}
       {menu && (

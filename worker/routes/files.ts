@@ -44,7 +44,10 @@ files.post('/', async (c) => {
     const rand = crypto.randomUUID().replace(/-/g, '')
     const safeName = filename.replace(/[^\w.\-一-龥]/g, '_').slice(-80) || 'file'
     const key = `u${user.id}/${rand}/${safeName}`
-    await c.env.BUCKET.put(key, body, { httpMetadata: { contentType } })
+    await c.env.BUCKET.put(key, body, {
+      httpMetadata: { contentType },
+      customMetadata: { created: new Date().toISOString() },
+    })
 
     trackEvent(c.env, 'upload', user.id)
     return ok({
@@ -74,7 +77,9 @@ files.put('/*', async (c) => {
 
     const existing = await c.env.BUCKET.head(key)
     const contentType = c.req.header('content-type') || existing?.httpMetadata?.contentType || 'application/octet-stream'
-    await c.env.BUCKET.put(key, body, { httpMetadata: { contentType } })
+    // 覆盖写入时保留首次上传时间(创建时间);全新 key 则记为现在
+    const created = existing?.customMetadata?.created || new Date().toISOString()
+    await c.env.BUCKET.put(key, body, { httpMetadata: { contentType }, customMetadata: { created } })
     return ok({ key, size: body.byteLength })
   } catch (e: any) {
     return err('保存失败: ' + e.message, 500)
@@ -93,7 +98,10 @@ files.on('HEAD', '/*', async (c) => {
     const headers = new Headers()
     obj.writeHttpMetadata(headers as any)
     headers.set('Content-Length', String(obj.size))
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    headers.set('Last-Modified', obj.uploaded.toUTCString())
+    if (obj.customMetadata?.created) headers.set('x-created', obj.customMetadata.created)
+    // 元信息随覆盖保存变化(大小/修改时间),只做短缓存,与 GET 的 immutable 不同
+    headers.set('Cache-Control', 'public, max-age=60')
     headers.set('etag', obj.httpEtag)
     return new Response(null, { headers })
   } catch (e: any) {

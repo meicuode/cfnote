@@ -117,7 +117,11 @@
   100% { background: transparent; }
 }
 
-/* XMind 附件缩略图卡片(预览中,点击打开全屏查看) */
+/* 预览内图片可点击放大 */
+.cfnote-preview img { cursor: zoom-in; }
+.cfnote-preview a.cfnote-xmind-card img { cursor: pointer; }
+
+/* XMind 附件缩略图卡片(预览中,点击打开查看器) */
 .cfnote-preview a.cfnote-xmind-card {
   display: inline-block;
   border: 1px solid #e5e7eb;

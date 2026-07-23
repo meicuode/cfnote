@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { marked } from '../lib/markdown'
-import { formatBytes } from '../lib/format'
+import { formatBytes, formatDateTime } from '../lib/format'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
 
@@ -140,6 +140,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [xmindFile, setXmindFile] = useState<{ url: string; name: string } | null>(null)
+  const [lightbox, setLightbox] = useState<string | null>(null)
+  const xmindSavedRef = useRef(false) // 查看器内是否保存过(决定关闭时是否刷新缩略图)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveRef = useRef(onSave)
   saveRef.current = onSave
@@ -321,21 +323,23 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
-  // 预览中把 .xmind 链接升级为卡片:有缩略图显示缩略图,没有则显示固定尺寸占位图
-  // 标明这是 XMind 文件;标签行经 HEAD 请求附带文件大小(失败静默不展示)
-  useEffect(() => {
-    if (mode !== 'preview') return
+  // 把预览里的 .xmind 链接升级为卡片:有缩略图显示缩略图,没有则显示固定尺寸占位图;
+  // 悬浮显示大小/创建/修改时间(HEAD 元信息,失败静默)。幂等,可反复调用。
+  const upgradeXmindCards = useCallback(() => {
     const root = previewRef.current
     if (!root) return
     for (const a of Array.from(root.querySelectorAll('a'))) {
       const href = a.getAttribute('href') || ''
       if (!/\.xmind$/i.test(href) || (a as HTMLElement).dataset.xmindCard) continue
-      ;(a as HTMLElement).dataset.xmindCard = '1'
-      const label = (a.textContent || 'XMind').replace(/^📎\s*/, '')
+      const el = a as HTMLElement
+      el.dataset.xmindCard = '1'
+      const label = el.dataset.xmindLabel || (a.textContent || 'XMind').replace(/^📎\s*/, '')
+      el.dataset.xmindLabel = label
       a.classList.add('cfnote-xmind-card')
       a.textContent = ''
       const img = document.createElement('img')
-      img.src = `${href}.thumb.png`
+      // thumbV:xmind 编辑保存后设置,绕过缩略图的 immutable 强缓存取新图
+      img.src = `${href}.thumb.png${el.dataset.thumbV ? `?v=${el.dataset.thumbV}` : ''}`
       img.loading = 'lazy'
       img.alt = ''
       img.onerror = () => {
@@ -350,16 +354,50 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       a.appendChild(span)
       fetch(href, { method: 'HEAD' })
         .then((r) => {
+          if (!r.ok) return
           const size = Number(r.headers.get('content-length'))
-          if (r.ok && size > 0 && span.isConnected) span.textContent = `🧠 ${label} · ${formatBytes(size)}`
+          const created = r.headers.get('x-created')
+          const modified = r.headers.get('last-modified')
+          if (size > 0 && span.isConnected) span.textContent = `🧠 ${label} · ${formatBytes(size)}`
+          a.title = [
+            label,
+            size > 0 ? `大小：${formatBytes(size)}` : '',
+            created ? `创建：${formatDateTime(created)}` : '',
+            modified ? `修改：${formatDateTime(modified)}` : '',
+          ].filter(Boolean).join('\n')
         })
         .catch(() => {})
     }
-  }, [content, mode])
+  }, [])
 
-  // 预览中点击 .xmind 附件链接:弹出全屏思维导图预览而非下载
+  // 预览 DOM 任何变化(含 React 重设 innerHTML)后都重建卡片,避免注入的卡片被冲掉
+  useEffect(() => {
+    if (mode !== 'preview') return
+    upgradeXmindCards()
+    const root = previewRef.current
+    if (!root) return
+    const mo = new MutationObserver(() => upgradeXmindCards())
+    mo.observe(root, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [content, mode, upgradeXmindCards])
+
+  // Esc 关闭图片放大预览
+  useEffect(() => {
+    if (!lightbox) return
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [lightbox])
+
+  // 预览点击:图片弹出放大预览;.xmind 附件链接弹出思维导图查看器(而非下载)
   const handlePreviewClick = (e: React.MouseEvent) => {
-    const a = (e.target as HTMLElement).closest('a')
+    const target = e.target as HTMLElement
+    if (target.tagName === 'IMG' && !target.closest('a.cfnote-xmind-card')) {
+      e.preventDefault()
+      setLightbox((target as HTMLImageElement).src)
+      return
+    }
+    const a = target.closest('a')
     if (!a) return
     const href = a.getAttribute('href') || ''
     if (/\.xmind$/i.test(href)) {
@@ -367,9 +405,28 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       const rawName = href.split('/').pop() || 'mindmap.xmind'
       let fileName = rawName
       try { fileName = decodeURIComponent(rawName) } catch { /* 保留原始名 */ }
+      xmindSavedRef.current = false
       setXmindFile({ url: href, name: fileName })
     }
   }
+
+  // 关闭 xmind 查看器:若期间保存过,给对应卡片打上版本号重建,取到最新缩略图
+  const closeXmind = useCallback(() => {
+    const saved = xmindSavedRef.current
+    const href = xmindFile?.url
+    setXmindFile(null)
+    if (!saved || !href) return
+    const root = previewRef.current
+    if (!root) return
+    for (const a of Array.from(root.querySelectorAll('a[data-xmind-card]'))) {
+      if ((a.getAttribute('href') || '') !== href) continue
+      const el = a as HTMLElement
+      el.dataset.thumbV = String(Date.now())
+      delete el.dataset.xmindCard
+      a.textContent = `📎 ${el.dataset.xmindLabel || 'XMind'}`
+    }
+    upgradeXmindCards()
+  }, [xmindFile, upgradeXmindCards])
 
   // 字数(不含空白字符)与目录(H1-H4,≥2 条时预览模式显示)
   const charCount = useMemo(() => (content || '').replace(/\s/g, '').length, [content])
@@ -536,15 +593,41 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         )}
       </div>
 
-      {/* XMind 全屏预览 */}
+      {/* XMind 弹窗预览 */}
       {xmindFile && (
         <Suspense fallback={
           <div className="fixed inset-0 z-[70] bg-white/80 flex items-center justify-center">
             <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
           </div>
         }>
-          <XmindViewer url={xmindFile.url} name={xmindFile.name} token={token} onClose={() => setXmindFile(null)} />
+          <XmindViewer
+            url={xmindFile.url}
+            name={xmindFile.name}
+            token={token}
+            onClose={closeXmind}
+            onSaved={() => { xmindSavedRef.current = true }}
+          />
         </Suspense>
+      )}
+
+      {/* 图片放大预览 */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            className="max-w-[92vw] max-h-[92vh] object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+            alt="图片预览"
+          />
+          <button className="absolute top-4 right-4 text-white/80 hover:text-white p-2" onClick={() => setLightbox(null)}>
+            <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       )}
     </div>
   )

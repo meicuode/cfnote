@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatBytes } from '../src/lib/format'
+import { formatBytes, formatDateTime } from '../src/lib/format'
 
 describe('formatBytes', () => {
   it('字节/KB/MB 分档,KB 小于 10 保留一位小数', () => {
@@ -12,5 +12,14 @@ describe('formatBytes', () => {
     expect(formatBytes(123 * 1024)).toBe('123 KB')
     expect(formatBytes(1024 * 1024)).toBe('1.0 MB')
     expect(formatBytes(9.6 * 1024 * 1024)).toBe('9.6 MB')
+  })
+})
+
+describe('formatDateTime', () => {
+  it('输出本地 YYYY-MM-DD HH:mm,非法输入返回空串', () => {
+    // 用本地时间构造,断言与时区无关
+    expect(formatDateTime(new Date(2026, 6, 23, 9, 5))).toBe('2026-07-23 09:05')
+    expect(formatDateTime(new Date(2026, 11, 1, 23, 59))).toBe('2026-12-01 23:59')
+    expect(formatDateTime('not a date')).toBe('')
   })
 })

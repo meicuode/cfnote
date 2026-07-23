@@ -8,3 +8,11 @@ export function formatBytes(n: number): string {
   }
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
+
+// 时间 → 本地 "YYYY-MM-DD HH:mm"(附件悬浮信息等处展示)
+export function formatDateTime(input: string | number | Date): string {
+  const d = new Date(input)
+  if (isNaN(d.getTime())) return ''
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}

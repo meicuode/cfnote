@@ -9,6 +9,7 @@ declare module 'simple-mind-map' {
     setData(data: any): void
     setMode(mode: 'readonly' | 'edit'): void
     execCommand(name: string, ...args: any[]): void
+    resize(): void
     export(type: string, isDownload?: boolean, name?: string): Promise<string>
     on(event: string, handler: (...args: any[]) => void): void
     off(event: string, handler: (...args: any[]) => void): void
