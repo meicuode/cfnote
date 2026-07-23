@@ -8,7 +8,72 @@ import { Markdown } from 'tiptap-markdown'
 // 硬约束:持久化是标准 Markdown;图片尺寸用内嵌 HTML <img width>(CommonMark Raw HTML)。
 
 // 图片:有宽高时序列化为标准 <img>(与预览拖拽调宽的产物一致),无宽高保持 ![alt](src)
+// NodeView 提供右下角拖拽调宽手柄(与预览模式同一套 .cfnote-img-wrap/.cfnote-img-handle 样式)
 const MdImage = Image.extend({
+  addNodeView() {
+    return ({ node: initialNode, editor, getPos }) => {
+      let node = initialNode
+      const wrap = document.createElement('span')
+      wrap.className = 'cfnote-img-wrap'
+      const img = document.createElement('img')
+      const sync = () => {
+        if (img.getAttribute('src') !== node.attrs.src) img.setAttribute('src', node.attrs.src || '')
+        if (node.attrs.alt) img.setAttribute('alt', node.attrs.alt)
+        else img.removeAttribute('alt')
+        if (node.attrs.title) img.setAttribute('title', node.attrs.title)
+        else img.removeAttribute('title')
+        if (node.attrs.width) img.setAttribute('width', String(node.attrs.width))
+        else img.removeAttribute('width')
+        if (node.attrs.height) img.setAttribute('height', String(node.attrs.height))
+        else img.removeAttribute('height')
+        // 上传中(blob 预览)半透明提示
+        img.style.opacity = String(node.attrs.src || '').startsWith('blob:') ? '0.6' : ''
+      }
+      sync()
+      const handle = document.createElement('b')
+      handle.className = 'cfnote-img-handle'
+      handle.contentEditable = 'false'
+      // appendChild 而非 append:后者与 workers-types 的 HTMLRewriter Element.append 全局类型冲突
+      wrap.appendChild(img)
+      wrap.appendChild(handle)
+      handle.addEventListener('mousedown', (e: MouseEvent) => {
+        if (!editor.isEditable) return
+        e.preventDefault()
+        e.stopPropagation()
+        const startX = e.clientX
+        const startW = img.getBoundingClientRect().width || Number(node.attrs.width) || 300
+        const maxW = Math.round(editor.view.dom.getBoundingClientRect().width) || 1200
+        let lastW = Math.round(startW)
+        const onMove = (ev: MouseEvent) => {
+          lastW = Math.max(80, Math.min(Math.round(startW + (ev.clientX - startX)), maxW))
+          img.style.width = `${lastW}px`
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+          img.style.width = ''
+          const pos = typeof getPos === 'function' ? getPos() : undefined
+          if (typeof pos !== 'number') return
+          const { state, dispatch } = editor.view
+          // 只写 width、清掉 height:等比缩放交给浏览器,序列化产物为 <img width>
+          dispatch(state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, width: lastW, height: null }))
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      })
+      return {
+        dom: wrap,
+        update(n) {
+          if (n.type.name !== 'image') return false
+          node = n
+          sync()
+          return true
+        },
+        // 叶子节点,DOM 完全自管(拖拽中的行内样式等),PM 无需响应内部变更
+        ignoreMutation: () => true,
+      }
+    }
+  },
   addStorage() {
     return {
       markdown: {

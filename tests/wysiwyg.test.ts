@@ -99,4 +99,43 @@ describe('WYSIWYG 往返(P6.1 验收)', () => {
     expect(decodeURIComponent(href)).toBe('/api/files/u1/k/计划.xmind')
     expect(roundtrip(out)).toBe(out)
   })
+
+  // P6.2:拖拽调宽在 mouseup 时对图片节点 setNodeMarkup({width, height: null}),
+  // 序列化产物必须是标准内嵌 HTML <img width>(与预览模式拖拽调宽的产物一致)
+  it('调宽产物:设 width 清 height 后序列化为标准 <img width>', () => {
+    const editor = new Editor({
+      extensions: buildExtensions(),
+      content: '![截图](/a.png)\n\n<img src="/b.png" alt="乙" width="500" height="400">',
+    })
+    const setWidth = (src: string, width: number) => {
+      const { state } = editor.view
+      let pos = -1
+      let attrs: Record<string, unknown> = {}
+      state.doc.descendants((n, p) => {
+        if (pos >= 0) return false
+        if (n.type.name === 'image' && n.attrs.src === src) {
+          pos = p
+          attrs = n.attrs
+          return false
+        }
+        return true
+      })
+      expect(pos).toBeGreaterThanOrEqual(0)
+      editor.view.dispatch(state.tr.setNodeMarkup(pos, undefined, { ...attrs, width, height: null }))
+    }
+    setWidth('/a.png', 300)
+    setWidth('/b.png', 260)
+    const out = (editor.storage as any).markdown.getMarkdown()
+    editor.destroy()
+    expect(out).toContain('<img src="/a.png" alt="截图" width="300">')
+    expect(out).toContain('<img src="/b.png" alt="乙" width="260">')
+    expect(out).not.toContain('height')
+  })
+
+  it('图片 NodeView 渲染出调宽手柄(jsdom 冒烟)', () => {
+    const editor = new Editor({ extensions: buildExtensions(), content: '![截图](/a.png)' })
+    const handles = editor.view.dom.querySelectorAll('.cfnote-img-wrap .cfnote-img-handle')
+    expect(handles.length).toBe(1)
+    editor.destroy()
+  })
 })

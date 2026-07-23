@@ -1,21 +1,58 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useEditor, EditorContent, useEditorState } from '@tiptap/react'
+import { useEditor, EditorContent, useEditorState, type Editor } from '@tiptap/react'
 import { buildExtensions } from '../lib/wysiwygExtensions'
+
+interface UploadedFile {
+  url: string
+  name: string
+  content_type: string
+}
 
 interface Props {
   value: string
   onChange: (md: string) => void
   readOnly?: boolean
+  /** 上传到 R2,失败抛错(与源码模式共用同一实现,10MB 限制与错误提示一致) */
+  onUploadFile?: (file: File) => Promise<UploadedFile>
+  /** 编辑器已卸载时的兜底:对父层内容字符串做函数式修补(blob 占位 → 正式 URL) */
+  onPatchContent?: (fn: (prev: string) => string) => void
+  /** 双击图片放大(复用父层 lightbox) */
+  onImagePreview?: (src: string) => void
 }
+
+// 按 src 定位图片节点:上传完成后把 blob 预览地址替换为 R2 正式地址(位置无关,用户中途编辑也能找到)
+function findImageBySrc(ed: Editor, src: string): { pos: number; node: any } | null {
+  const hits: Array<{ pos: number; node: any }> = []
+  ed.view.state.doc.descendants((n, pos) => {
+    if (hits.length) return false
+    if (n.type.name === 'image' && n.attrs.src === src) {
+      hits.push({ pos, node: n })
+      return false
+    }
+    return true
+  })
+  return hits[0] ?? null
+}
+
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // P6.1 所见即所得编辑器:TipTap + tiptap-markdown,单一事实源是父组件的 Markdown 字符串。
 // 只有用户真实编辑才回写(防抖 250ms,失焦/卸载即时 flush)——打开不动就保存,内容零 diff。
-export default function WysiwygEditor({ value, onChange, readOnly }: Props) {
+export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile, onPatchContent, onImagePreview }: Props) {
   const lastMdRef = useRef(value)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
   const [linkDialog, setLinkDialog] = useState<{ url: string } | null>(null)
+  // P6.2 上传:pending 计数驱动"上传中"指示,错误提示 5s 自动消失
+  const [pending, setPending] = useState(0)
+  const [uploadErr, setUploadErr] = useState('')
+  const uploadRef = useRef(onUploadFile)
+  uploadRef.current = onUploadFile
+  const patchRef = useRef(onPatchContent)
+  patchRef.current = onPatchContent
+  // editorProps 的 handler 在编辑器创建时固化,经 ref 调到每次渲染刷新的最新实现
+  const filesRef = useRef<(files: File[], pos?: number) => void>(() => {})
 
   const editor = useEditor({
     extensions: buildExtensions(),
@@ -24,6 +61,25 @@ export default function WysiwygEditor({ value, onChange, readOnly }: Props) {
     editorProps: {
       attributes: {
         class: 'cfnote-preview prose prose-sm max-w-none focus:outline-none cfnote-wysiwyg-content',
+      },
+      // 粘贴截图/图片文件:直传 R2(与源码模式一致);非文件粘贴走 TipTap 默认解析
+      handlePaste: (view, event) => {
+        if (!view.editable) return false
+        const imgs = Array.from(event.clipboardData?.files || []).filter((f) => f.type.startsWith('image/'))
+        if (!imgs.length) return false
+        event.preventDefault()
+        filesRef.current(imgs)
+        return true
+      },
+      // 拖入文件:在落点位置插入(图片→图片节点,其他→📎 链接);编辑器内部节点拖动(moved)不拦截
+      handleDrop: (view, event, _slice, moved) => {
+        if (moved || !view.editable) return false
+        const files = Array.from(event.dataTransfer?.files || [])
+        if (!files.length) return false
+        event.preventDefault()
+        const coords = view.posAtCoords({ left: event.clientX, top: event.clientY })
+        filesRef.current(files, coords?.pos)
+        return true
       },
     },
     onUpdate: ({ editor: ed }) => {
@@ -106,6 +162,66 @@ export default function WysiwygEditor({ value, onChange, readOnly }: Props) {
     setLinkDialog(null)
   }
 
+  // ---- P6.2 图片/附件上传 ----
+  // 图片:先用 blob 地址插入节点即时预览(NodeView 半透明提示上传中),上传成功替换为 R2 地址,
+  // 失败则移除节点并提示。若上传期间编辑器被卸载(切模式/切文章),flush 出去的内容可能带 blob
+  // 占位,此时在父层内容字符串上修补,避免落库坏链接。非图片文件上传完成后插入 📎 链接。
+  const uploadOne = useCallback(async (ed: Editor, file: File) => {
+    const upload = uploadRef.current
+    if (!upload) return
+    const isImg = file.type.startsWith('image/')
+    setUploadErr('')
+    setPending((n) => n + 1)
+    let blobUrl = ''
+    if (isImg) {
+      blobUrl = URL.createObjectURL(file)
+      ed.chain().focus().insertContent({ type: 'image', attrs: { src: blobUrl, alt: file.name || '图片' } }).run()
+    }
+    try {
+      const info = await upload(file)
+      if (!isImg) {
+        if (!ed.isDestroyed) {
+          ed.chain().focus().insertContent([
+            { type: 'text', marks: [{ type: 'link', attrs: { href: info.url } }], text: `📎 ${info.name}` },
+            { type: 'text', text: ' ' },
+          ]).run()
+        } else {
+          patchRef.current?.((prev) => prev + (prev && !prev.endsWith('\n') ? '\n' : '') + `[📎 ${info.name}](${info.url})`)
+        }
+      } else if (!ed.isDestroyed) {
+        const hit = findImageBySrc(ed, blobUrl)
+        if (hit) {
+          ed.view.dispatch(ed.view.state.tr.setNodeMarkup(hit.pos, undefined, { ...hit.node.attrs, src: info.url, alt: info.name }))
+        }
+      } else {
+        patchRef.current?.((prev) => prev.split(blobUrl).join(info.url))
+      }
+    } catch (e: any) {
+      if (isImg) {
+        if (!ed.isDestroyed) {
+          const hit = findImageBySrc(ed, blobUrl)
+          if (hit) ed.view.dispatch(ed.view.state.tr.delete(hit.pos, hit.pos + hit.node.nodeSize))
+        } else {
+          patchRef.current?.((prev) => prev.replace(new RegExp(`!\\[[^\\]]*\\]\\(${escRe(blobUrl)}\\)\\n?`), ''))
+        }
+      }
+      setUploadErr(e?.message || '上传失败')
+      setTimeout(() => setUploadErr(''), 5000)
+    } finally {
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
+      setPending((n) => n - 1)
+    }
+  }, [])
+
+  // 粘贴/拖入/工具栏统一入口;拖入带落点位置时先移动光标(多文件按调用序依次插在光标后,顺序自然保持)
+  filesRef.current = (files, pos) => {
+    if (!editor || !uploadRef.current) return
+    if (typeof pos === 'number') {
+      editor.chain().focus().setTextSelection(Math.min(pos, editor.state.doc.content.size)).run()
+    }
+    for (const f of files) void uploadOne(editor, f)
+  }
+
   if (!editor) return null
   const c = () => editor.chain().focus()
 
@@ -157,6 +273,42 @@ export default function WysiwygEditor({ value, onChange, readOnly }: Props) {
           <TBtn title="有序列表" active={st?.orderedList} onClick={() => c().toggleOrderedList().run()}>1≡</TBtn>
           <TBtn title="分割线" onClick={() => c().setHorizontalRule().run()}>—</TBtn>
           <TBtn title="插入表格" onClick={() => c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>⊞</TBtn>
+          {onUploadFile && (
+            <>
+              <Sep />
+              <label
+                title="插入图片(也可直接粘贴/拖入)"
+                className={`px-1.5 py-0.5 rounded text-xs min-w-[26px] inline-flex items-center justify-center transition-colors cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-700 ${pending ? 'opacity-50 pointer-events-none' : ''}`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <input
+                  type="file" accept="image/*" multiple className="hidden" disabled={pending > 0}
+                  onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) filesRef.current(fs) }}
+                />
+              </label>
+              <label
+                title="插入附件(任意文件,≤10MB)"
+                className={`px-1.5 py-0.5 rounded text-xs min-w-[26px] inline-flex items-center justify-center transition-colors cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-700 ${pending ? 'opacity-50 pointer-events-none' : ''}`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                </svg>
+                <input
+                  type="file" className="hidden" disabled={pending > 0}
+                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) filesRef.current([f]) }}
+                />
+              </label>
+            </>
+          )}
+          {pending > 0 && (
+            <span className="flex items-center gap-1 text-xs text-gray-400 ml-1">
+              <span className="w-3 h-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+              上传中...
+            </span>
+          )}
+          {uploadErr && <span className="text-xs text-red-500 ml-1 truncate max-w-[200px]" title={uploadErr}>{uploadErr}</span>}
           {st?.table && (
             <>
               <Sep />
@@ -170,7 +322,18 @@ export default function WysiwygEditor({ value, onChange, readOnly }: Props) {
         </div>
       )}
 
-      <EditorContent editor={editor} className="flex-1 overflow-y-auto min-h-0 cfnote-wysiwyg" />
+      <EditorContent
+        editor={editor}
+        className="flex-1 overflow-y-auto min-h-0 cfnote-wysiwyg"
+        onDoubleClick={(e) => {
+          // 双击图片放大(单击留给节点选中/调宽)
+          const t = e.target as HTMLElement
+          if (t instanceof HTMLImageElement && onImagePreview) {
+            e.preventDefault()
+            onImagePreview(t.src)
+          }
+        }}
+      />
 
       {/* 链接编辑弹窗 */}
       {linkDialog && (

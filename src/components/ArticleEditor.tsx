@@ -263,32 +263,39 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     } catch { /* 无内嵌缩略图或上传失败:卡片降级为纯文件名 */ }
   }, [token])
 
+  // 上传核心:POST /api/files,失败抛错(错误文案与限额由服务端统一);xmind 附带提取边车缩略图。
+  // 源码模式与富文本模式共用,保证 10MB 限制与错误提示完全一致。
+  const uploadFileRaw = useCallback(async (file: File) => {
+    const res = await fetch('/api/files', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': file.type || 'application/octet-stream',
+        'x-filename': encodeURIComponent(file.name),
+      },
+      body: file,
+    })
+    const j: any = await res.json()
+    if (!j.ok) throw new Error(j.error || `上传失败 (${res.status})`)
+    const info = j.data as { url: string; name: string; content_type: string }
+    if (/\.xmind$/i.test(info.name)) uploadXmindThumb(file, info.url)
+    return info
+  }, [token, uploadXmindThumb])
+
   const handleUpload = useCallback(async (file: File) => {
     setUploadError('')
     setUploading(true)
     try {
-      const res = await fetch('/api/files', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': file.type || 'application/octet-stream',
-          'x-filename': encodeURIComponent(file.name),
-        },
-        body: file,
-      })
-      const j: any = await res.json()
-      if (!j.ok) throw new Error(j.error || `上传失败 (${res.status})`)
-      const info = j.data as { url: string; name: string; content_type: string }
+      const info = await uploadFileRaw(file)
       if (info.content_type.startsWith('image/')) insertAtCursor(`![${info.name}](${info.url})`)
       else insertAtCursor(`[📎 ${info.name}](${info.url})`)
-      if (/\.xmind$/i.test(info.name)) uploadXmindThumb(file, info.url)
     } catch (e: any) {
       setUploadError(e.message)
       setTimeout(() => setUploadError(''), 5000)
     } finally {
       setUploading(false)
     }
-  }, [token, insertAtCursor, uploadXmindThumb])
+  }, [uploadFileRaw, insertAtCursor])
 
   // Handle paste: 剪贴板中的图片直接上传插入;HTML 转 Markdown
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -700,7 +707,14 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                   </div>
                 }
               >
-                <WysiwygEditor value={content} onChange={setContent} readOnly={loadingContent} />
+                <WysiwygEditor
+                  value={content}
+                  onChange={setContent}
+                  readOnly={loadingContent}
+                  onUploadFile={uploadFileRaw}
+                  onPatchContent={(fn) => setContent((prev) => fn(prev))}
+                  onImagePreview={setLightbox}
+                />
               </Suspense>
             </div>
             {tocNav}
