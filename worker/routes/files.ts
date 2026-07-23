@@ -81,6 +81,26 @@ files.put('/*', async (c) => {
   }
 })
 
+// HEAD /api/files/* - 查询附件元信息(免登录,同 GET;供前端展示文件大小,不传输内容)
+files.on('HEAD', '/*', async (c) => {
+  if (!c.env.BUCKET) return err(NO_BUCKET_MSG, 501)
+  try {
+    const key = decodeURIComponent(c.req.path.replace(/^\/api\/files\//, ''))
+    if (!key) return err('文件不存在', 404)
+    const obj = await c.env.BUCKET.head(key)
+    if (!obj) return err('文件不存在', 404)
+
+    const headers = new Headers()
+    obj.writeHttpMetadata(headers as any)
+    headers.set('Content-Length', String(obj.size))
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    headers.set('etag', obj.httpEtag)
+    return new Response(null, { headers })
+  } catch (e: any) {
+    return err('查询失败: ' + e.message, 500)
+  }
+})
+
 // GET /api/files/* - 下载附件(免登录,靠 key 中的随机段保护;强缓存,内容不可变)
 files.get('/*', async (c) => {
   if (!c.env.BUCKET) return err(NO_BUCKET_MSG, 501)

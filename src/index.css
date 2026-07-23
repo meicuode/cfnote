@@ -148,6 +148,33 @@
 .dark .cfnote-preview a.cfnote-xmind-card { border-color: #374151; background: #1a2234; }
 .dark .cfnote-preview a.cfnote-xmind-card span { color: #d1d5db; }
 
+/* 无缩略图时的默认占位图:固定尺寸,标明这是 XMind 文件 */
+.cfnote-preview a.cfnote-xmind-card .cfnote-xmind-placeholder {
+  width: 284px; /* 卡片 max-width 300px - 内边距 16px,占位时卡片撑到默认宽度 */
+  max-width: 100%;
+  height: 120px;
+  border-radius: 6px;
+  margin: 0 0 6px;
+  background: #ecfdf5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.cfnote-preview a.cfnote-xmind-card .cfnote-xmind-placeholder em {
+  font-style: normal;
+  font-size: 28px;
+  line-height: 1;
+}
+.cfnote-preview a.cfnote-xmind-card .cfnote-xmind-placeholder b {
+  font-weight: 500;
+  font-size: 12px;
+  color: #059669;
+}
+.dark .cfnote-preview a.cfnote-xmind-card .cfnote-xmind-placeholder { background: rgba(16, 185, 129, 0.08); }
+.dark .cfnote-preview a.cfnote-xmind-card .cfnote-xmind-placeholder b { color: #34d399; }
+
 /* ==== 深色模式 ====
    集中映射:本文件的未分层规则优先级高于 Tailwind 的 @layer utilities,
    因此无需在组件里逐处添加 dark: 变体,只在此维护浅色工具类 → 深色值的对照。 */

@@ -19,8 +19,8 @@ const PUBLIC_ROUTES = ['/api/status', '/api/init', '/api/auth/login', '/api/auth
 
 app.use('/api/*', async (c, next) => {
   if (PUBLIC_ROUTES.includes(c.req.path)) return next()
-  // 附件下载免登录(供 <img> 直接引用):key 含 32 位随机段,不可枚举
-  if (c.req.method === 'GET' && c.req.path.startsWith('/api/files/')) return next()
+  // 附件下载/元信息免登录(供 <img> 直接引用、卡片展示大小):key 含 32 位随机段,不可枚举
+  if ((c.req.method === 'GET' || c.req.method === 'HEAD') && c.req.path.startsWith('/api/files/')) return next()
 
   const user = await getUser(c.req.raw, c.env)
   if (!user) {

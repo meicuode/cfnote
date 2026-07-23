@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { marked } from '../lib/markdown'
+import { formatBytes } from '../lib/format'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
 
@@ -320,7 +321,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
-  // 预览中把 .xmind 链接升级为缩略图卡片(边车 .thumb.png 加载失败则只剩文件名,样式降级)
+  // 预览中把 .xmind 链接升级为卡片:有缩略图显示缩略图,没有则显示固定尺寸占位图
+  // 标明这是 XMind 文件;标签行经 HEAD 请求附带文件大小(失败静默不展示)
   useEffect(() => {
     if (mode !== 'preview') return
     const root = previewRef.current
@@ -336,11 +338,22 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       img.src = `${href}.thumb.png`
       img.loading = 'lazy'
       img.alt = ''
-      img.onerror = () => img.remove()
+      img.onerror = () => {
+        const ph = document.createElement('div')
+        ph.className = 'cfnote-xmind-placeholder'
+        ph.innerHTML = '<em>🧠</em><b>XMind 思维导图</b>'
+        img.replaceWith(ph)
+      }
       const span = document.createElement('span')
       span.textContent = `🧠 ${label}`
       a.appendChild(img)
       a.appendChild(span)
+      fetch(href, { method: 'HEAD' })
+        .then((r) => {
+          const size = Number(r.headers.get('content-length'))
+          if (r.ok && size > 0 && span.isConnected) span.textContent = `🧠 ${label} · ${formatBytes(size)}`
+        })
+        .catch(() => {})
     }
   }, [content, mode])
 
