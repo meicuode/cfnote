@@ -117,6 +117,37 @@
   100% { background: transparent; }
 }
 
+/* XMind 附件缩略图卡片(预览中,点击打开全屏查看) */
+.cfnote-preview a.cfnote-xmind-card {
+  display: inline-block;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 8px;
+  margin: 0.25em 0;
+  max-width: 300px;
+  background: #f9fafb;
+  text-decoration: none;
+  transition: border-color 0.15s ease;
+}
+.cfnote-preview a.cfnote-xmind-card:hover { border-color: #10b981; }
+.cfnote-preview a.cfnote-xmind-card img {
+  display: block;
+  width: 100%;
+  border-radius: 6px;
+  margin: 0 0 6px;
+  background: #fff;
+}
+.cfnote-preview a.cfnote-xmind-card span {
+  display: block;
+  font-size: 12px;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dark .cfnote-preview a.cfnote-xmind-card { border-color: #374151; background: #1a2234; }
+.dark .cfnote-preview a.cfnote-xmind-card span { color: #d1d5db; }
+
 /* ==== 深色模式 ====
    集中映射:本文件的未分层规则优先级高于 Tailwind 的 @layer utilities,
    因此无需在组件里逐处添加 dark: 变体,只在此维护浅色工具类 → 深色值的对照。 */

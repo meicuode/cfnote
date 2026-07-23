@@ -7,6 +7,7 @@ declare module 'simple-mind-map' {
     getData(withConfig?: boolean): any
     setData(data: any): void
     setMode(mode: 'readonly' | 'edit'): void
+    export(type: string, isDownload?: boolean, name?: string): Promise<string>
     on(event: string, handler: (...args: any[]) => void): void
     off(event: string, handler: (...args: any[]) => void): void
     destroy(): void
@@ -16,4 +17,9 @@ declare module 'simple-mind-map' {
 declare module 'simple-mind-map/src/plugins/Drag.js' {
   const Drag: unknown
   export default Drag
+}
+
+declare module 'simple-mind-map/src/plugins/Export.js' {
+  const Export: unknown
+  export default Export
 }

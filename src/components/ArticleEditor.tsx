@@ -229,6 +229,24 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     })
   }, [])
 
+  // XMind 客户端保存的文件内嵌 Thumbnails/thumbnail.png,上传时提取为边车文件(<key>.thumb.png)供卡片预览
+  const uploadXmindThumb = useCallback(async (file: File, fileUrl: string) => {
+    try {
+      const { default: JSZip } = await import('jszip')
+      const zip = await JSZip.loadAsync(file)
+      const t = zip.file('Thumbnails/thumbnail.png') || zip.file('Thumbnails/thumbnail.jpg')
+      if (!t) return
+      await fetch(`${fileUrl}.thumb.png`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': t.name.endsWith('.jpg') ? 'image/jpeg' : 'image/png',
+        },
+        body: await t.async('arraybuffer'),
+      })
+    } catch { /* 无内嵌缩略图或上传失败:卡片降级为纯文件名 */ }
+  }, [token])
+
   const handleUpload = useCallback(async (file: File) => {
     setUploadError('')
     setUploading(true)
@@ -247,13 +265,14 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       const info = j.data as { url: string; name: string; content_type: string }
       if (info.content_type.startsWith('image/')) insertAtCursor(`![${info.name}](${info.url})`)
       else insertAtCursor(`[📎 ${info.name}](${info.url})`)
+      if (/\.xmind$/i.test(info.name)) uploadXmindThumb(file, info.url)
     } catch (e: any) {
       setUploadError(e.message)
       setTimeout(() => setUploadError(''), 5000)
     } finally {
       setUploading(false)
     }
-  }, [token, insertAtCursor])
+  }, [token, insertAtCursor, uploadXmindThumb])
 
   // Handle paste: 剪贴板中的图片直接上传插入;HTML 转 Markdown
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -291,6 +310,30 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       return { __html: content }
     }
   }
+
+  // 预览中把 .xmind 链接升级为缩略图卡片(边车 .thumb.png 加载失败则只剩文件名,样式降级)
+  useEffect(() => {
+    if (mode !== 'preview') return
+    const root = previewRef.current
+    if (!root) return
+    for (const a of Array.from(root.querySelectorAll('a'))) {
+      const href = a.getAttribute('href') || ''
+      if (!/\.xmind$/i.test(href) || (a as HTMLElement).dataset.xmindCard) continue
+      ;(a as HTMLElement).dataset.xmindCard = '1'
+      const label = (a.textContent || 'XMind').replace(/^📎\s*/, '')
+      a.classList.add('cfnote-xmind-card')
+      a.textContent = ''
+      const img = document.createElement('img')
+      img.src = `${href}.thumb.png`
+      img.loading = 'lazy'
+      img.alt = ''
+      img.onerror = () => img.remove()
+      const span = document.createElement('span')
+      span.textContent = `🧠 ${label}`
+      a.appendChild(img)
+      a.appendChild(span)
+    }
+  }, [content, mode])
 
   // 预览中点击 .xmind 附件链接:弹出全屏思维导图预览而非下载
   const handlePreviewClick = (e: React.MouseEvent) => {

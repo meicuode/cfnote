@@ -2,10 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import JSZip from 'jszip'
 import MindMap from 'simple-mind-map'
 import Drag from 'simple-mind-map/src/plugins/Drag.js'
+import Export from 'simple-mind-map/src/plugins/Export.js'
 import ConfirmDialog from './ConfirmDialog'
 
-// 拖拽节点调整层级/顺序(编辑模式)
+// 拖拽节点调整层级/顺序(编辑模式);Export 用于保存时生成缩略图
 MindMap.usePlugin(Drag)
+MindMap.usePlugin(Export)
 
 interface Props {
   url: string
@@ -77,6 +79,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mindMapRef = useRef<MindMap | null>(null)
   const originalZenRef = useRef<any>(null) // 原始 content.json(保留主题/样式等未知字段)
+  const originalZipRef = useRef<JSZip | null>(null) // 原始 zip(保存时保留资源等其他条目)
   const [sheets, setSheets] = useState<Sheet[]>([])
   const [active, setActive] = useState(0)
   const [editMode, setEditMode] = useState(false)
@@ -124,6 +127,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
         if (contentJson) {
           const json = JSON.parse(await contentJson.async('string'))
           originalZenRef.current = json
+          originalZipRef.current = zip
           parsed = parseZen(json)
         } else {
           const contentXml = zip.file('content.xml')
@@ -194,10 +198,22 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
         }))
       }
 
-      const zip = new JSZip()
+      // 当前画布截图(PNG dataURL):写入 zip 内嵌缩略图 + 更新 R2 边车,失败不阻塞保存
+      let thumbBytes: Uint8Array | null = null
+      try {
+        const dataUrl: string = await (mindMapRef.current as any)?.export('png', false)
+        const b64 = dataUrl?.split(',')[1]
+        if (b64) thumbBytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))
+      } catch { /* 截图失败:保留原缩略图 */ }
+
+      // Zen 来源:基于原始 zip 重建,保留资源/元数据等其他条目;XMind 8 来源:生成全新 Zen 包
+      const zip = originalZipRef.current ?? new JSZip()
       zip.file('content.json', JSON.stringify(json))
-      zip.file('metadata.json', JSON.stringify({ creator: { name: 'cfnote' } }))
-      zip.file('manifest.json', JSON.stringify({ 'file-entries': { 'content.json': {}, 'metadata.json': {} } }))
+      if (!originalZipRef.current) {
+        zip.file('metadata.json', JSON.stringify({ creator: { name: 'cfnote' } }))
+        zip.file('manifest.json', JSON.stringify({ 'file-entries': { 'content.json': {}, 'metadata.json': {} } }))
+      }
+      if (thumbBytes) zip.file('Thumbnails/thumbnail.png', thumbBytes)
       const blob = await zip.generateAsync({ type: 'blob' })
 
       const res = await fetch(url, {
@@ -210,6 +226,15 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
       })
       const j: any = await res.json()
       if (!j.ok) throw new Error(j.error || `保存失败 (${res.status})`)
+      if (thumbBytes) {
+        // 边车缩略图供文章内卡片预览,失败静默
+        fetch(`${url}.thumb.png`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/png' },
+          body: thumbBytes as unknown as BodyInit,
+        }).catch(() => {})
+      }
+      originalZipRef.current = zip
       originalZenRef.current = json
       setEdited(false)
       setSavedTip(true)
