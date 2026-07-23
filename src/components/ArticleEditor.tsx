@@ -132,6 +132,12 @@ function ToolbarIcon({ k }: { k: string }) {
   )
 }
 
+// 移动端(触屏手机/平板)富文本降级只读:ProseMirror 在移动端 IME 下编辑不可靠,编辑走源码模式。
+// iPadOS 桌面化 UA 伪装为 Macintosh,以多触点辅助识别。
+const IS_MOBILE = typeof navigator !== 'undefined' &&
+  (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && (navigator.maxTouchPoints || 0) > 1))
+
 // ---- Component ----
 
 export default function ArticleEditor({ article, token, onSave, highlight, loadingContent }: Props) {
@@ -151,13 +157,18 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const wysiwygWrapRef = useRef<HTMLDivElement>(null)
+  const modeRef = useRef(mode)
+  modeRef.current = mode
 
-  // 来自 AI 引用/搜索的定位请求:切到预览,滚动到匹配段落并短暂高亮
+  // 来自 AI 引用/搜索的定位请求:富文本模式内直接定位(不打断编辑),其余模式切到预览定位
   useEffect(() => {
     if (!highlight) return
-    setMode('preview')
+    const inWysiwyg = modeRef.current === 'wysiwyg'
+    if (!inWysiwyg) setMode('preview')
     const t = setTimeout(() => {
-      const root = previewRef.current
+      const root = inWysiwyg
+        ? ((wysiwygWrapRef.current?.querySelector('.cfnote-wysiwyg-content') || null) as HTMLElement | null)
+        : previewRef.current
       if (!root) return
       const norm = (s: string) => s.replace(/[\s#*`>\-|~_[\]()（）,，。:：;；]/g, '')
       const needle = norm(highlight.text).slice(0, 24)
@@ -701,27 +712,32 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           />
         ) : mode === 'wysiwyg' ? (
           <div ref={wysiwygWrapRef} className="h-full flex gap-4">
-            <div className="flex-1 min-w-0 h-full">
-              <Suspense
-                fallback={
-                  <div className="h-full flex items-center justify-center">
-                    <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                  </div>
-                }
-              >
-                <WysiwygEditor
-                  value={content}
-                  onChange={setContent}
-                  readOnly={loadingContent}
-                  onUploadFile={uploadFileRaw}
-                  onPatchContent={(fn) => setContent((prev) => fn(prev))}
-                  onImagePreview={setLightbox}
-                  onOpenXmind={(url, name) => {
-                    xmindSavedRef.current = false
-                    setXmindFile({ url, name })
-                  }}
-                />
-              </Suspense>
+            <div className="flex-1 min-w-0 h-full flex flex-col">
+              {IS_MOBILE && (
+                <div className="text-[11px] text-gray-400 pb-1 shrink-0">📱 移动端富文本为只读,编辑请切换到「源码」模式</div>
+              )}
+              <div className="flex-1 min-h-0">
+                <Suspense
+                  fallback={
+                    <div className="h-full flex items-center justify-center">
+                      <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  }
+                >
+                  <WysiwygEditor
+                    value={content}
+                    onChange={setContent}
+                    readOnly={loadingContent || IS_MOBILE}
+                    onUploadFile={uploadFileRaw}
+                    onPatchContent={(fn) => setContent((prev) => fn(prev))}
+                    onImagePreview={setLightbox}
+                    onOpenXmind={(url, name) => {
+                      xmindSavedRef.current = false
+                      setXmindFile({ url, name })
+                    }}
+                  />
+                </Suspense>
+              </div>
             </div>
             {tocNav}
           </div>

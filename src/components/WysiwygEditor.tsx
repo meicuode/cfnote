@@ -129,12 +129,20 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
     }
   }, [editor])
 
-  // 外部值变化(切换文章/正文加载完成):整体替换,不触发 onUpdate
+  // 外部值变化(切换文章/正文加载完成):整体替换,不触发 onUpdate。
+  // IME 组合输入(中文拼音等)进行中不替换——那会打断组合导致丢字,组合结束后经 syncTick 重试。
+  const [syncTick, setSyncTick] = useState(0)
   useEffect(() => {
     if (!editor || value === lastMdRef.current) return
+    if (editor.view.composing) {
+      const dom = editor.view.dom
+      const once = () => setSyncTick((t) => t + 1)
+      dom.addEventListener('compositionend', once, { once: true })
+      return () => dom.removeEventListener('compositionend', once)
+    }
     lastMdRef.current = value
     editor.commands.setContent(value, { emitUpdate: false } as any)
-  }, [value, editor])
+  }, [value, editor, syncTick])
 
   useEffect(() => {
     editor?.setEditable(!readOnly)
