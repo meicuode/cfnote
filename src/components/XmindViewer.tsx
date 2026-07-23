@@ -4,6 +4,7 @@ import MindMap from 'simple-mind-map'
 import Drag from 'simple-mind-map/src/plugins/Drag.js'
 import Export from 'simple-mind-map/src/plugins/Export.js'
 import ConfirmDialog from './ConfirmDialog'
+import { downscaleToPng, THUMB_MAX_BYTES } from '../lib/thumbnail'
 
 // 拖拽节点调整层级/顺序(编辑模式);Export 用于保存时生成缩略图
 MindMap.usePlugin(Drag)
@@ -198,12 +199,13 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
         }))
       }
 
-      // 当前画布截图(PNG dataURL):写入 zip 内嵌缩略图 + 更新 R2 边车,失败不阻塞保存
+      // 当前画布截图 → 降采样为限宽 480px 的小图(整画布原尺寸 PNG 可达数 MB,
+      // 直接嵌入会让 .xmind 体积大幅膨胀);超过上限则放弃缩略图,不阻塞保存
       let thumbBytes: Uint8Array | null = null
       try {
         const dataUrl: string = await (mindMapRef.current as any)?.export('png', false)
-        const b64 = dataUrl?.split(',')[1]
-        if (b64) thumbBytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))
+        if (dataUrl) thumbBytes = await downscaleToPng(dataUrl, 480)
+        if (thumbBytes && thumbBytes.length > THUMB_MAX_BYTES) thumbBytes = null
       } catch { /* 截图失败:保留原缩略图 */ }
 
       // Zen 来源:基于原始 zip 重建,保留资源/元数据等其他条目;XMind 8 来源:生成全新 Zen 包

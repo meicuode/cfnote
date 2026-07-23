@@ -229,20 +229,29 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     })
   }, [])
 
-  // XMind 客户端保存的文件内嵌 Thumbnails/thumbnail.png,上传时提取为边车文件(<key>.thumb.png)供卡片预览
+  // XMind 客户端保存的文件内嵌 Thumbnails/thumbnail.png,上传时提取并降采样为边车文件(<key>.thumb.png)供卡片预览。
+  // 只处理边车展示用图,不改动 .xmind 原文件字节。
   const uploadXmindThumb = useCallback(async (file: File, fileUrl: string) => {
     try {
-      const { default: JSZip } = await import('jszip')
+      const [{ default: JSZip }, { downscaleToPng, THUMB_MAX_BYTES }] = await Promise.all([
+        import('jszip'),
+        import('../lib/thumbnail'),
+      ])
       const zip = await JSZip.loadAsync(file)
       const t = zip.file('Thumbnails/thumbnail.png') || zip.file('Thumbnails/thumbnail.jpg')
       if (!t) return
+      const raw = await t.async('blob')
+      let bytes = await downscaleToPng(raw, 480)
+      let mime = 'image/png'
+      if (!bytes && raw.size <= THUMB_MAX_BYTES) {
+        bytes = new Uint8Array(await raw.arrayBuffer())
+        mime = t.name.endsWith('.jpg') ? 'image/jpeg' : 'image/png'
+      }
+      if (!bytes || bytes.length > THUMB_MAX_BYTES) return
       await fetch(`${fileUrl}.thumb.png`, {
         method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': t.name.endsWith('.jpg') ? 'image/jpeg' : 'image/png',
-        },
-        body: await t.async('arraybuffer'),
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': mime },
+        body: bytes as unknown as BodyInit,
       })
     } catch { /* 无内嵌缩略图或上传失败:卡片降级为纯文件名 */ }
   }, [token])
