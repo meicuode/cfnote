@@ -428,6 +428,56 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     upgradeXmindCards()
   }, [xmindFile, upgradeXmindCards])
 
+  // 预览双击任意段落:切到编辑模式,并把光标定位到对应的源文位置(按文本前缀匹配,逐级降长兜底)
+  const handlePreviewDblClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.tagName === 'IMG' || target.closest('a.cfnote-xmind-card')) return
+    const block = target.closest('p,h1,h2,h3,h4,h5,h6,li,pre,blockquote,td,th') as HTMLElement | null
+    const text = (block?.textContent || '').trim()
+    let idx = -1
+    for (const len of [40, 20, 10, 4]) {
+      const probe = text.slice(0, len).trim()
+      if (probe.length < 2) continue
+      idx = content.indexOf(probe)
+      if (idx >= 0) break
+    }
+    setMode('edit')
+    setTimeout(() => {
+      const ta = textareaRef.current
+      if (!ta) return
+      ta.focus()
+      const pos = idx >= 0 ? idx : ta.value.length
+      ta.setSelectionRange(pos, pos)
+      const line = ta.value.slice(0, pos).split('\n').length
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 24
+      ta.scrollTop = Math.max(0, (line - 3) * lh)
+    }, 0)
+  }
+
+  // 编辑模式点击文末之后的空白区域:自动补足换行,让光标落在点击的位置(免去连按回车)
+  const handleTextareaClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    const ta = e.currentTarget
+    if (loadingContent) return
+    // 浏览器把"点在内容之后"的光标置于末尾;光标不在末尾说明点在内容中间,不处理
+    if (ta.selectionStart !== ta.value.length || ta.selectionEnd !== ta.value.length) return
+    const style = getComputedStyle(ta)
+    const lh = parseFloat(style.lineHeight) || 24
+    const padTop = parseFloat(style.paddingTop) || 0
+    const clickY = e.clientY - ta.getBoundingClientRect().top + ta.scrollTop
+    // 按换行数估算内容底部;长行折行时会低估 → 只会少补行,不会多补
+    const lines = ta.value ? ta.value.split('\n').length : 1
+    const contentBottom = padTop + lines * lh
+    const extra = Math.floor((clickY - contentBottom) / lh)
+    if (extra <= 0) return
+    const pad = '\n'.repeat(extra + (ta.value && !ta.value.endsWith('\n') ? 1 : 0))
+    const next = ta.value + pad
+    setContent(next)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (el) el.setSelectionRange(el.value.length, el.value.length)
+    })
+  }
+
   // 字数(不含空白字符)与目录(H1-H4,≥2 条时预览模式显示)
   const charCount = useMemo(() => (content || '').replace(/\s/g, '').length, [content])
   const headings = useMemo(() => {
@@ -561,6 +611,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             readOnly={loadingContent}
             onChange={(e) => setContent(e.target.value)}
             onPaste={handlePaste}
+            onClick={handleTextareaClick}
             className="w-full h-full resize-none border-none outline-none text-gray-700 leading-relaxed text-[15px] font-mono bg-transparent placeholder:text-gray-300"
             placeholder="开始写作... (支持 Markdown 语法)"
           />
@@ -570,6 +621,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               ref={previewRef}
               className="cfnote-preview prose prose-sm max-w-none h-full overflow-y-auto text-gray-700 flex-1 min-w-0"
               onClick={handlePreviewClick}
+              onDoubleClick={handlePreviewDblClick}
               dangerouslySetInnerHTML={renderMarkdown()}
             />
             {/* 目录(标题 ≥2 条时显示) */}
