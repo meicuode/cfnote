@@ -5,6 +5,7 @@ import Drag from 'simple-mind-map/src/plugins/Drag.js'
 import Export from 'simple-mind-map/src/plugins/Export.js'
 import ConfirmDialog from './ConfirmDialog'
 import { downscaleToPng, THUMB_MAX_BYTES } from '../lib/thumbnail'
+import { parseZen, parseXml, buildContentJson, assembleXmindZip, type XmindSheet as Sheet } from '../lib/xmind'
 
 // 拖拽节点调整层级/顺序(编辑模式);Export 用于保存时生成缩略图
 MindMap.usePlugin(Drag)
@@ -17,65 +18,9 @@ interface Props {
   onClose: () => void
 }
 
-interface Sheet { name: string; root: any }
-
-// ---- XMind Zen / 2020+ (content.json) ----
-function topicToNode(t: any): any {
-  return {
-    data: { text: t?.title || '' },
-    children: (t?.children?.attached || []).map(topicToNode),
-  }
-}
-
-function parseZen(json: any): Sheet[] {
-  const sheets = Array.isArray(json) ? json : [json]
-  // 不过滤空画布:保存时按下标与原始 JSON 一一对应
-  return sheets.map((s: any, i: number) => ({
-    name: s?.title || `画布 ${i + 1}`,
-    root: s?.rootTopic ? topicToNode(s.rootTopic) : { data: { text: s?.title || '主题' }, children: [] },
-  }))
-}
-
-// ---- XMind 8 (content.xml) ----
-function xmlTopicToNode(el: Element): any {
-  const title = Array.from(el.children).find((c) => c.tagName === 'title')?.textContent || ''
-  const childrenEl = Array.from(el.children).find((c) => c.tagName === 'children')
-  const topics: Element[] = []
-  if (childrenEl) {
-    for (const ts of Array.from(childrenEl.children)) {
-      if (ts.tagName === 'topics' && ts.getAttribute('type') === 'attached') {
-        topics.push(...Array.from(ts.children).filter((c) => c.tagName === 'topic'))
-      }
-    }
-  }
-  return { data: { text: title }, children: topics.map(xmlTopicToNode) }
-}
-
-function parseXml(xml: string): Sheet[] {
-  const doc = new DOMParser().parseFromString(xml, 'application/xml')
-  return Array.from(doc.getElementsByTagName('sheet')).map((s, i) => {
-    const topic = Array.from(s.children).find((c) => c.tagName === 'topic')
-    const title = Array.from(s.children).find((c) => c.tagName === 'title')?.textContent
-    return {
-      name: title || `画布 ${i + 1}`,
-      root: topic ? xmlTopicToNode(topic) : { data: { text: '(空画布)' }, children: [] },
-    }
-  })
-}
-
-// ---- 保存:渲染树 → XMind Zen topic 结构 ----
-function nodeToTopic(n: any): any {
-  const topic: any = {
-    id: crypto.randomUUID(),
-    class: 'topic',
-    title: n?.data?.text || '',
-  }
-  if (n?.children?.length) topic.children = { attached: n.children.map(nodeToTopic) }
-  return topic
-}
-
 // 全屏预览/编辑 .xmind:兼容 XMind 8(XML)与 Zen/2020+(JSON),多画布;
 // 编辑保存时以 Zen 格式原地覆盖 R2 中的文件(XMind 8 来源会转存为新版格式)。
+// 解析/保存的纯逻辑在 src/lib/xmind.ts(tests/xmind.test.ts 覆盖)。
 export default function XmindViewer({ url, name, token, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mindMapRef = useRef<MindMap | null>(null)
@@ -181,23 +126,9 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
     setSaving(true)
     setError('')
     try {
-      // 构造 content.json:Zen 来源在原始 JSON 上仅替换各画布的 rootTopic(保留主题样式等),
-      // XMind 8 来源生成全新 Zen 结构
-      let json: any
-      if (originalZenRef.current) {
-        json = originalZenRef.current
-        const arr = Array.isArray(json) ? json : [json]
-        arr.forEach((s: any, i: number) => {
-          if (sheets[i]) s.rootTopic = nodeToTopic(sheets[i].root)
-        })
-      } else {
-        json = sheets.map((s) => ({
-          id: crypto.randomUUID(),
-          class: 'sheet',
-          title: s.name,
-          rootTopic: nodeToTopic(s.root),
-        }))
-      }
+      // Zen 来源:在原始 JSON 上替换各画布 rootTopic,节点级富属性经 uid 映射保留;
+      // XMind 8 来源:生成全新 Zen 结构(逻辑与测试见 src/lib/xmind.ts)
+      const json = buildContentJson(originalZenRef.current, sheets)
 
       // 当前画布截图 → 降采样为限宽 480px 的小图(整画布原尺寸 PNG 可达数 MB,
       // 直接嵌入会让 .xmind 体积大幅膨胀);超过上限则放弃缩略图,不阻塞保存
@@ -208,14 +139,7 @@ export default function XmindViewer({ url, name, token, onClose }: Props) {
         if (thumbBytes && thumbBytes.length > THUMB_MAX_BYTES) thumbBytes = null
       } catch { /* 截图失败:保留原缩略图 */ }
 
-      // Zen 来源:基于原始 zip 重建,保留资源/元数据等其他条目;XMind 8 来源:生成全新 Zen 包
-      const zip = originalZipRef.current ?? new JSZip()
-      zip.file('content.json', JSON.stringify(json))
-      if (!originalZipRef.current) {
-        zip.file('metadata.json', JSON.stringify({ creator: { name: 'cfnote' } }))
-        zip.file('manifest.json', JSON.stringify({ 'file-entries': { 'content.json': {}, 'metadata.json': {} } }))
-      }
-      if (thumbBytes) zip.file('Thumbnails/thumbnail.png', thumbBytes)
+      const zip = assembleXmindZip(originalZipRef.current, json, thumbBytes)
       const blob = await zip.generateAsync({ type: 'blob' })
 
       const res = await fetch(url, {
