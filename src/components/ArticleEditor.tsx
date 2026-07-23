@@ -7,6 +7,8 @@ import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
 const XmindViewer = lazy(() => import('./XmindViewer'))
+// 按需加载(TipTap 体积较大,仅在进入富文本模式时加载)
+const WysiwygEditor = lazy(() => import('./WysiwygEditor'))
 
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
 
@@ -135,7 +137,7 @@ function ToolbarIcon({ k }: { k: string }) {
 export default function ArticleEditor({ article, token, onSave, highlight, loadingContent }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
-  const [mode, setMode] = useState<'edit' | 'preview'>('edit')
+  const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
   const [uploading, setUploading] = useState(false)
@@ -148,6 +150,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   saveRef.current = onSave
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
+  const wysiwygWrapRef = useRef<HTMLDivElement>(null)
 
   // 来自 AI 引用/搜索的定位请求:切到预览,滚动到匹配段落并短暂高亮
   useEffect(() => {
@@ -541,7 +544,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   }, [content])
 
   const scrollToHeading = (h: { level: number; text: string }) => {
-    const root = previewRef.current
+    const root = mode === 'preview' ? previewRef.current : wysiwygWrapRef.current
     if (!root) return
     const norm = (s: string) => s.replace(/\s/g, '')
     for (const el of root.querySelectorAll(`h${h.level}`)) {
@@ -554,6 +557,24 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
+  // 目录(预览与富文本模式共用)
+  const tocNav = headings.length >= 2 ? (
+    <nav className="w-44 shrink-0 hidden lg:block overflow-y-auto border-l border-gray-100 pl-3 py-1">
+      <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">目录</p>
+      {headings.map((h, i) => (
+        <button
+          key={`${h.text}-${i}`}
+          onClick={() => scrollToHeading(h)}
+          className="block w-full text-left text-xs text-gray-500 hover:text-emerald-600 py-1 truncate transition-colors"
+          style={{ paddingLeft: (h.level - 1) * 12 }}
+          title={h.text}
+        >
+          {h.text}
+        </button>
+      ))}
+    </nav>
+  ) : null
+
   return (
     <div className="h-full flex flex-col">
       {/* Top bar: mode toggle + save status */}
@@ -563,7 +584,13 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             onClick={() => setMode('edit')}
             className={`px-3 py-1 rounded text-sm transition-colors ${mode === 'edit' ? 'bg-gray-200 text-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}
           >
-            编辑
+            源码
+          </button>
+          <button
+            onClick={() => setMode('wysiwyg')}
+            className={`px-3 py-1 rounded text-sm transition-colors ${mode === 'wysiwyg' ? 'bg-gray-200 text-gray-800' : 'text-gray-500 hover:bg-gray-100'}`}
+          >
+            富文本
           </button>
           <button
             onClick={() => setMode('preview')}
@@ -663,6 +690,21 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             className="w-full h-full resize-none border-none outline-none text-gray-700 leading-relaxed text-[15px] font-mono bg-transparent placeholder:text-gray-300"
             placeholder="开始写作... (支持 Markdown 语法)"
           />
+        ) : mode === 'wysiwyg' ? (
+          <div ref={wysiwygWrapRef} className="h-full flex gap-4">
+            <div className="flex-1 min-w-0 h-full">
+              <Suspense
+                fallback={
+                  <div className="h-full flex items-center justify-center">
+                    <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                }
+              >
+                <WysiwygEditor value={content} onChange={setContent} readOnly={loadingContent} />
+              </Suspense>
+            </div>
+            {tocNav}
+          </div>
         ) : (
           <div className="h-full flex gap-4">
             <div
@@ -672,23 +714,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               onDoubleClick={handlePreviewDblClick}
               dangerouslySetInnerHTML={renderMarkdown()}
             />
-            {/* 目录(标题 ≥2 条时显示) */}
-            {headings.length >= 2 && (
-              <nav className="w-44 shrink-0 hidden lg:block overflow-y-auto border-l border-gray-100 pl-3 py-1">
-                <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">目录</p>
-                {headings.map((h, i) => (
-                  <button
-                    key={`${h.text}-${i}`}
-                    onClick={() => scrollToHeading(h)}
-                    className="block w-full text-left text-xs text-gray-500 hover:text-emerald-600 py-1 truncate transition-colors"
-                    style={{ paddingLeft: (h.level - 1) * 12 }}
-                    title={h.text}
-                  >
-                    {h.text}
-                  </button>
-                ))}
-              </nav>
-            )}
+            {tocNav}
           </div>
         )}
       </div>
