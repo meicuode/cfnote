@@ -121,6 +121,27 @@
 .cfnote-preview img { cursor: zoom-in; }
 .cfnote-preview a.cfnote-xmind-card img { cursor: pointer; }
 
+/* 预览内图片拖拽调宽:悬浮显示右下角手柄 */
+.cfnote-preview .cfnote-img-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.cfnote-preview .cfnote-img-wrap .cfnote-img-handle {
+  position: absolute;
+  right: 2px;
+  bottom: 6px;
+  width: 14px;
+  height: 14px;
+  border-right: 3px solid #10b981;
+  border-bottom: 3px solid #10b981;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cfnote-preview .cfnote-img-wrap:hover .cfnote-img-handle { opacity: 0.9; }
+
 /* XMind 附件缩略图卡片(预览中,点击打开查看器) */
 .cfnote-preview a.cfnote-xmind-card {
   display: inline-block;

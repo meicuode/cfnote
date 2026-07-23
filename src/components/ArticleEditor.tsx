@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { marked } from '../lib/markdown'
 import { formatBytes, formatDateTime } from '../lib/format'
+import { setImageWidth } from '../lib/imageResize'
 import TurndownService from 'turndown'
 import type { Article } from '../types'
 
@@ -370,16 +371,63 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }, [])
 
-  // 预览 DOM 任何变化(含 React 重设 innerHTML)后都重建卡片,避免注入的卡片被冲掉
-  useEffect(() => {
-    if (mode !== 'preview') return
-    upgradeXmindCards()
+  // 给预览里的图片(xmind 卡片除外)加右下角拖拽手柄:拖动即调整显示宽度,
+  // 松手后把源文对应图片改写为标准 <img width>(逻辑与测试见 src/lib/imageResize.ts)。幂等。
+  const upgradeImageResize = useCallback(() => {
     const root = previewRef.current
     if (!root) return
-    const mo = new MutationObserver(() => upgradeXmindCards())
+    for (const img of Array.from(root.querySelectorAll('img'))) {
+      if (img.closest('a.cfnote-xmind-card') || (img as HTMLElement).dataset.resz) continue
+      ;(img as HTMLElement).dataset.resz = '1'
+      const wrap = document.createElement('span')
+      wrap.className = 'cfnote-img-wrap'
+      img.replaceWith(wrap)
+      wrap.appendChild(img)
+      const handle = document.createElement('b')
+      handle.className = 'cfnote-img-handle'
+      handle.title = '拖拽调整宽度'
+      wrap.appendChild(handle)
+      // 手柄可能位于链接内:吞掉 click,避免拖拽后触发跳转/lightbox
+      handle.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation() })
+      handle.addEventListener('mousedown', (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        const startX = ev.clientX
+        const startW = img.getBoundingClientRect().width
+        const maxW = Math.max(120, root.clientWidth - 32)
+        let lastW = Math.round(startW)
+        const move = (e: MouseEvent) => {
+          lastW = Math.round(Math.min(maxW, Math.max(80, startW + e.clientX - startX)))
+          img.style.width = `${lastW}px`
+          img.style.height = 'auto'
+        }
+        const up = () => {
+          document.removeEventListener('mousemove', move)
+          document.removeEventListener('mouseup', up)
+          if (Math.abs(lastW - startW) < 4) return
+          const src = img.getAttribute('src') || ''
+          const peers = Array.from(root.querySelectorAll('img'))
+            .filter((i) => !i.closest('a.cfnote-xmind-card') && i.getAttribute('src') === src)
+          const nth = peers.indexOf(img)
+          setContent((prev) => setImageWidth(prev, src, nth, lastW) ?? prev)
+        }
+        document.addEventListener('mousemove', move)
+        document.addEventListener('mouseup', up)
+      })
+    }
+  }, [])
+
+  // 预览 DOM 任何变化(含 React 重设 innerHTML)后都重建卡片与图片手柄,避免注入的增强被冲掉
+  useEffect(() => {
+    if (mode !== 'preview') return
+    const upgrade = () => { upgradeXmindCards(); upgradeImageResize() }
+    upgrade()
+    const root = previewRef.current
+    if (!root) return
+    const mo = new MutationObserver(upgrade)
     mo.observe(root, { childList: true, subtree: true })
     return () => mo.disconnect()
-  }, [content, mode, upgradeXmindCards])
+  }, [content, mode, upgradeXmindCards, upgradeImageResize])
 
   // Esc 关闭图片放大预览
   useEffect(() => {
