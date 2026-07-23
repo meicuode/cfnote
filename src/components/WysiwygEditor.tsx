@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useEditor, EditorContent, useEditorState, type Editor } from '@tiptap/react'
 import { buildExtensions } from '../lib/wysiwygExtensions'
 
@@ -18,6 +18,8 @@ interface Props {
   onPatchContent?: (fn: (prev: string) => string) => void
   /** 双击图片放大(复用父层 lightbox) */
   onImagePreview?: (src: string) => void
+  /** 双击 xmind 卡片:打开 XmindViewer 弹窗(由父层承载) */
+  onOpenXmind?: (url: string, name: string) => void
 }
 
 // 按 src 定位图片节点:上传完成后把 blob 预览地址替换为 R2 正式地址(位置无关,用户中途编辑也能找到)
@@ -38,12 +40,14 @@ const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // P6.1 所见即所得编辑器:TipTap + tiptap-markdown,单一事实源是父组件的 Markdown 字符串。
 // 只有用户真实编辑才回写(防抖 250ms,失焦/卸载即时 flush)——打开不动就保存,内容零 diff。
-export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile, onPatchContent, onImagePreview }: Props) {
+export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile, onPatchContent, onImagePreview, onOpenXmind }: Props) {
   const lastMdRef = useRef(value)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
   const [linkDialog, setLinkDialog] = useState<{ url: string } | null>(null)
+  // P6.3 xmind 卡片改名弹窗(pos 为卡片节点位置,确认时校验节点类型后 setNodeMarkup)
+  const [renameDialog, setRenameDialog] = useState<{ pos: number; label: string } | null>(null)
   // P6.2 上传:pending 计数驱动"上传中"指示,错误提示 5s 自动消失
   const [pending, setPending] = useState(0)
   const [uploadErr, setUploadErr] = useState('')
@@ -51,11 +55,23 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
   uploadRef.current = onUploadFile
   const patchRef = useRef(onPatchContent)
   patchRef.current = onPatchContent
+  const openXmindRef = useRef(onOpenXmind)
+  openXmindRef.current = onOpenXmind
   // editorProps 的 handler 在编辑器创建时固化,经 ref 调到每次渲染刷新的最新实现
   const filesRef = useRef<(files: File[], pos?: number) => void>(() => {})
 
+  // 扩展集只建一次;卡片回调经 ref/稳定 setter 转发,始终指向最新实现
+  const extensions = useMemo(
+    () =>
+      buildExtensions({
+        onOpenXmind: (url, name) => openXmindRef.current?.(url, name),
+        onRenameXmind: (pos, label) => setRenameDialog({ pos, label }),
+      }),
+    [],
+  )
+
   const editor = useEditor({
-    extensions: buildExtensions(),
+    extensions,
     content: value,
     editable: !readOnly,
     editorProps: {
@@ -160,6 +176,18 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
     if (href) chain.setLink({ href }).run()
     else chain.unsetLink().run()
     setLinkDialog(null)
+  }
+
+  const applyRename = () => {
+    if (!editor || !renameDialog) return
+    const label = renameDialog.label.trim()
+    const { pos } = renameDialog
+    const node = editor.state.doc.nodeAt(pos)
+    // 弹窗期间文档未变(模态),仍按类型校验兜底;只改链接文本,不动 R2 文件
+    if (label && node?.type.name === 'xmindCard') {
+      editor.view.dispatch(editor.view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, label }))
+    }
+    setRenameDialog(null)
   }
 
   // ---- P6.2 图片/附件上传 ----
@@ -326,8 +354,9 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
         editor={editor}
         className="flex-1 overflow-y-auto min-h-0 cfnote-wysiwyg"
         onDoubleClick={(e) => {
-          // 双击图片放大(单击留给节点选中/调宽)
+          // 双击图片放大(单击留给节点选中/调宽);xmind 卡片的缩略图归卡片自身的双击打开查看器
           const t = e.target as HTMLElement
+          if (t.closest('a.cfnote-xmind-card')) return
           if (t instanceof HTMLImageElement && onImagePreview) {
             e.preventDefault()
             onImagePreview(t.src)
@@ -357,6 +386,34 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
                 取消
               </button>
               <button onClick={applyLink} className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors">
+                确定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* xmind 卡片改名弹窗:只改 MD 里的链接文字 */}
+      {renameDialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40" onMouseDown={() => setRenameDialog(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[420px] max-w-[92vw] p-5" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">✏️ 卡片显示名</h3>
+            <input
+              autoFocus
+              type="text"
+              value={renameDialog.label}
+              onChange={(e) => setRenameDialog({ ...renameDialog, label: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') applyRename()
+                if (e.key === 'Escape') setRenameDialog(null)
+              }}
+              placeholder="显示名(即链接文字,不改动文件本身)"
+              className="w-full px-3 py-2 text-sm text-gray-800 bg-gray-50 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <button onClick={() => setRenameDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
+                取消
+              </button>
+              <button onClick={applyRename} className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors">
                 确定
               </button>
             </div>

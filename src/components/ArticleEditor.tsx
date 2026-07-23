@@ -474,6 +474,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     const href = xmindFile?.url
     setXmindFile(null)
     if (!saved || !href) return
+    // 富文本模式的卡片 NodeView 监听该事件,带版本号重取缩略图(绕过 immutable 强缓存)
+    window.dispatchEvent(new CustomEvent('cfnote:xmind-thumb', { detail: { url: href } }))
     const root = previewRef.current
     if (!root) return
     for (const a of Array.from(root.querySelectorAll('a[data-xmind-card]'))) {
@@ -714,6 +716,10 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                   onUploadFile={uploadFileRaw}
                   onPatchContent={(fn) => setContent((prev) => fn(prev))}
                   onImagePreview={setLightbox}
+                  onOpenXmind={(url, name) => {
+                    xmindSavedRef.current = false
+                    setXmindFile({ url, name })
+                  }}
                 />
               </Suspense>
             </div>

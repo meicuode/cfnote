@@ -152,6 +152,26 @@
   background: rgba(16, 185, 129, 0.12);
   pointer-events: none;
 }
+/* 富文本内的 xmind 卡片:单击选中(selectednode 外框)、双击打开、悬浮显示改名按钮 */
+.cfnote-wysiwyg a.cfnote-xmind-card { position: relative; cursor: default; }
+.cfnote-wysiwyg a.cfnote-xmind-card img { cursor: pointer; }
+.cfnote-wysiwyg a.cfnote-xmind-card .cfnote-xmind-rename {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e5e7eb;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cfnote-wysiwyg a.cfnote-xmind-card:hover .cfnote-xmind-rename { opacity: 1; }
+.dark .cfnote-wysiwyg a.cfnote-xmind-card .cfnote-xmind-rename { background: rgba(17, 24, 39, 0.92); border-color: #374151; }
 
 /* 预览内图片拖拽调宽:悬浮显示右下角手柄 */
 .cfnote-preview .cfnote-img-wrap {

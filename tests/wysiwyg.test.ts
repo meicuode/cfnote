@@ -91,13 +91,67 @@ describe('WYSIWYG 往返(P6.1 验收)', () => {
     expect(out).toContain('![普通](/y.png)')
   })
 
-  it('xmind 链接按普通链接往返不丢(P6.3 前的形态);中文 URL 规范化为百分号编码但语义等价', () => {
-    const md = '[📎 计划.xmind](/api/files/u1/k/计划.xmind)'
-    const out = roundtrip(md)
-    expect(out).toContain('[📎 计划.xmind](')
-    const href = /\]\(([^)]+)\)/.exec(out)![1]
+  // P6.3:.xmind 链接解析为 xmindCard 原子节点(编辑器内不实例化思维导图引擎,卡片只是缩略图),
+  // 序列化写回标准 MD 链接 [显示名](url)
+  it('xmind 链接解析为卡片节点,已编码 URL 字节级往返;中文 URL 语义等价', () => {
+    const encoded = '[📎 计划.xmind](/api/files/u1/k/%E8%AE%A1%E5%88%92.xmind)'
+    const ed = new Editor({ extensions: buildExtensions(), content: encoded })
+    const cards: any[] = []
+    ed.state.doc.descendants((n) => {
+      if (n.type.name === 'xmindCard') cards.push(n)
+      return true
+    })
+    expect(cards.length).toBe(1)
+    expect(cards[0].attrs.label).toBe('📎 计划.xmind')
+    expect((ed.storage as any).markdown.getMarkdown()).toBe(encoded)
+    ed.destroy()
+
+    const raw = roundtrip('[📎 计划.xmind](/api/files/u1/k/计划.xmind)')
+    const href = /\]\(([^)]+)\)/.exec(raw)![1]
     expect(decodeURIComponent(href)).toBe('/api/files/u1/k/计划.xmind')
-    expect(roundtrip(out)).toBe(out)
+    expect(roundtrip(raw)).toBe(raw)
+  })
+
+  it('改名产物为 [新名](原url);删除卡片=删除链接;非 xmind 附件不卡片化', () => {
+    const ed = new Editor({ extensions: buildExtensions(), content: '[旧名](/api/files/u1/k/a.xmind)' })
+    let pos = -1
+    let card: any = null
+    ed.state.doc.descendants((n, p) => {
+      if (pos >= 0) return false
+      if (n.type.name === 'xmindCard') {
+        pos = p
+        card = n
+        return false
+      }
+      return true
+    })
+    expect(pos).toBeGreaterThanOrEqual(0)
+    ed.view.dispatch(ed.view.state.tr.setNodeMarkup(pos, undefined, { ...card.attrs, label: '2026 规划' }))
+    expect((ed.storage as any).markdown.getMarkdown()).toBe('[2026 规划](/api/files/u1/k/a.xmind)')
+    ed.view.dispatch(ed.view.state.tr.delete(pos, pos + 1))
+    expect((ed.storage as any).markdown.getMarkdown()).not.toContain('a.xmind')
+    ed.destroy()
+
+    const pdf = '[📎 报告.pdf](/api/files/u1/k/report.pdf)'
+    const ed2 = new Editor({ extensions: buildExtensions(), content: pdf })
+    let hasCard = false
+    ed2.state.doc.descendants((n) => {
+      if (n.type.name === 'xmindCard') hasCard = true
+      return true
+    })
+    ed2.destroy()
+    expect(hasCard).toBe(false)
+    expect(roundtrip(pdf)).toBe(pdf)
+  })
+
+  it('多卡片渲染为缩略图卡片 DOM(jsdom 冒烟)', () => {
+    const ed = new Editor({
+      extensions: buildExtensions(),
+      content: '[a](/f/x.xmind)\n\n[b](/f/y.xmind)\n\n[c](/f/z.xmind)',
+    })
+    expect(ed.view.dom.querySelectorAll('a.cfnote-xmind-card').length).toBe(3)
+    expect(ed.view.dom.querySelectorAll('.cfnote-xmind-rename').length).toBe(3)
+    ed.destroy()
   })
 
   // P6.2:拖拽调宽在 mouseup 时对图片节点 setNodeMarkup({width, height: null}),
