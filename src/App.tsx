@@ -8,6 +8,9 @@ import Layout from './components/Layout'
 // 公开博客页(免登录,独立 chunk):/blog 列表,/blog/:id 详情
 const BlogPage = lazy(() => import('./components/BlogPage'))
 const IS_BLOG = /^\/blog(\/|$)/.test(window.location.pathname)
+// 网页剪藏接收页(P9,独立 chunk):bookmarklet 打开,postMessage 收 HTML → 转 MD 存笔记
+const ClipPage = lazy(() => import('./components/ClipPage'))
+const IS_CLIP = /^\/clip\/?$/.test(window.location.pathname)
 
 type AppState = 'loading' | 'setup' | 'login' | 'app'
 
@@ -17,6 +20,13 @@ export default function App() {
     return (
       <Suspense fallback={<div className={`min-h-screen ${initialBlogTheme() === 'dark' ? 'bg-[#262626]' : 'bg-[#f5f6f7]'}`} />}>
         <BlogPage />
+      </Suspense>
+    )
+  }
+  if (IS_CLIP) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-gray-900 dark:to-gray-900" />}>
+        <ClipPage />
       </Suspense>
     )
   }

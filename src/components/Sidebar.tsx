@@ -170,6 +170,19 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             </span>
             <span className="truncate flex-1">文件管理</span>
           </button>
+          {/* 网页剪藏(P9):打开 /clip 安装引导页(bookmarklet) */}
+          <button
+            onClick={() => window.open('/clip', '_blank', 'noopener')}
+            className="w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+            title="安装浏览器剪藏书签,把网页保存为笔记"
+          >
+            <span className="text-gray-400 shrink-0">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.848 8.25l1.536.887M7.848 8.25a3 3 0 11-5.196-3 3 3 0 015.196 3zm1.536.887a2.165 2.165 0 011.083 1.839c.005.351.054.695.14 1.024M9.384 9.137l2.077 1.199M7.848 15.75l1.536-.887m-1.536.887a3 3 0 11-5.196 3 3 3 0 015.196-3zm1.536-.887a2.165 2.165 0 001.083-1.838c.005-.352.054-.695.14-1.025m-1.223 2.863l2.077-1.199m0-3.328a4.323 4.323 0 012.068-1.379l5.325-1.628a4.5 4.5 0 012.48-.044l.803.215-7.794 4.5m-2.882-.643a4.323 4.323 0 00-.229 2.428m3.111-1.785l7.794 4.5-.802.215a4.5 4.5 0 01-2.48-.043l-5.326-1.629a4.324 4.324 0 01-2.068-1.379m0 0a4.32 4.32 0 01-.229-2.428" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">网页剪藏</span>
+          </button>
         </div>
       </div>
 

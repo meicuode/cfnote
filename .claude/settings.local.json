@@ -28,7 +28,20 @@
       "Bash(HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 NO_PROXY=localhost,127.0.0.1 npx wrangler pages dev dist --port 8789 --compatibility-date=2024-12-01 --persist-to .wrangler/tmp-verify)",
       "Bash(npm test *)",
       "Bash(curl -x http://127.0.0.1:10808 -sL \"https://developers.cloudflare.com/workers/wrangler/configuration/\" --max-time 40)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(powershell -Command \"Stop-Process -Name workerd -Force -ErrorAction SilentlyContinue\")",
+      "Bash(HTTP_PROXY=http://127.0.0.1:10808 HTTPS_PROXY=http://127.0.0.1:10808 NO_PROXY=localhost,127.0.0.1 npx wrangler dev --port 8791 --persist-to .wrangler/tmp-dbtest)",
+      "Bash(git add *)",
+      "Bash(git commit -m '新增数据导出备份、混合搜索\\(关键词+RRF\\)、AI 对话流式输出 *)",
+      "Bash(git commit -m '修复推理模型思考过程漏入正文:兼容缺少开头 <think> 标签的输出\\(QwQ 常见\\) *)",
+      "Bash(npx vitest *)",
+      "Bash(curl *)",
+      "Bash(npm i *)",
+      "Read(//d/Projects/CF/cxmind/**)",
+      "Read(//d/Projects/CF/cxmind/frontend/**)",
+      "Read(//d/Projects/CF/cxmind/frontend/src/**)",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).dependencies\\)\")",
+      "Bash(node -e \"console.log\\(require\\('simple-mind-map/package.json'\\).version\\)\")"
     ]
   }
 }
