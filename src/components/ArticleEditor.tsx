@@ -12,6 +12,9 @@ import type { Article } from '../types'
 const XmindViewer = lazy(() => import('./XmindViewer'))
 // 按需加载(TipTap 体积较大,仅在进入富文本模式时加载)
 const WysiwygEditor = lazy(() => import('./WysiwygEditor'))
+// 按需加载(P8.3 文件库选择器:双 Tab 上传/选库,源码与富文本共用)
+const FilePickerDialog = lazy(() => import('./FilePickerDialog'))
+import type { PickedFile } from './FilePickerDialog'
 
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
 
@@ -362,6 +365,18 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       setUploading(false)
     }
   }, [uploadFileRaw, insertAtCursor])
+
+  // ---- P8.3 文件库选择器(源码模式):选中插入既有 URL;上传 Tab 逐个走现有上传管线 ----
+  const [showFilePicker, setShowFilePicker] = useState(false)
+
+  const insertPicked = useCallback((f: PickedFile) => {
+    if (f.category === 'image') insertAtCursor(`![${f.name}](${f.url})`)
+    else insertAtCursor(`[📎 ${f.name}](${f.url})`)
+  }, [insertAtCursor])
+
+  const uploadPicked = useCallback((fs: File[]) => {
+    void (async () => { for (const f of fs) await handleUpload(f) })()
+  }, [handleUpload])
 
   // Handle paste: 剪贴板中的图片直接上传插入;先判定剪贴板本质(src/lib/pasteDetect.ts):
   // Markdown/代码源文(VS Code、AI 代码块等的高亮 HTML)原样插入纯文本,避免 turndown 转义;
@@ -797,13 +812,15 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             <input type="file" accept="image/*" className="hidden" disabled={uploading}
               onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleUpload(f) }} />
           </label>
-          <label title="插入附件(任意文件,≤10MB)" className={`px-2 py-1 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors cursor-pointer ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
+          <button
+            title="插入附件:上传新文件或从文件库选择"
+            onClick={() => setShowFilePicker(true)}
+            className="px-2 py-1 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+          >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
             </svg>
-            <input type="file" className="hidden" disabled={uploading}
-              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleUpload(f) }} />
-          </label>
+          </button>
           {uploading && (
             <span className="flex items-center gap-1 text-xs text-gray-400 ml-1">
               <span className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -856,6 +873,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                     value={content}
                     onChange={setContent}
                     readOnly={loadingContent || IS_MOBILE}
+                    token={token}
                     onUploadFile={uploadFileRaw}
                     onPatchContent={(fn) => setContent((prev) => fn(prev))}
                     onImagePreview={setLightbox}
@@ -896,6 +914,22 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             token={token}
             onClose={closeXmind}
             onSaved={() => { xmindSavedRef.current = true }}
+          />
+        </Suspense>
+      )}
+
+      {/* 文件库选择器(源码模式;富文本模式由 WysiwygEditor 自行承载) */}
+      {showFilePicker && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <FilePickerDialog
+            token={token}
+            onClose={() => setShowFilePicker(false)}
+            onPick={insertPicked}
+            onUpload={uploadPicked}
           />
         </Suspense>
       )}

@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback, lazy, Suspense } from 'react'
 import { useEditor, EditorContent, useEditorState, type Editor } from '@tiptap/react'
 import { buildExtensions } from '../lib/wysiwygExtensions'
 import { wysiwygPasteAction, applyMarkdownPaste, applyCodePaste, type RichPasteAction } from '../lib/pasteDetect'
+
+// P8.3 文件库选择器(与源码模式共用组件,懒加载)
+const FilePickerDialog = lazy(() => import('./FilePickerDialog'))
+import type { PickedFile } from './FilePickerDialog'
 
 interface UploadedFile {
   url: string
@@ -13,6 +17,8 @@ interface Props {
   value: string
   onChange: (md: string) => void
   readOnly?: boolean
+  /** 文件库选择器需要的登录态(P8.3):缺省时附件按钮退化为直接上传 */
+  token?: string
   /** 上传到 R2,失败抛错(与源码模式共用同一实现,10MB 限制与错误提示一致) */
   onUploadFile?: (file: File) => Promise<UploadedFile>
   /** 编辑器已卸载时的兜底:对父层内容字符串做函数式修补(blob 占位 → 正式 URL) */
@@ -41,7 +47,7 @@ const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // P6.1 所见即所得编辑器:TipTap + tiptap-markdown,单一事实源是父组件的 Markdown 字符串。
 // 只有用户真实编辑才回写(防抖 250ms,失焦/卸载即时 flush)——打开不动就保存,内容零 diff。
-export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile, onPatchContent, onImagePreview, onOpenXmind }: Props) {
+export default function WysiwygEditor({ value, onChange, readOnly, token, onUploadFile, onPatchContent, onImagePreview, onOpenXmind }: Props) {
   const lastMdRef = useRef(value)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onChangeRef = useRef(onChange)
@@ -52,6 +58,8 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
   // P6.2 上传:pending 计数驱动"上传中"指示,错误提示 5s 自动消失
   const [pending, setPending] = useState(0)
   const [uploadErr, setUploadErr] = useState('')
+  // P8.3 文件库选择器
+  const [showPicker, setShowPicker] = useState(false)
   const uploadRef = useRef(onUploadFile)
   uploadRef.current = onUploadFile
   const patchRef = useRef(onPatchContent)
@@ -280,6 +288,20 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
     else applyCodePaste(editor, text, act.language)
   }
 
+  // P8.3 从文件库选中:插入既有 URL(图片→图片节点,其他→📎 链接,与上传完成后的插入形态一致;
+  // .xmind 链接在下次内容解析时呈现为卡片,与上传路径行为相同)
+  const insertPicked = useCallback((f: PickedFile) => {
+    if (!editor) return
+    if (f.category === 'image') {
+      editor.chain().focus().insertContent({ type: 'image', attrs: { src: f.url, alt: f.name } }).run()
+    } else {
+      editor.chain().focus().insertContent([
+        { type: 'text', marks: [{ type: 'link', attrs: { href: f.url } }], text: `📎 ${f.name}` },
+        { type: 'text', text: ' ' },
+      ]).run()
+    }
+  }, [editor])
+
   if (!editor) return null
   const c = () => editor.chain().focus()
 
@@ -346,18 +368,26 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
                   onChange={(e) => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) filesRef.current(fs) }}
                 />
               </label>
-              <label
-                title="插入附件(任意文件,≤10MB)"
-                className={`px-1.5 py-0.5 rounded text-xs min-w-[26px] inline-flex items-center justify-center transition-colors cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-700 ${pending ? 'opacity-50 pointer-events-none' : ''}`}
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-                <input
-                  type="file" className="hidden" disabled={pending > 0}
-                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) filesRef.current([f]) }}
-                />
-              </label>
+              {token ? (
+                <TBtn title="插入附件:上传新文件或从文件库选择" onClick={() => setShowPicker(true)}>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                </TBtn>
+              ) : (
+                <label
+                  title="插入附件(任意文件,≤10MB)"
+                  className={`px-1.5 py-0.5 rounded text-xs min-w-[26px] inline-flex items-center justify-center transition-colors cursor-pointer text-gray-500 hover:bg-gray-100 hover:text-gray-700 ${pending ? 'opacity-50 pointer-events-none' : ''}`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  <input
+                    type="file" className="hidden" disabled={pending > 0}
+                    onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) filesRef.current([f]) }}
+                  />
+                </label>
+              )}
             </>
           )}
           {pending > 0 && (
@@ -393,6 +423,22 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
           }
         }}
       />
+
+      {/* P8.3 文件库选择器:选中插入既有 URL;上传 Tab 走统一上传管线(blob 占位/错误回滚等一致) */}
+      {showPicker && token && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <FilePickerDialog
+            token={token}
+            onClose={() => setShowPicker(false)}
+            onPick={insertPicked}
+            onUpload={(fs) => filesRef.current(fs)}
+          />
+        </Suspense>
+      )}
 
       {/* 链接编辑弹窗 */}
       {linkDialog && (
