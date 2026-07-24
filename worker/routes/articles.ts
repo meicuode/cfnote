@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
 import { syncArticleFiles, purgeUnreferencedAttachments } from './files'
+import { escapeLike } from './search'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -289,6 +290,46 @@ articles.delete('/:id/purge', async (c) => {
     return ok({ message: '已彻底删除' })
   } catch (e: any) {
     return err('删除失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/titles?q= - 标题搜索(P9.2 笔记链接选择器;不含回收站)
+articles.get('/titles', async (c) => {
+  const user = c.get('user')
+  const q = (c.req.query('q') || '').trim()
+  try {
+    let sql = `SELECT a.id, a.title, a.updated_at, n.name AS notebook
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.user_id = ? AND a.deleted_at IS NULL`
+    const binds: unknown[] = [user.id]
+    if (q) {
+      sql += " AND a.title LIKE ? ESCAPE '\\'"
+      binds.push(`%${escapeLike(q)}%`)
+    }
+    sql += ' ORDER BY a.updated_at DESC LIMIT 20'
+    const { results } = await c.env.DB.prepare(sql).bind(...binds).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('搜索失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/:id/backlinks - 反向链接(P9.2):内容含 (/?article=<id>) 深链的其他笔记。
+// 链接格式固定为 [标题](/?article=<id>),右括号一并匹配避免 12 命中 123
+articles.get('/:id/backlinks', async (c) => {
+  const user = c.get('user')
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id) || id <= 0) return err('参数不合法')
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, title FROM articles
+       WHERE user_id = ? AND deleted_at IS NULL AND id != ?
+         AND instr(content, '?article=' || ? || ')') > 0
+       ORDER BY updated_at DESC LIMIT 20`
+    ).bind(user.id, id, String(id)).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
   }
 })
 

@@ -11,6 +11,7 @@ interface BlogPost {
   id: number
   title: string
   tag: string
+  tags?: string[]
   excerpt: string
   thumb: string | null
   published_at: string
@@ -22,6 +23,7 @@ interface BlogDetail {
   title: string
   content: string
   tag: string
+  tags?: string[]
   published_at: string
   views: number
 }
@@ -252,7 +254,9 @@ export default function BlogPage() {
                     </h2>
                     {p.excerpt && <p className="text-sm text-[#999] mt-2.5 leading-relaxed line-clamp-2 hidden sm:block">{p.excerpt}</p>}
                     <div className="mt-auto pt-3 flex items-center text-sm min-w-0">
-                      <span className="text-[#8f8f8f] truncate">Tags：{p.tag}</span>
+                      <span className="text-[#8f8f8f] truncate">
+                        Tags：{[p.tag, ...(p.tags || [])].join('、')}
+                      </span>
                       <span className="ml-auto pl-3 text-[#e05252] shrink-0">{fmtTime(p.published_at)}</span>
                     </div>
                   </div>
@@ -283,7 +287,7 @@ export default function BlogPage() {
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-gray-500 mt-4">
                 <span>{fmtFull(detail.published_at)}</span>
                 <span>来源：CFNote 笔记</span>
-                <span>Tags：{detail.tag}</span>
+                <span>Tags：{[detail.tag, ...(detail.tags || [])].join('、')}</span>
                 <span className="ml-auto">浏览：{detail.views}</span>
               </div>
               <div

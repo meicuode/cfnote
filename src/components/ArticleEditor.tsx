@@ -7,6 +7,7 @@ import { sourceModePasteText } from '../lib/pasteDetect'
 import { scanSensitive, type SensitiveHit } from '../lib/sensitiveScan'
 import ConfirmDialog from './ConfirmDialog'
 import { parseTags } from '../types'
+import { toggleTaskItem, enableTaskCheckboxes } from '../lib/markdownTasks'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -16,6 +17,9 @@ const WysiwygEditor = lazy(() => import('./WysiwygEditor'))
 // 按需加载(P8.3 文件库选择器:双 Tab 上传/选库,源码与富文本共用)
 const FilePickerDialog = lazy(() => import('./FilePickerDialog'))
 import type { PickedFile } from './FilePickerDialog'
+// 按需加载(P9.2 笔记链接选择器,源码与富文本共用)
+const NoteLinkDialog = lazy(() => import('./NoteLinkDialog'))
+import type { NoteLinkItem } from './NoteLinkDialog'
 
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
 
@@ -27,6 +31,8 @@ interface Props {
   loadingContent?: boolean
   /** 已有标签全集(P9,标签输入的 datalist 补全) */
   allTags?: string[]
+  /** 应用内打开另一篇笔记(P9.2 笔记链接/反向链接点击) */
+  onOpenArticle?: (id: number) => void
 }
 
 // 私有标识(eye-off:斜杠划掉的眼睛,表示不可对外展示)
@@ -162,13 +168,16 @@ const IS_MOBILE = typeof navigator !== 'undefined' &&
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags }: Props) {
+export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags, onOpenArticle }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
   // P9 标签(chips 编辑,随保存提交)与回收站只读态
   const [tags, setTags] = useState<string[]>(parseTags(article.tags))
   const [tagInput, setTagInput] = useState('')
   const trashed = !!article.deleted_at
+  // P9.2 笔记间链接:选择器 + 反向链接(哪些笔记链接到本篇)
+  const [showNoteLink, setShowNoteLink] = useState(false)
+  const [backlinks, setBacklinks] = useState<{ id: number; title: string }[]>([])
   const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
@@ -231,6 +240,18 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       || JSON.stringify(tags) !== JSON.stringify(parseTags(article.tags))
     setSaved(!changed)
   }, [title, content, tags, article.title, article.content, article.tags])
+
+  // P9.2 反向链接:打开文章时查一次(其他笔记内容变化才会影响,不随本篇编辑刷新)
+  useEffect(() => {
+    setBacklinks([])
+    if (article.id <= 0) return
+    let alive = true
+    fetch(`/api/articles/${article.id}/backlinks`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.json() as Promise<any>)
+      .then((j) => { if (alive && j?.ok) setBacklinks(j.data || []) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [article.id, token])
 
   const handleSave = useCallback(async () => {
     setSaving(true)
@@ -428,7 +449,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
 
   const renderMarkdown = () => {
     try {
-      return { __html: marked(content || '', { breaks: true }) as string }
+      // 任务复选框去 disabled,预览中可点击勾选(handlePreviewClick 回写源文)
+      return { __html: enableTaskCheckboxes(marked(content || '', { breaks: true }) as string) }
     } catch {
       return { __html: content }
     }
@@ -547,9 +569,21 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     return () => window.removeEventListener('keydown', handler)
   }, [lightbox])
 
-  // 预览点击:图片弹出放大预览;.xmind 附件链接弹出思维导图查看器(而非下载)
+  // 预览点击:任务复选框切换回写源文;图片弹出放大预览;.xmind 附件链接弹出思维导图查看器;
+  // 笔记深链(/?article=)应用内打开
   const handlePreviewClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement
+    if (target instanceof HTMLInputElement && target.type === 'checkbox') {
+      e.preventDefault()
+      if (trashed) return
+      const boxes = Array.from(previewRef.current?.querySelectorAll('input[type="checkbox"]') || [])
+      const idx = boxes.indexOf(target)
+      if (idx >= 0) {
+        const next = toggleTaskItem(content, idx)
+        if (next !== null) setContent(next) // 触发未保存 → 3s 自动保存
+      }
+      return
+    }
     if (target.tagName === 'IMG' && !target.closest('a.cfnote-xmind-card')) {
       e.preventDefault()
       setLightbox((target as HTMLImageElement).src)
@@ -558,6 +592,14 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     const a = target.closest('a')
     if (!a) return
     const href = a.getAttribute('href') || ''
+    const noteLink = /^\/?\?article=(\d+)/.exec(href)
+    if (noteLink) {
+      e.preventDefault()
+      const id = Number(noteLink[1])
+      if (onOpenArticle) onOpenArticle(id)
+      else window.open(`/?article=${id}`, '_blank', 'noopener')
+      return
+    }
     if (/\.xmind$/i.test(href)) {
       e.preventDefault()
       const rawName = href.split('/').pop() || 'mindmap.xmind'
@@ -804,6 +846,23 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         </div>
       )}
 
+      {/* P9.2 反向链接条:哪些笔记链接到本篇 */}
+      {backlinks.length > 0 && (
+        <div className="px-6 py-1.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 shrink-0 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+          <span className="text-gray-400 shrink-0">🔗 {backlinks.length} 篇笔记链接到此篇:</span>
+          {backlinks.map((b) => (
+            <button
+              key={b.id}
+              onClick={() => (onOpenArticle ? onOpenArticle(b.id) : window.open(`/?article=${b.id}`, '_blank', 'noopener'))}
+              className="text-emerald-600 hover:underline truncate max-w-[16rem]"
+              title="打开这篇笔记"
+            >
+              《{b.title}》
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Markdown formatting toolbar (edit mode only) */}
       {mode === 'edit' && !trashed && (
         <div className="px-4 py-1.5 border-b border-gray-100 flex items-center gap-0.5 shrink-0 overflow-x-auto">
@@ -838,6 +897,15 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+          </button>
+          <button
+            title="插入笔记链接(引用另一篇笔记)"
+            onClick={() => setShowNoteLink(true)}
+            className="px-2 py-1 rounded text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
           </button>
           {uploading && (
@@ -981,6 +1049,22 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             token={token}
             onClose={closeXmind}
             onSaved={() => { xmindSavedRef.current = true }}
+          />
+        </Suspense>
+      )}
+
+      {/* 笔记链接选择器(源码模式;富文本模式由 WysiwygEditor 自行承载) */}
+      {showNoteLink && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <NoteLinkDialog
+            token={token}
+            excludeId={article.id}
+            onClose={() => setShowNoteLink(false)}
+            onPick={(a: NoteLinkItem) => insertAtCursor(`[${a.title.replace(/([[\]])/g, '\\$1')}](/?article=${a.id})`)}
           />
         </Suspense>
       )}

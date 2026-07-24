@@ -459,7 +459,7 @@ export default function Layout({ token, username, onLogout }: Props) {
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} />
+            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} onOpenArticle={(id) => openArticleWithSnippet(id)} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">

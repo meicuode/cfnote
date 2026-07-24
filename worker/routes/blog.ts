@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { ok, err } from '../utils'
 import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
+import { parseTags } from '../../src/types'
 import type { AppEnv } from '../types'
 
 // 公开博客只读接口(免登录,见 worker/index.ts 的 auth skip)。
@@ -12,9 +13,9 @@ blog.get('/posts', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
       `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
-              a.published_at, a.updated_at, a.views, n.name as tag
+              a.published_at, a.updated_at, a.views, a.tags, n.name as tag
        FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE a.is_public = 1 AND a.is_private = 0
+       WHERE a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL
        ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 100`
     ).all<any>()
     return ok(
@@ -22,6 +23,7 @@ blog.get('/posts', async (c) => {
         id: r.id,
         title: r.title,
         tag: r.tag || '未分类',
+        tags: parseTags(r.tags),
         excerpt: mdExcerpt(r.head || '', 120),
         thumb: mdFirstImage(r.head || ''),
         published_at: r.published_at || r.updated_at,
@@ -56,9 +58,9 @@ blog.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
   try {
     const a = await c.env.DB.prepare(
-      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, n.name as tag
+      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, n.name as tag
        FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE a.id = ? AND a.is_public = 1 AND a.is_private = 0`
+       WHERE a.id = ? AND a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL`
     ).bind(id).first<any>()
     if (!a) return err('文章不存在或未公开', 404)
     const counted = await shouldCountView(id, c.req.header('cf-connecting-ip') || '')
@@ -67,7 +69,7 @@ blog.get('/posts/:id', async (c) => {
         c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
       )
     }
-    return ok({ ...a, tag: a.tag || '未分类', published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
+    return ok({ ...a, tag: a.tag || '未分类', tags: parseTags(a.tags), published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }

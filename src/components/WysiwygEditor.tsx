@@ -6,6 +6,9 @@ import { wysiwygPasteAction, applyMarkdownPaste, applyCodePaste, type RichPasteA
 // P8.3 文件库选择器(与源码模式共用组件,懒加载)
 const FilePickerDialog = lazy(() => import('./FilePickerDialog'))
 import type { PickedFile } from './FilePickerDialog'
+// P9.2 笔记链接选择器(与源码模式共用组件,懒加载)
+const NoteLinkDialog = lazy(() => import('./NoteLinkDialog'))
+import type { NoteLinkItem } from './NoteLinkDialog'
 
 interface UploadedFile {
   url: string
@@ -60,6 +63,8 @@ export default function WysiwygEditor({ value, onChange, readOnly, token, onUplo
   const [uploadErr, setUploadErr] = useState('')
   // P8.3 文件库选择器
   const [showPicker, setShowPicker] = useState(false)
+  // P9.2 笔记链接选择器
+  const [showNoteLink, setShowNoteLink] = useState(false)
   const uploadRef = useRef(onUploadFile)
   uploadRef.current = onUploadFile
   const patchRef = useRef(onPatchContent)
@@ -302,6 +307,16 @@ export default function WysiwygEditor({ value, onChange, readOnly, token, onUplo
     }
   }, [editor])
 
+  // P9.2 插入笔记链接:与上传附件的链接插入形态一致(文本+link mark),
+  // 序列化为标准 MD [标题](/?article=<id>)
+  const insertNoteLink = useCallback((a: NoteLinkItem) => {
+    if (!editor) return
+    editor.chain().focus().insertContent([
+      { type: 'text', marks: [{ type: 'link', attrs: { href: `/?article=${a.id}` } }], text: a.title },
+      { type: 'text', text: ' ' },
+    ]).run()
+  }, [editor])
+
   if (!editor) return null
   const c = () => editor.chain().focus()
 
@@ -369,11 +384,18 @@ export default function WysiwygEditor({ value, onChange, readOnly, token, onUplo
                 />
               </label>
               {token ? (
-                <TBtn title="插入附件:上传新文件或从文件库选择" onClick={() => setShowPicker(true)}>
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-                </TBtn>
+                <>
+                  <TBtn title="插入附件:上传新文件或从文件库选择" onClick={() => setShowPicker(true)}>
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                  </TBtn>
+                  <TBtn title="插入笔记链接(引用另一篇笔记)" onClick={() => setShowNoteLink(true)}>
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </TBtn>
+                </>
               ) : (
                 <label
                   title="插入附件(任意文件,≤10MB)"
@@ -437,6 +459,17 @@ export default function WysiwygEditor({ value, onChange, readOnly, token, onUplo
             onPick={insertPicked}
             onUpload={(fs) => filesRef.current(fs)}
           />
+        </Suspense>
+      )}
+
+      {/* P9.2 笔记链接选择器 */}
+      {showNoteLink && token && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <NoteLinkDialog token={token} onClose={() => setShowNoteLink(false)} onPick={insertNoteLink} />
         </Suspense>
       )}
 
