@@ -3,6 +3,7 @@ import { marked } from '../lib/markdown'
 import { formatBytes, formatDateTime } from '../lib/format'
 import { setImageWidth } from '../lib/imageResize'
 import TurndownService from 'turndown'
+import { sourceModePasteText } from '../lib/pasteDetect'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -308,7 +309,9 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }, [uploadFileRaw, insertAtCursor])
 
-  // Handle paste: 剪贴板中的图片直接上传插入;HTML 转 Markdown
+  // Handle paste: 剪贴板中的图片直接上传插入;先判定剪贴板本质(src/lib/pasteDetect.ts):
+  // Markdown/代码源文(VS Code、AI 代码块等的高亮 HTML)原样插入纯文本,避免 turndown 转义;
+  // 真正的网页富文本才走 HTML → Markdown
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const imgFile = Array.from(e.clipboardData.files).find((f) => f.type.startsWith('image/'))
     if (imgFile) {
@@ -316,17 +319,24 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       handleUpload(imgFile)
       return
     }
-    const html = e.clipboardData.getData('text/html')
-    if (!html) return // plain text paste, let browser handle it
+    if (!e.clipboardData.getData('text/html')) return // 纯文本粘贴走浏览器默认
+    const snippet = sourceModePasteText(
+      {
+        html: e.clipboardData.getData('text/html'),
+        text: e.clipboardData.getData('text/plain'),
+        vscodeMeta: e.clipboardData.getData('vscode-editor-data'),
+      },
+      (h) => turndown.turndown(h),
+    )
+    if (snippet == null) return
     e.preventDefault()
-    const md = turndown.turndown(html)
     const ta = e.currentTarget
     const { selectionStart: start, selectionEnd: end, value } = ta
-    const newValue = value.slice(0, start) + md + value.slice(end)
+    const newValue = value.slice(0, start) + snippet + value.slice(end)
     setContent(newValue)
     requestAnimationFrame(() => {
       ta.focus()
-      const pos = start + md.length
+      const pos = start + snippet.length
       ta.setSelectionRange(pos, pos)
     })
   }, [handleUpload])

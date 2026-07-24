@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useEditor, EditorContent, useEditorState, type Editor } from '@tiptap/react'
 import { buildExtensions } from '../lib/wysiwygExtensions'
+import { wysiwygPasteAction, applyMarkdownPaste, applyCodePaste, type RichPasteAction } from '../lib/pasteDetect'
 
 interface UploadedFile {
   url: string
@@ -59,6 +60,7 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
   openXmindRef.current = onOpenXmind
   // editorProps 的 handler 在编辑器创建时固化,经 ref 调到每次渲染刷新的最新实现
   const filesRef = useRef<(files: File[], pos?: number) => void>(() => {})
+  const richPasteRef = useRef<(act: RichPasteAction, text: string) => void>(() => {})
 
   // 扩展集只建一次;卡片回调经 ref/稳定 setter 转发,始终指向最新实现
   const extensions = useMemo(
@@ -78,13 +80,26 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
       attributes: {
         class: 'cfnote-preview prose prose-sm max-w-none focus:outline-none cfnote-wysiwyg-content',
       },
-      // 粘贴截图/图片文件:直传 R2(与源码模式一致);非文件粘贴走 TipTap 默认解析
+      // 粘贴截图/图片文件:直传 R2(与源码模式一致);
+      // Markdown/代码源文的高亮 HTML(VS Code、AI 代码块等):改用纯文本按相应结构解析,
+      // 避免整篇被 ProseMirror 当成 ```markdown 代码块或样式碎片;其余富文本走默认解析
       handlePaste: (view, event) => {
         if (!view.editable) return false
         const imgs = Array.from(event.clipboardData?.files || []).filter((f) => f.type.startsWith('image/'))
-        if (!imgs.length) return false
+        if (imgs.length) {
+          event.preventDefault()
+          filesRef.current(imgs)
+          return true
+        }
+        const text = event.clipboardData?.getData('text/plain') || ''
+        const act = wysiwygPasteAction({
+          html: event.clipboardData?.getData('text/html') || '',
+          text,
+          vscodeMeta: event.clipboardData?.getData('vscode-editor-data') || '',
+        })
+        if (!act) return false
         event.preventDefault()
-        filesRef.current(imgs)
+        richPasteRef.current(act, text)
         return true
       },
       // 拖入文件:在落点位置插入(图片→图片节点,其他→📎 链接);编辑器内部节点拖动(moved)不拦截
@@ -256,6 +271,13 @@ export default function WysiwygEditor({ value, onChange, readOnly, onUploadFile,
       editor.chain().focus().setTextSelection(Math.min(pos, editor.state.doc.content.size)).run()
     }
     for (const f of files) void uploadOne(editor, f)
+  }
+
+  // 粘贴拦截的应用侧:markdown 走 tiptap-markdown 解析插入,code 进代码块节点
+  richPasteRef.current = (act, text) => {
+    if (!editor) return
+    if (act.action === 'markdown') applyMarkdownPaste(editor, text)
+    else applyCodePaste(editor, text, act.language)
   }
 
   if (!editor) return null
