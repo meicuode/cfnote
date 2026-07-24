@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useApi } from '../hooks/useApi'
 import Sidebar from './Sidebar'
 import ArticleList from './ArticleList'
@@ -11,6 +11,9 @@ import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
 import { PRIVATE_NOTEBOOK } from '../types'
 import type { Notebook, Article } from '../types'
+
+// 文件管理页(P8.2,懒加载独立 chunk)
+const FileManager = lazy(() => import('./FileManager'))
 
 interface Props {
   token: string
@@ -29,6 +32,7 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showStats, setShowStats] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
+  const [showFiles, setShowFiles] = useState(false)
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [showChat, setShowChat] = useState(false)
@@ -361,6 +365,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             onSelect={setActiveNotebook}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
+            onOpenFiles={() => setShowFiles(true)}
           />
         </div>
 
@@ -429,6 +434,12 @@ export default function Layout({ token, username, onLogout }: Props) {
 
       {showLogs && (
         <SystemLogsPanel token={token} onClose={() => setShowLogs(false)} />
+      )}
+
+      {showFiles && (
+        <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
+          <FileManager token={token} onClose={() => setShowFiles(false)} />
+        </Suspense>
       )}
 
       {showImport && (

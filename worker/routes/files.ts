@@ -104,7 +104,8 @@ export async function purgeUnreferencedAttachments(
 
 // ---- 上传与旧式(按 key)读写 ----
 
-// POST /api/files - 上传附件。请求体为文件原始字节,x-filename 头传 URL 编码的文件名。
+// POST /api/files - 上传附件。请求体为文件原始字节,x-filename 头传 URL 编码的文件名,
+// x-folder-id 头可选(文件管理页上传时落到指定目录)。
 // 上传即登记 files 表,返回新式间接链接 /api/afile/<id>/<名>(不暴露真实 key);
 // 登记失败时退回旧式直链,功能不受影响。
 files.post('/', async (c) => {
@@ -117,6 +118,14 @@ files.post('/', async (c) => {
     if (body.byteLength === 0) return err('文件为空')
     if (body.byteLength > MAX_SIZE) return err('文件超过 10MB 限制')
 
+    let folderId: number | null = null
+    const folderHeader = Number(c.req.header('x-folder-id') || '')
+    if (Number.isInteger(folderHeader) && folderHeader > 0) {
+      const fd = await c.env.DB.prepare('SELECT id FROM folders WHERE id = ? AND user_id = ?')
+        .bind(folderHeader, user.id).first().catch(() => null)
+      if (fd) folderId = folderHeader
+    }
+
     const rand = crypto.randomUUID().replace(/-/g, '')
     const safeName = filename.replace(/[^\w.\-一-龥]/g, '_').slice(-80) || 'file'
     const key = `u${user.id}/${rand}/${safeName}`
@@ -128,8 +137,8 @@ files.post('/', async (c) => {
     let fileId: number | null = null
     try {
       const r = await c.env.DB.prepare(
-        'INSERT INTO files (user_id, key, name, size, content_type, category) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(user.id, key, safeName, body.byteLength, contentType, categorizeFile(safeName, contentType)).run()
+        'INSERT INTO files (user_id, key, name, folder_id, size, content_type, category) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(user.id, key, safeName, folderId, body.byteLength, contentType, categorizeFile(safeName, contentType)).run()
       fileId = r.meta.last_row_id as number
     } catch { /* 表未就绪等:退回旧式直链 */ }
 

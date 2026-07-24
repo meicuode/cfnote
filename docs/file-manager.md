@@ -85,6 +85,6 @@ article_files(article_id, file_key, PRIMARY KEY(article_id, file_key))
 ## 分期
 
 - **P8.1 数据层与访问分级** ✅(2026-07-24):三表 schema、afile 间接路由(GET/HEAD/PUT,主/边车尾巴分流)、cookie 登录态(`cfnote_t`,path=/api,仅附件 GET/HEAD 认)、新旧双轨访问分级(登录 OR 公开引用,索引缺行 instr 兜底)、文章创建/更新/URL 导入/备份导入的引用登记钩子、引用计数删除(修复共用附件误删与边车残留)、上传登记+新式链接、导出补 files/folders 表、发布弹窗附件清单+私有交叉引用警告。
-- **P8.2 文件管理页**:树/列表/搜索/预览/重命名/移动/删除/未引用清理/统计(+存量 R2 扫描登记入口)。
+- **P8.2 文件管理页** ✅(2026-07-24):侧栏「文件管理」入口 → 全屏面板(懒加载 chunk)。左栏:全部文件/未引用(计数)/笔记附件按笔记本分组(派生只读)/我的文件夹树(多级,新建/改名/删空目录,悬浮操作);右侧:分类 chips(全部/图片/文档/其他)+ 名称搜索(防抖,LIKE 转义)+ 列表(缩略图、大小、引用数弹窗、公开可访问/仅自己徽标,悬浮 复制链接/重命名/移动/删除);预览分流(图片 lightbox、xmind 复用 XmindViewer 可编辑回存、md/txt/代码等文本弹窗渲染、pdf 新标签、office/其他下载);删除带引用警告(列出笔记名,须"仍要删除");上传落当前目录(x-folder-id);顶部统计(文件数/占用 vs 10GB)与「扫描登记」(存量 R2 对象登记 + 全量重建引用索引,幂等)。接口:GET overview/files/files-refs、PUT/DELETE files、folders CRUD、POST scan。
 - **P8.3 编辑器文件库选择器**。
 - 原 P8 其余项(回收站、标签、置顶)顺延为 P9,原 P9/P10 依次后移(见 evernote-gap.md)。

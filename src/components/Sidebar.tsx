@@ -10,11 +10,12 @@ interface Props {
   onSelect: (nb: Notebook) => void
   onCreate: (name: string) => Promise<any>
   onDelete: (id: number) => Promise<any>
+  onOpenFiles: () => void
 }
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate, onDelete }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate, onDelete, onOpenFiles }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -115,6 +116,19 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
               <EyeOffIcon className="w-3.5 h-3.5" />
             </span>
             <span className="truncate flex-1">我的私有</span>
+          </button>
+          {/* 文件管理(P8.2):管理应用内全部附件 */}
+          <button
+            onClick={onOpenFiles}
+            className="w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+            title="管理全部附件:目录、搜索、预览、清理"
+          >
+            <span className="text-gray-400 shrink-0">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">文件管理</span>
           </button>
         </div>
       </div>
