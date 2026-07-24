@@ -75,6 +75,34 @@ blog.get('/posts/:id', async (c) => {
   }
 })
 
+// GET /api/blog/share/:token - 私密分享的笔记(P9.3,unlisted):
+// 有 token 即可看,不出现在列表/热榜;过期 410;私有/回收站中的笔记不可达;不计浏览量
+blog.get('/share/:token', async (c) => {
+  const token = String(c.req.param('token') || '')
+  if (!/^[0-9a-f]{32}$/.test(token)) return err('分享不存在或已取消', 404)
+  try {
+    const a = await c.env.DB.prepare(
+      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.share_expires_at, n.name as tag
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.share_token = ? AND a.is_private = 0 AND a.deleted_at IS NULL`
+    ).bind(token).first<any>()
+    if (!a) return err('分享不存在或已取消', 404)
+    if (a.share_expires_at && Date.parse(a.share_expires_at) <= Date.now()) {
+      return err('分享链接已过期', 410)
+    }
+    return ok({
+      ...a,
+      shared: true,
+      tag: a.tag || '未分类',
+      tags: parseTags(a.tags),
+      published_at: a.published_at || a.updated_at,
+      views: a.views || 0,
+    })
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
 // GET /api/blog/hot?range=day|week|month - 热榜(时间窗内发布的文章按浏览量排序)
 blog.get('/hot', async (c) => {
   const range = c.req.query('range') || 'day'

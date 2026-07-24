@@ -8,6 +8,7 @@ import { scanSensitive, type SensitiveHit } from '../lib/sensitiveScan'
 import ConfirmDialog from './ConfirmDialog'
 import { parseTags } from '../types'
 import { toggleTaskItem, enableTaskCheckboxes } from '../lib/markdownTasks'
+import { EXPIRY_PRESETS, fmtRemaining } from '../lib/fmUtils'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -178,6 +179,12 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   // P9.2 笔记间链接:选择器 + 反向链接(哪些笔记链接到本篇)
   const [showNoteLink, setShowNoteLink] = useState(false)
   const [backlinks, setBacklinks] = useState<{ id: number; title: string }[]>([])
+  // P9.3 私密分享:本地覆盖态(分享/取消后即时生效,下次保存由文章数据接管)
+  const [shareDialog, setShareDialog] = useState(false)
+  const [sharePreset, setSharePreset] = useState<number | null>(604800)
+  const [shareBusy, setShareBusy] = useState(false)
+  const [shareOverride, setShareOverride] = useState<{ token: string | null; expires: string | null } | null>(null)
+  const share = shareOverride ?? { token: article.share_token ?? null, expires: article.share_expires_at ?? null }
   const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
@@ -232,6 +239,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     setContent(article.content)
     setTags(parseTags(article.tags))
     setTagInput('')
+    setShareOverride(null)
     setSaved(true)
   }, [article.id, loadingContent])
 
@@ -287,8 +295,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   }
 
   // 点击公开:文本走敏感信息全文扫描,附件走服务端引用检查(清单+私有交叉引用警告)
-  const handlePublishClick = () => {
-    setPublishDialog({ risks: scanSensitive(`${title}\n${content}`), files: null })
+  const handlePublishClick = () => {    setPublishDialog({ risks: scanSensitive(`${title}\n${content}`), files: null })
     fetch('/api/fm/refcheck', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -297,6 +304,56 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       .then((r) => r.json() as Promise<any>)
       .then((j) => setPublishDialog((prev) => (prev ? { ...prev, files: j.ok ? j.data.files : [] } : prev)))
       .catch(() => setPublishDialog((prev) => (prev ? { ...prev, files: [] } : prev)))
+  }
+
+  // ---- P9.3 私密分享 ----
+  const [shareErr, setShareErr] = useState('')
+
+  const copyShareLink = async (tokenStr: string) => {
+    try {
+      await navigator.clipboard.writeText(`${location.origin}/blog/share/${tokenStr}`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const submitShare = async () => {
+    if (shareBusy || article.id <= 0) return
+    setShareBusy(true)
+    setShareErr('')
+    try {
+      const res = await fetch(`/api/articles/${article.id}/share`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ expires_in: sharePreset }),
+      })
+      const j: any = await res.json()
+      if (!j?.ok) {
+        setShareErr(j?.error || '分享失败')
+        return
+      }
+      setShareOverride({ token: j.data.token, expires: j.data.share_expires_at })
+      await copyShareLink(j.data.token)
+    } catch (e: any) {
+      setShareErr(e?.message || '分享失败')
+    } finally {
+      setShareBusy(false)
+    }
+  }
+
+  const cancelShare = async () => {
+    try {
+      const res = await fetch(`/api/articles/${article.id}/share`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const j: any = await res.json()
+      if (j?.ok) setShareOverride({ token: null, expires: null })
+      else setShareErr(j?.error || '取消失败')
+    } catch (e: any) {
+      setShareErr(e?.message || '取消失败')
+    }
   }
 
   // Ctrl+S / Cmd+S
@@ -795,6 +852,20 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           )}
         </div>
         <div className="flex items-center gap-3">
+          {/* P9.3 私密分享:凭链接可看,不入博客列表;私有/回收站不可用 */}
+          {article.id > 0 && !trashed && !isPrivate && (
+            <button
+              onClick={() => { setShareErr(''); setShareDialog(true) }}
+              className={`text-xs flex items-center gap-1 transition-colors ${
+                share.token && fmtRemaining(share.expires) !== '已过期'
+                  ? 'text-sky-600 hover:text-sky-700'
+                  : 'text-gray-400 hover:text-gray-600'
+              }`}
+              title={share.token ? '已生成私密分享链接,点击查看/管理' : '生成私密分享链接(凭链接可看,不进博客列表)'}
+            >
+              🔗 {share.token ? (fmtRemaining(share.expires) === '已过期' ? '分享已过期' : '已分享') : '分享'}
+            </button>
+          )}
           {/* 私有状态:私有显示标识(点击可取消),非私有显示设为私有按钮;回收站只读 */}
           {article.id > 0 && !trashed && (isPrivate ? (
             <button
@@ -1052,6 +1123,73 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           />
         </Suspense>
       )}
+
+      {/* P9.3 私密分享弹窗(与文件分享同构:单分享,重新生成即替换,取消立即失效) */}
+      {shareDialog && (() => {
+        const active = !!share.token && fmtRemaining(share.expires) !== '已过期'
+        return (
+          <div className="fixed inset-0 z-[85] bg-black/40 flex items-center justify-center" onMouseDown={() => setShareDialog(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-[420px] max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">私密分享「{title || article.title}」</h3>
+              <p className="text-[11px] text-gray-400 mb-3">
+                任何拿到链接的人在有效期内可阅读这篇笔记(含其附件),但它不会出现在博客列表与热榜。
+                一篇笔记同时只有一个分享链接,重新生成后旧链接立即失效;设为私有或删除笔记会自动撤销分享。
+              </p>
+              {share.token && (
+                <div className="mb-3 border border-sky-100 bg-sky-50/60 rounded-lg p-2.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={`${location.origin}/blog/share/${share.token}`}
+                      onFocus={(e) => e.target.select()}
+                      className="flex-1 min-w-0 text-[11px] text-gray-600 bg-white border border-gray-200 rounded px-2 py-1 focus:outline-none"
+                    />
+                    <button
+                      onClick={async () => { if (await copyShareLink(share.token!)) setShareErr('') }}
+                      className="px-2 py-1 text-[11px] rounded bg-sky-500 text-white hover:bg-sky-600 shrink-0"
+                    >
+                      复制
+                    </button>
+                  </div>
+                  <p className="text-[11px] mt-1.5 flex items-center justify-between">
+                    <span className={active ? 'text-sky-600' : 'text-amber-600'}>
+                      {active ? `有效期:${fmtRemaining(share.expires)}` : '已过期,可选择有效期重新生成'}
+                    </span>
+                    <button onClick={cancelShare} className="text-red-400 hover:text-red-600 hover:underline">取消分享</button>
+                  </p>
+                </div>
+              )}
+              <p className="text-xs font-medium text-gray-600 mb-1.5">有效期</p>
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {EXPIRY_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    onClick={() => setSharePreset(p.seconds)}
+                    className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+                      sharePreset === p.seconds
+                        ? 'border-emerald-400 bg-emerald-50 text-emerald-700 font-medium'
+                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              {shareErr && <p className="text-[11px] text-red-500 mb-2">{shareErr}</p>}
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShareDialog(false)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100">关闭</button>
+                <button
+                  onClick={submitShare}
+                  disabled={shareBusy}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50"
+                >
+                  {shareBusy ? '生成中…' : share.token ? '重新生成链接' : '生成链接并复制'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 笔记链接选择器(源码模式;富文本模式由 WysiwygEditor 自行承载) */}
       {showNoteLink && (

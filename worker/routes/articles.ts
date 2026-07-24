@@ -333,6 +333,48 @@ articles.get('/:id/backlinks', async (c) => {
   }
 })
 
+// ---- P9.3 笔记私密分享(unlisted):/blog/share/<token> 可看,不入博客列表/热榜。
+// 与文件分享同构:token+过期两列即状态,单分享天然成立,重新生成即替换,取消置空。
+// 私有笔记禁止分享;移入回收站/设为私有时自动撤销。
+
+// POST /api/articles/:id/share {expires_in: 秒|null(永久)}
+articles.post('/:id/share', async (c) => {
+  const user = c.get('user')
+  try {
+    const { expires_in } = await c.req.json<{ expires_in?: number | null }>()
+    if (expires_in != null && (!Number.isFinite(expires_in) || expires_in < 60 || expires_in > 10 * 366 * 86400)) {
+      return err('有效期不合法')
+    }
+    const a = await c.env.DB.prepare('SELECT id, is_private, deleted_at FROM articles WHERE id = ? AND user_id = ?')
+      .bind(c.req.param('id'), user.id).first<any>()
+    if (!a) return err('文章不存在', 404)
+    if (a.deleted_at) return err('回收站中的笔记不能分享')
+    if (a.is_private) return err('私有笔记不能分享,请先取消私有')
+    const bytes = crypto.getRandomValues(new Uint8Array(16))
+    const token = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+    const expiresAt = expires_in == null ? null : new Date(Date.now() + expires_in * 1000).toISOString()
+    await c.env.DB.prepare('UPDATE articles SET share_token = ?, share_expires_at = ? WHERE id = ?')
+      .bind(token, expiresAt, a.id).run()
+    return ok({ token, share_expires_at: expiresAt, url: `/blog/share/${token}` })
+  } catch (e: any) {
+    return err('分享失败: ' + e.message, 500)
+  }
+})
+
+// DELETE /api/articles/:id/share - 取消分享(链接立即失效)
+articles.delete('/:id/share', async (c) => {
+  const user = c.get('user')
+  try {
+    const r = await c.env.DB.prepare(
+      'UPDATE articles SET share_token = NULL, share_expires_at = NULL WHERE id = ? AND user_id = ?'
+    ).bind(c.req.param('id'), user.id).run()
+    if (!r.meta.changes) return err('文章不存在', 404)
+    return ok({ message: '已取消分享' })
+  } catch (e: any) {
+    return err('取消失败: ' + e.message, 500)
+  }
+})
+
 // GET /api/articles/:id - Get article detail
 articles.get('/:id', async (c) => {
   const user = c.get('user')
@@ -400,6 +442,11 @@ articles.put('/:id', async (c) => {
       "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, tags = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, newTags, newPinned, id).run()
 
+    // 设为私有 → 撤销私密分享链接(私有笔记不可分享,不变式与文件分享一致)
+    if (priv && article.share_token) {
+      await c.env.DB.prepare('UPDATE articles SET share_token = NULL, share_expires_at = NULL WHERE id = ?').bind(id).run()
+    }
+
     // 每次保存都同步附件引用索引(幂等,兼顾索引缺行的自愈)
     await syncArticleFiles(c.env, user.id, Number(id), newContent)
 
@@ -447,7 +494,7 @@ articles.delete('/:id', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare('DELETE FROM chunks WHERE article_id = ?').bind(id),
       c.env.DB.prepare(
-        "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0 WHERE id = ?"
+        "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0, share_token = NULL, share_expires_at = NULL WHERE id = ?"
       ).bind(id),
       c.env.DB.prepare(
         "UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime('now') WHERE id = ?"

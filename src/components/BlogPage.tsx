@@ -24,6 +24,8 @@ interface BlogDetail {
   content: string
   tag: string
   tags?: string[]
+  /** 私密分享视图(P9.3):不在博客列表/热榜,凭链接访问 */
+  shared?: boolean
   published_at: string
   views: number
 }
@@ -34,7 +36,10 @@ interface HotItem {
   views: number
 }
 
-const parsePath = (): number | null => {
+// /blog/<id> 公开文章;/blog/share/<token> 私密分享(P9.3,字符串即 token)
+const parsePath = (): number | string | null => {
+  const s = /^\/blog\/share\/([0-9a-f]{32})/.exec(window.location.pathname)
+  if (s) return s[1]
   const m = /^\/blog\/(\d+)/.exec(window.location.pathname)
   return m ? Number(m[1]) : null
 }
@@ -77,7 +82,7 @@ const Spinner = () => (
 )
 
 export default function BlogPage() {
-  const [postId, setPostId] = useState<number | null>(parsePath())
+  const [postId, setPostId] = useState<number | string | null>(parsePath())
   const [posts, setPosts] = useState<BlogPost[] | null>(null)
   const [detail, setDetail] = useState<BlogDetail | null>(null)
   const [detailErr, setDetailErr] = useState('')
@@ -137,7 +142,8 @@ export default function BlogPage() {
     setDetail(null)
     setDetailErr('')
     window.scrollTo(0, 0)
-    fetch(`/api/blog/posts/${postId}`)
+    // 数字 id 为公开文章;字符串为私密分享 token
+    fetch(typeof postId === 'string' ? `/api/blog/share/${postId}` : `/api/blog/posts/${postId}`)
       .then((r) => r.json() as Promise<any>)
       .then((j) => {
         if (j.ok) {
@@ -282,6 +288,11 @@ export default function BlogPage() {
                 </button>
                 <span className="text-[#8f8f8f]">&gt;</span>
                 <span className="text-[#8f8f8f]">{detail.tag}</span>
+                {detail.shared && (
+                  <span className="text-[12px] px-1.5 py-0.5 rounded bg-[#e05252]/10 text-[#e05252]" title="凭链接访问的私密分享,不会出现在博客列表">
+                    私密分享
+                  </span>
+                )}
               </div>
               <h1 className="text-[26px] sm:text-[28px] font-bold leading-snug text-[var(--blog-title)] mt-5">{detail.title}</h1>
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-gray-500 mt-4">

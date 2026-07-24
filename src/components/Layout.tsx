@@ -181,13 +181,39 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
-  const createArticle = () => {
+  // P9.3 笔记模板:存在名为「模板」的笔记本且有内容时,新建笔记先弹选择(空白/套用模板)
+  const [templatePick, setTemplatePick] = useState<Article[] | null>(null)
+
+  const startDraft = (tpl?: Article) => {
     if (!activeNotebook || activeNotebook.id < 0) return
+    setTemplatePick(null)
     // 本地草稿:不落库。用户首次输入触发保存时才真正创建记录(见 saveArticle 的 id<0 分支)
     setActiveArticle({
-      id: -Date.now(), notebook_id: activeNotebook.id, title: '无标题文章', content: '',
+      id: -Date.now(), notebook_id: activeNotebook.id,
+      title: tpl?.title || '无标题文章', content: tpl?.content ?? '',
+      tags: tpl?.tags ?? null,
       is_vectorized: 0, is_public: 0, is_private: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     } as Article)
+  }
+
+  const createArticle = async () => {
+    if (!activeNotebook || activeNotebook.id < 0) return
+    const tplNb = notebooks.find((n) => n.name === '模板')
+    if (tplNb && tplNb.id !== activeNotebook.id && tplNb.article_count > 0) {
+      const res = await get<Article[]>(`/notebooks/${tplNb.id}/articles`)
+      if (res.ok && res.data && res.data.length > 0) {
+        setTemplatePick(res.data)
+        return
+      }
+    }
+    startDraft()
+  }
+
+  // 套用模板:列表项只有摘要,取全文后再开草稿
+  const useTemplate = async (id: number) => {
+    const res = await get<Article>(`/articles/${id}`)
+    if (res.ok && res.data) startDraft(res.data)
+    else setTemplatePick(null)
   }
 
   const saveArticle = async (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number; tags?: string[]; pinned?: number }) => {
@@ -524,6 +550,30 @@ export default function Layout({ token, username, onLogout }: Props) {
           onImportFiles={importLocalFiles}
           onClose={() => !importing && setShowImport(false)}
         />
+      )}
+
+      {/* P9.3 模板选择:新建笔记时从「模板」笔记本套用 */}
+      {templatePick && (
+        <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setTemplatePick(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-80 max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">新建笔记</h3>
+            <p className="text-[11px] text-gray-400 mb-2">从「模板」笔记本选择一篇作为起点,或从空白开始。</p>
+            <div className="max-h-64 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+              <button onClick={() => startDraft()} className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">
+                📄 空白笔记
+              </button>
+              {templatePick.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => useTemplate(t.id)}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 truncate"
+                >
+                  📋 {t.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

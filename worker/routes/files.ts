@@ -41,7 +41,8 @@ export async function syncArticleFiles(env: AppEnv['Bindings'], userId: number, 
 }
 
 /**
- * 免登录可访问判定:key 被任一「公开且非私有」文章引用即放行。
+ * 免登录可访问判定:key 被任一「公开且非私有」文章引用,或被「有未过期私密分享」的
+ * 非私有文章引用(P9.3:分享出去的笔记里的附件要能显示)即放行。
  * 索引查不到时兜底直查公开文章内容(存量文章在下一次保存前索引可能缺行;
  * 公开文章数量小,instr 全扫可接受,并兼容 URL 编码形态的中文文件名)。
  */
@@ -49,8 +50,10 @@ export async function isPubliclyReferenced(env: AppEnv['Bindings'], key: string)
   try {
     const hit = await env.DB.prepare(
       `SELECT 1 FROM article_files af JOIN articles a ON a.id = af.article_id
-       WHERE af.file_key = ? AND a.is_public = 1 AND a.is_private = 0 LIMIT 1`
-    ).bind(key).first()
+       WHERE af.file_key = ? AND a.is_private = 0 AND a.deleted_at IS NULL
+         AND (a.is_public = 1 OR (a.share_token IS NOT NULL AND (a.share_expires_at IS NULL OR a.share_expires_at > ?)))
+       LIMIT 1`
+    ).bind(key, new Date().toISOString()).first()
     if (hit) return true
     const encoded = key.split('/').map(encodeURIComponent).join('/')
     const like = await env.DB.prepare(

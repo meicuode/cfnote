@@ -51,6 +51,9 @@ export interface Article {
   pinned?: number
   /** P9 回收站:非空表示已软删除(只读,30 天后自动清除) */
   deleted_at?: string | null
+  /** P9.3 私密分享链接(/blog/share/<token>,单分享;私有/回收站自动撤销) */
+  share_token?: string | null
+  share_expires_at?: string | null
   /** 回收站列表附带的原笔记本名 */
   notebook?: string | null
   created_at: string

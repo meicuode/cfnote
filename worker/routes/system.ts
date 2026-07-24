@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS articles (
   deleted_at TEXT,
   tags TEXT,
   pinned INTEGER DEFAULT 0,
+  share_token TEXT,
+  share_expires_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_articles_notebook ON articles(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_articles_user ON articles(user_id);
+CREATE INDEX IF NOT EXISTS idx_articles_share ON articles(share_token);
 CREATE INDEX IF NOT EXISTS idx_chunks_article ON chunks(article_id);
 CREATE INDEX IF NOT EXISTS idx_notebooks_user ON notebooks(user_id);
 
