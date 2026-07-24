@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
-import { deleteAttachmentsOf } from './files'
+import { syncArticleFiles, purgeUnreferencedAttachments } from './files'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -29,6 +29,9 @@ articles.post('/', async (c) => {
     await c.env.DB.prepare(
       'UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?'
     ).bind(notebook_id).run()
+
+    // 同步附件引用索引(内容为事实源,索引派生)
+    await syncArticleFiles(c.env, user.id, articleId as number, content || '')
 
     let vectorize_error: string | null = null
     if (content && content.trim().length > 0) {
@@ -82,6 +85,8 @@ articles.post('/import', async (c) => {
     await c.env.DB.prepare(
       'UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?'
     ).bind(notebook_id).run()
+
+    await syncArticleFiles(c.env, user.id, articleId as number, articleContent)
 
     // Vectorize
     let vectorize_error: string | null = null
@@ -178,6 +183,9 @@ articles.put('/:id', async (c) => {
       "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, id).run()
 
+    // 每次保存都同步附件引用索引(幂等,兼顾索引缺行的自愈)
+    await syncArticleFiles(c.env, user.id, Number(id), newContent)
+
     // Re-vectorize if content changed
     let vectorize_error: string | null = null
     if (newHash !== article.content_hash) {
@@ -217,8 +225,8 @@ articles.delete('/:id', async (c) => {
       try { await c.env.VECTORIZE.deleteByIds(chunks.map((ch) => ch.vector_id)) } catch {}
     }
 
-    // 同步清理文中引用的 R2 附件
-    await deleteAttachmentsOf(c.env, user.id, [article.content || ''])
+    // 引用计数清理:删索引行后,引用归零且未入文件管理目录的附件连同边车缩略图清 R2
+    await purgeUnreferencedAttachments(c.env, user.id, [Number(id)], [article.content || ''])
 
     await c.env.DB.prepare('DELETE FROM articles WHERE id = ?').bind(id).run()
     await c.env.DB.prepare(

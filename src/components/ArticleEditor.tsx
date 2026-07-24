@@ -229,7 +229,13 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
   const isPublic = !!article.is_public
   const isPrivate = !!article.is_private
-  const [publishDialog, setPublishDialog] = useState<{ risks: SensitiveHit[] } | null>(null)
+  // 发布前附件清单(/api/fm/refcheck):files 为 null 表示检查中
+  interface RefFile {
+    key: string; name: string; url: string; size: number; category: string
+    thumb: string | null
+    other_refs: { id: number; title: string; is_public: boolean; is_private: boolean }[]
+  }
+  const [publishDialog, setPublishDialog] = useState<{ risks: SensitiveHit[]; files: RefFile[] | null } | null>(null)
   const [flagConfirm, setFlagConfirm] = useState<'private' | 'unprivate' | 'unpublish' | null>(null)
   const [flagBusy, setFlagBusy] = useState(false)
 
@@ -244,9 +250,17 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
-  // 点击公开:先对标题+正文做敏感信息全文扫描,弹窗列出全部风险项后才允许发布
+  // 点击公开:文本走敏感信息全文扫描,附件走服务端引用检查(清单+私有交叉引用警告)
   const handlePublishClick = () => {
-    setPublishDialog({ risks: scanSensitive(`${title}\n${content}`) })
+    setPublishDialog({ risks: scanSensitive(`${title}\n${content}`), files: null })
+    fetch('/api/fm/refcheck', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ content, article_id: article.id }),
+    })
+      .then((r) => r.json() as Promise<any>)
+      .then((j) => setPublishDialog((prev) => (prev ? { ...prev, files: j.ok ? j.data.files : [] } : prev)))
+      .catch(() => setPublishDialog((prev) => (prev ? { ...prev, files: [] } : prev)))
   }
 
   // Ctrl+S / Cmd+S
@@ -904,68 +918,113 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         </div>
       )}
 
-      {/* 公开前敏感信息检查弹窗:列出全部风险项,逐条确认后才可发布 */}
-      {publishDialog && (
-        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/40" onMouseDown={() => setPublishDialog(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[94vw] p-5" onMouseDown={(e) => e.stopPropagation()}>
-            {publishDialog.risks.length > 0 ? (
-              <>
-                <h3 className="text-sm font-semibold text-red-600 mb-1 flex items-center gap-1.5">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                  检测到 {publishDialog.risks.length} 处疑似敏感信息
-                </h3>
-                <p className="text-xs text-gray-500 mb-3">
-                  公开后任何人都能访问这篇笔记。请逐条确认以下内容(摘录已打码,原文未改动):
-                </p>
-                <div className="max-h-[45vh] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
-                  {publishDialog.risks.map((r, i) => (
-                    <div key={i} className="px-3 py-2 flex items-start gap-2">
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 shrink-0 mt-0.5 whitespace-nowrap">{r.label}</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-gray-700 font-mono break-all">{r.excerpt}</p>
-                        <p className="text-[11px] text-gray-400 mt-0.5">{r.line === 1 ? '标题' : `正文第 ${r.line - 1} 行`}</p>
+      {/* 公开前检查弹窗:文本风险项 + 将随文公开的附件清单(含私有交叉引用警告) */}
+      {publishDialog && (() => {
+        const files = publishDialog.files
+        const crossPrivate = (files || []).some((f) => f.other_refs.some((o) => o.is_private))
+        const hasRisk = publishDialog.risks.length > 0 || crossPrivate
+        return (
+          <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/40" onMouseDown={() => setPublishDialog(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[94vw] p-5" onMouseDown={(e) => e.stopPropagation()}>
+              {publishDialog.risks.length > 0 ? (
+                <>
+                  <h3 className="text-sm font-semibold text-red-600 mb-1 flex items-center gap-1.5">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    检测到 {publishDialog.risks.length} 处疑似敏感信息
+                  </h3>
+                  <p className="text-xs text-gray-500 mb-3">
+                    公开后任何人都能访问这篇笔记。请逐条确认以下内容(摘录已打码,原文未改动):
+                  </p>
+                  <div className="max-h-[38vh] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+                    {publishDialog.risks.map((r, i) => (
+                      <div key={i} className="px-3 py-2 flex items-start gap-2">
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 shrink-0 mt-0.5 whitespace-nowrap">{r.label}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-gray-700 font-mono break-all">{r.excerpt}</p>
+                          <p className="text-[11px] text-gray-400 mt-0.5">{r.line === 1 ? '标题' : `正文第 ${r.line - 1} 行`}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-semibold text-gray-900 mb-1">✅ 未检测到敏感信息</h3>
+                  <p className="text-xs text-gray-500">
+                    已检查:手机号 / 身份证 / 银行卡 / 邮箱 / 各类密钥令牌 / 密码。公开后这篇笔记会出现在博客页,任何人可访问。
+                  </p>
+                </>
+              )}
+
+              {/* 附件清单:文本扫描覆盖不了截图等文件内容,列出让用户目视确认 */}
+              {files === null ? (
+                <p className="text-xs text-gray-400 mt-3">附件检查中…</p>
+              ) : files.length > 0 ? (
+                <div className="mt-3">
+                  <p className="text-xs font-medium text-gray-600 mb-1.5">将随笔记公开的附件({files.length})</p>
+                  <div className="max-h-[24vh] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+                    {files.map((f) => (
+                      <div key={f.key} className="px-3 py-2 flex items-center gap-2.5">
+                        {f.thumb ? (
+                          <img
+                            src={f.thumb}
+                            alt=""
+                            className="w-9 h-9 rounded-md object-cover border border-gray-100 shrink-0"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        ) : (
+                          <span className="w-9 h-9 rounded-md bg-gray-50 flex items-center justify-center text-base shrink-0">📄</span>
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-gray-700 truncate">{f.name}</p>
+                          {f.other_refs.length > 0 && (
+                            <p className="text-[11px] text-gray-400 mt-0.5 truncate">
+                              同时被引用:{f.other_refs.map((o) => `《${o.title}》${o.is_private ? '(私有)' : o.is_public ? '(公开)' : ''}`).join('、')}
+                            </p>
+                          )}
+                        </div>
+                        {f.other_refs.some((o) => o.is_private) && (
+                          <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 shrink-0">私有笔记引用中</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {crossPrivate && (
+                    <p className="text-[11px] text-amber-600 mt-1.5">
+                      ⚠ 标注的附件同时被私有笔记引用:公开后附件本身对外可见,请确认其内容可公开。
+                    </p>
+                  )}
                 </div>
-                <div className="flex justify-end gap-2 mt-4">
-                  <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
-                    取消
-                  </button>
-                  <button
-                    onClick={() => applyFlags({ is_public: 1 })}
-                    disabled={flagBusy}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
-                  >
-                    {flagBusy ? '发布中...' : '我已逐条确认,仍要公开'}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <h3 className="text-sm font-semibold text-gray-900 mb-1">✅ 未检测到敏感信息</h3>
-                <p className="text-xs text-gray-500 mb-4">
-                  已检查:手机号 / 身份证 / 银行卡 / 邮箱 / 各类密钥令牌 / 密码。公开后这篇笔记会出现在博客页,任何人可访问。
-                </p>
-                <div className="flex justify-end gap-2">
-                  <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
-                    取消
-                  </button>
-                  <button
-                    onClick={() => applyFlags({ is_public: 1 })}
-                    disabled={flagBusy}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors disabled:opacity-50"
-                  >
-                    {flagBusy ? '发布中...' : '确认公开'}
-                  </button>
-                </div>
-              </>
-            )}
+              ) : null}
+
+              <div className="flex justify-end gap-2 mt-4">
+                <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
+                  取消
+                </button>
+                <button
+                  onClick={() => applyFlags({ is_public: 1 })}
+                  disabled={flagBusy || files === null}
+                  className={`px-3 py-1.5 text-xs rounded-lg text-white transition-colors disabled:opacity-50 ${
+                    hasRisk ? 'bg-red-500 hover:bg-red-600' : 'bg-emerald-500 hover:bg-emerald-600'
+                  }`}
+                >
+                  {flagBusy
+                    ? '发布中...'
+                    : files === null
+                      ? '附件检查中...'
+                      : publishDialog.risks.length > 0
+                        ? '我已逐条确认,仍要公开'
+                        : crossPrivate
+                          ? '我已确认附件,仍要公开'
+                          : '确认公开'}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {flagConfirm === 'private' && (
         <ConfirmDialog

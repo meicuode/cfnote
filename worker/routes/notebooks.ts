@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err } from '../utils'
-import { deleteAttachmentsOf } from './files'
+import { purgeUnreferencedAttachments } from './files'
 import type { AppEnv } from '../types'
 
 export const notebooks = new Hono<AppEnv>()
@@ -81,11 +81,11 @@ notebooks.delete('/:id', async (c) => {
       }
     }
 
-    // 同步清理笔记本内所有文章引用的 R2 附件
+    // 引用计数清理:笔记本内全部文章的附件,引用归零才清 R2(跨笔记本共用的附件不受影响)
     const { results: arts } = await c.env.DB.prepare(
-      'SELECT content FROM articles WHERE notebook_id = ?'
-    ).bind(id).all<{ content: string }>()
-    await deleteAttachmentsOf(c.env, user.id, arts.map((a) => a.content || ''))
+      'SELECT id, content FROM articles WHERE notebook_id = ?'
+    ).bind(id).all<{ id: number; content: string }>()
+    await purgeUnreferencedAttachments(c.env, user.id, arts.map((a) => a.id), arts.map((a) => a.content || ''))
 
     // D1 cascade will handle articles and chunks
     await c.env.DB.prepare('DELETE FROM notebooks WHERE id = ?').bind(id).run()

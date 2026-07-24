@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
 import { vectorizeArticle } from './articles'
+import { syncArticleFiles } from './files'
 import type { AppEnv } from '../types'
 
 export const system = new Hono<AppEnv>()
@@ -104,6 +105,34 @@ CREATE TABLE IF NOT EXISTS usage_archive (
   count INTEGER NOT NULL DEFAULT 0,
   UNIQUE(period, action, model)
 );
+
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  folder_id INTEGER,
+  size INTEGER DEFAULT 0,
+  content_type TEXT,
+  category TEXT DEFAULT 'other',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS folders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  parent_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS article_files (
+  article_id INTEGER NOT NULL,
+  file_key TEXT NOT NULL,
+  PRIMARY KEY (article_id, file_key)
+);
+CREATE INDEX IF NOT EXISTS idx_article_files_key ON article_files(file_key);
 `
 
 // GET /api/status - Check if system is initialized
@@ -206,12 +235,14 @@ system.put('/settings', async (c) => {
 system.get('/export', async (c) => {
   const user = c.get('user')
   try {
-    const [notebooks, articles, convs, msgs, settingsRows] = await Promise.all([
+    const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows] = await Promise.all([
       c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, notebook_id, title, content, created_at, updated_at FROM articles WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
       c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
+      c.env.DB.prepare('SELECT id, key, name, folder_id, size, content_type, category, created_at FROM files WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
+      c.env.DB.prepare('SELECT id, name, parent_id, created_at FROM folders WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
     ])
 
     const settings: Record<string, string> = {}
@@ -229,6 +260,8 @@ system.get('/export', async (c) => {
       articles: articles.results ?? [],
       conversations: convs.results ?? [],
       messages: (msgs.results ?? []).map((m: any) => ({ ...m, sources: m.sources ? JSON.parse(m.sources) : null })),
+      files: fileRows.results ?? [],
+      folders: folderRows.results ?? [],
       settings,
     }
 
@@ -283,6 +316,7 @@ system.post('/import', async (c) => {
     const existingKeys = new Set(existingArts.map((a) => `${a.title} ${a.content_hash}`))
 
     const inserts: D1PreparedStatement[] = []
+    const insertContents: string[] = []
     let skipped = 0
     for (const a of data.articles) {
       const nbId = nbMap.get(a?.notebook_id)
@@ -295,12 +329,18 @@ system.post('/import', async (c) => {
       inserts.push(c.env.DB.prepare(
         'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized) VALUES (?, ?, ?, ?, ?, 0)'
       ).bind(nbId, user.id, a.title, content, hash))
+      insertContents.push(content)
     }
     if (inserts.length > 0) {
-      await c.env.DB.batch(inserts)
+      const created = await c.env.DB.batch(inserts)
       await c.env.DB.prepare(
         "UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = notebooks.id), updated_at = datetime('now') WHERE user_id = ?"
       ).bind(user.id).run()
+      // 登记导入文章的附件引用索引(R2 对象按原 key 恢复后,可访问性判定随之恢复)
+      for (let i = 0; i < created.length; i++) {
+        const newId = created[i]?.meta?.last_row_id
+        if (newId) await syncArticleFiles(c.env, user.id, newId as number, insertContents[i])
+      }
     }
 
     logSystem(c.env, 'info', 'import', '备份导入完成', {

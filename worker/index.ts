@@ -8,7 +8,8 @@ import { notebooks } from './routes/notebooks'
 import { articles } from './routes/articles'
 import { search } from './routes/search'
 import { conversations } from './routes/conversations'
-import { files } from './routes/files'
+import { files, afile } from './routes/files'
+import { fm } from './routes/fm'
 import { stats } from './routes/stats'
 import { blog } from './routes/blog'
 import type { AppEnv } from './types'
@@ -24,8 +25,12 @@ app.use('/api/*', async (c, next) => {
   await ensureSchema(c.env).catch(() => {})
 
   if (PUBLIC_ROUTES.includes(c.req.path)) return next()
-  // 附件下载/元信息免登录(供 <img> 直接引用、卡片展示大小):key 含 32 位随机段,不可枚举
-  if ((c.req.method === 'GET' || c.req.method === 'HEAD') && c.req.path.startsWith('/api/files/')) return next()
+  // 附件读取免登录进入路由(新旧两种链接),路由内部做访问分级:
+  // 登录态(头或 cookie)放行,否则仅「被公开文章引用」的附件可读
+  if (
+    (c.req.method === 'GET' || c.req.method === 'HEAD') &&
+    (c.req.path.startsWith('/api/files/') || c.req.path.startsWith('/api/afile/'))
+  ) return next()
   // 公开博客只读接口免登录(仅暴露 is_public=1 且非私有的文章)
   if (c.req.method === 'GET' && c.req.path.startsWith('/api/blog/')) return next()
 
@@ -44,6 +49,8 @@ app.route('/api/articles', articles)
 app.route('/api/search', search)
 app.route('/api/conversations', conversations)
 app.route('/api/files', files)
+app.route('/api/afile', afile)
+app.route('/api/fm', fm)
 app.route('/api/stats', stats)
 app.route('/api/blog', blog)
 

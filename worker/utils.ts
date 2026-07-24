@@ -383,3 +383,16 @@ export async function getUser(request: Request, env: Env): Promise<{ id: number;
   if (!payload || !payload.uid) return null
   return { id: payload.uid as number, username: payload.username as string }
 }
+
+// 附件读取专用的宽松鉴权:Authorization 头之外,接受 cfnote_t cookie(前端登录后写入,
+// <img>/同源 fetch 自动携带,解决图片标签带不上请求头的问题)。
+// 只允许用在 GET/HEAD 附件路由——写操作一律不认 cookie,避免引入 CSRF 面。
+export async function getUserLoose(request: Request, env: Env): Promise<{ id: number; username: string } | null> {
+  const viaHeader = await getUser(request, env)
+  if (viaHeader) return viaHeader
+  const m = /(?:^|;\s*)cfnote_t=([^;\s]+)/.exec(request.headers.get('Cookie') || '')
+  if (!m) return null
+  const payload = await verifyJWT(m[1], env.JWT_SECRET)
+  if (!payload || !payload.uid) return null
+  return { id: payload.uid as number, username: payload.username as string }
+}
