@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS articles (
   is_private INTEGER DEFAULT 0,
   published_at TEXT,
   views INTEGER DEFAULT 0,
+  deleted_at TEXT,
+  tags TEXT,
+  pinned INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
@@ -241,7 +244,7 @@ system.get('/export', async (c) => {
   try {
     const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows] = await Promise.all([
       c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
-      c.env.DB.prepare('SELECT id, notebook_id, title, content, created_at, updated_at FROM articles WHERE user_id = ? ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
       c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
@@ -331,8 +334,9 @@ system.post('/import', async (c) => {
       if (existingKeys.has(key)) { skipped++; continue }
       existingKeys.add(key)
       inserts.push(c.env.DB.prepare(
-        'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized) VALUES (?, ?, ?, ?, ?, 0)'
-      ).bind(nbId, user.id, a.title, content, hash))
+        'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized, tags, pinned) VALUES (?, ?, ?, ?, ?, 0, ?, ?)'
+      ).bind(nbId, user.id, a.title, content, hash,
+        typeof a.tags === 'string' && a.tags ? a.tags : null, a.pinned ? 1 : 0))
       insertContents.push(content)
     }
     if (inserts.length > 0) {

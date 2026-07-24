@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import { EyeOffIcon } from './ArticleEditor'
-import { PRIVATE_NOTEBOOK } from '../types'
+import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import type { Notebook } from '../types'
 
 interface Props {
   notebooks: Notebook[]
   activeNotebook: Notebook | null
+  tags: { name: string; count: number }[]
   onSelect: (nb: Notebook) => void
   onCreate: (name: string) => Promise<any>
   onDelete: (id: number) => Promise<any>
@@ -15,7 +16,7 @@ interface Props {
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate, onDelete, onOpenFiles }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -101,6 +102,28 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
           </p>
         )}
 
+        {/* P9 标签区:聚合自笔记 tags,点击进入标签虚拟视图 */}
+        {tags.length > 0 && (
+          <div className="border-t border-gray-100 mt-2 pt-2">
+            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-3 mb-1">标签</p>
+            {tags.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => onSelect(tagNotebook(t.name))}
+                className={`w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg mb-0.5 text-sm transition-colors ${
+                  activeNotebook?.id === TAG_VIEW_ID && activeNotebook.name === t.name
+                    ? 'bg-emerald-50 text-emerald-700 font-medium'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                <span className="text-gray-400 shrink-0">#</span>
+                <span className="truncate flex-1">{t.name}</span>
+                <span className="text-xs text-gray-400">{t.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* 固定入口:我的私有(虚拟笔记本,筛选所有私有笔记,不可删除) */}
         <div className="border-t border-gray-100 mt-2 pt-2">
           <button
@@ -116,6 +139,23 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
               <EyeOffIcon className="w-3.5 h-3.5" />
             </span>
             <span className="truncate flex-1">我的私有</span>
+          </button>
+          {/* 回收站(P9):软删除的笔记,30 天后自动清除 */}
+          <button
+            onClick={() => onSelect(TRASH_NOTEBOOK)}
+            className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
+              activeNotebook?.id === TRASH_NOTEBOOK.id
+                ? 'bg-gray-200/70 text-gray-700 font-medium'
+                : 'text-gray-700 hover:bg-gray-100'
+            }`}
+            title="已删除的笔记,30 天后自动清除"
+          >
+            <span className="text-gray-400 shrink-0">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">回收站</span>
           </button>
           {/* 文件管理(P8.2):管理应用内全部附件 */}
           <button
@@ -151,7 +191,7 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
       {confirmId !== null && (
         <ConfirmDialog
           title="删除此笔记本？"
-          message="其中的所有文章及其向量索引将被一并删除，此操作不可撤销。"
+          message="其中的所有文章及其向量索引、附件引用将被彻底删除(不进入回收站),此操作不可撤销。"
           onConfirm={() => { const id = confirmId; setConfirmId(null); onDelete(id) }}
           onCancel={() => setConfirmId(null)}
         />

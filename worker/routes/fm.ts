@@ -64,7 +64,7 @@ fm.get('/overview', async (c) => {
          JOIN articles a ON a.id = af.article_id
          JOIN notebooks n ON n.id = a.notebook_id
          JOIN files f ON f.key = af.file_key
-         WHERE n.user_id = ?
+         WHERE n.user_id = ? AND a.deleted_at IS NULL
          GROUP BY n.id, n.name, n.color ORDER BY n.name`
       ).bind(user.id).all(),
       c.env.DB.prepare('SELECT id, name, parent_id, is_private, created_at FROM folders WHERE user_id = ? ORDER BY name')
@@ -105,7 +105,7 @@ fm.get('/files', async (c) => {
       sql += ' AND f.folder_id IS NULL AND NOT EXISTS (SELECT 1 FROM article_files af3 WHERE af3.file_key = f.key)'
     } else if (view === 'notebook') {
       sql += ` AND EXISTS (SELECT 1 FROM article_files af4 JOIN articles a4 ON a4.id = af4.article_id
-               WHERE af4.file_key = f.key AND a4.notebook_id = ?)`
+               WHERE af4.file_key = f.key AND a4.notebook_id = ? AND a4.deleted_at IS NULL)`
       binds.push(Number(c.req.query('notebook')) || 0)
     }
     if (category === 'image' || category === 'doc' || category === 'other') {
@@ -138,7 +138,7 @@ fm.get('/files/:id/refs', async (c) => {
        FROM article_files af
        JOIN articles a ON a.id = af.article_id
        LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE af.file_key = ? ORDER BY a.updated_at DESC LIMIT 50`
+       WHERE af.file_key = ? AND a.deleted_at IS NULL ORDER BY a.updated_at DESC LIMIT 50`
     ).bind(f.key).all()
     return ok({ refs: results || [] })
   } catch (e: any) {
@@ -426,7 +426,7 @@ fm.post('/refcheck', async (c) => {
       const { results: refs } = await c.env.DB.prepare(
         `SELECT a.id, a.title, a.is_public, a.is_private
          FROM article_files af JOIN articles a ON a.id = af.article_id
-         WHERE af.file_key = ? AND a.id != ? LIMIT 10`
+         WHERE af.file_key = ? AND a.id != ? AND a.deleted_at IS NULL LIMIT 10`
       ).bind(key, article_id || 0).all<{ id: number; title: string; is_public: number; is_private: number }>()
       items.push({
         key,

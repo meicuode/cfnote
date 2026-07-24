@@ -6,6 +6,7 @@ import TurndownService from 'turndown'
 import { sourceModePasteText } from '../lib/pasteDetect'
 import { scanSensitive, type SensitiveHit } from '../lib/sensitiveScan'
 import ConfirmDialog from './ConfirmDialog'
+import { parseTags } from '../types'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -21,9 +22,11 @@ const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fen
 interface Props {
   article: Article
   token: string
-  onSave: (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number }) => Promise<any>
+  onSave: (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number; tags?: string[] }) => Promise<any>
   highlight?: { text: string; ts: number } | null
   loadingContent?: boolean
+  /** 已有标签全集(P9,标签输入的 datalist 补全) */
+  allTags?: string[]
 }
 
 // 私有标识(eye-off:斜杠划掉的眼睛,表示不可对外展示)
@@ -159,9 +162,13 @@ const IS_MOBILE = typeof navigator !== 'undefined' &&
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, token, onSave, highlight, loadingContent }: Props) {
+export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
+  // P9 标签(chips 编辑,随保存提交)与回收站只读态
+  const [tags, setTags] = useState<string[]>(parseTags(article.tags))
+  const [tagInput, setTagInput] = useState('')
+  const trashed = !!article.deleted_at
   const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>('edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
@@ -214,20 +221,23 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     if (wasDraft) return
     setTitle(article.title)
     setContent(article.content)
+    setTags(parseTags(article.tags))
+    setTagInput('')
     setSaved(true)
   }, [article.id, loadingContent])
 
   useEffect(() => {
     const changed = title !== article.title || content !== article.content
+      || JSON.stringify(tags) !== JSON.stringify(parseTags(article.tags))
     setSaved(!changed)
-  }, [title, content, article.title, article.content])
+  }, [title, content, tags, article.title, article.content, article.tags])
 
   const handleSave = useCallback(async () => {
     setSaving(true)
-    const res = await saveRef.current(article.id, { title, content })
+    const res = await saveRef.current(article.id, { title, content, tags })
     setSaving(false)
     if (res?.ok) setSaved(true)
-  }, [article.id, title, content])
+  }, [article.id, title, content, tags])
 
   // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
   const isPublic = !!article.is_public
@@ -273,20 +283,20 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
-        if (!saving && !saved) handleSave()
+        if (!saving && !saved && !trashed) handleSave()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleSave, saving, saved])
+  }, [handleSave, saving, saved, trashed])
 
   // Auto-save after 3s idle
   useEffect(() => {
-    if (saved) return
+    if (saved || trashed) return
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => { handleSave() }, 3000)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [handleSave, saved])
+  }, [handleSave, saved, trashed])
 
   // ---- 附件上传(R2):图片插入 ![](url),其他文件插入 [📎 name](url) ----
 
@@ -697,8 +707,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           >
             预览
           </button>
-          {/* 公开到博客(私有笔记不显示;草稿先保存后才可操作) */}
-          {article.id > 0 && !isPrivate && (
+          {/* 公开到博客(私有笔记不显示;草稿先保存后才可操作;回收站只读) */}
+          {article.id > 0 && !isPrivate && !trashed && (
             <>
               <span className="w-px h-4 bg-gray-200 mx-1" />
               {isPublic ? (
@@ -743,8 +753,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           )}
         </div>
         <div className="flex items-center gap-3">
-          {/* 私有状态:私有显示标识(点击可取消),非私有显示设为私有按钮 */}
-          {article.id > 0 && (isPrivate ? (
+          {/* 私有状态:私有显示标识(点击可取消),非私有显示设为私有按钮;回收站只读 */}
+          {article.id > 0 && !trashed && (isPrivate ? (
             <button
               onClick={() => setFlagConfirm('unprivate')}
               className="text-xs text-amber-600 hover:text-amber-700 flex items-center gap-1 transition-colors"
@@ -775,18 +785,27 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           <span className={`text-xs ${saved ? 'text-gray-400' : 'text-amber-500'}`}>
             {loadingContent ? '加载中...' : saving ? '保存中...' : saved ? '已保存' : '未保存'}
           </span>
-          <button
-            onClick={handleSave}
-            disabled={saving || saved}
-            className="px-3 py-1 bg-emerald-500 text-white text-sm rounded-lg hover:bg-emerald-600 disabled:opacity-40 transition-colors"
-          >
-            保存
-          </button>
+          {!trashed && (
+            <button
+              onClick={handleSave}
+              disabled={saving || saved}
+              className="px-3 py-1 bg-emerald-500 text-white text-sm rounded-lg hover:bg-emerald-600 disabled:opacity-40 transition-colors"
+            >
+              保存
+            </button>
+          )}
         </div>
       </div>
 
+      {/* P9 回收站横幅:软删除的笔记只读 */}
+      {trashed && (
+        <div className="px-6 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 shrink-0">
+          🗑 这篇笔记在回收站中(只读),30 天后自动彻底删除;可在左侧列表悬浮操作里恢复或彻底删除。
+        </div>
+      )}
+
       {/* Markdown formatting toolbar (edit mode only) */}
-      {mode === 'edit' && (
+      {mode === 'edit' && !trashed && (
         <div className="px-4 py-1.5 border-b border-gray-100 flex items-center gap-0.5 shrink-0 overflow-x-auto">
           {TOOLBAR_GROUPS.map((group, gi) => (
             <div key={gi} className="flex items-center gap-0.5">
@@ -836,10 +855,58 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         <input
           type="text"
           value={title}
+          readOnly={trashed}
           onChange={(e) => setTitle(e.target.value)}
           className="w-full text-2xl font-bold text-gray-900 border-none outline-none bg-transparent placeholder:text-gray-300"
           placeholder="文章标题"
         />
+        {/* P9 标签行:chips + 输入(datalist 补全已有标签);回收站只读展示 */}
+        <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+          {tags.map((t) => (
+            <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+              # {t}
+              {!trashed && (
+                <button
+                  onClick={() => setTags(tags.filter((x) => x !== t))}
+                  className="text-emerald-400 hover:text-emerald-700"
+                  title="移除标签"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+          {!trashed && tags.length < 20 && (
+            <>
+              <input
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault()
+                    const v = tagInput.trim().replace(/,+$/, '').slice(0, 30)
+                    if (v && !tags.includes(v)) setTags([...tags, v])
+                    setTagInput('')
+                  }
+                  if (e.key === 'Backspace' && !tagInput && tags.length > 0) setTags(tags.slice(0, -1))
+                }}
+                onBlur={() => {
+                  const v = tagInput.trim().slice(0, 30)
+                  if (v && !tags.includes(v)) setTags([...tags, v])
+                  setTagInput('')
+                }}
+                list="cfnote-tag-suggestions"
+                placeholder={tags.length === 0 ? '+ 标签' : '+'}
+                className="text-xs text-gray-600 bg-transparent border-none outline-none w-24 placeholder:text-gray-300"
+              />
+              <datalist id="cfnote-tag-suggestions">
+                {(allTags || []).filter((t) => !tags.includes(t)).map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Content area */}
@@ -848,7 +915,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           <textarea
             ref={textareaRef}
             value={content}
-            readOnly={loadingContent}
+            readOnly={loadingContent || trashed}
             onChange={(e) => setContent(e.target.value)}
             onPaste={handlePaste}
             onClick={handleTextareaClick}
@@ -872,7 +939,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                   <WysiwygEditor
                     value={content}
                     onChange={setContent}
-                    readOnly={loadingContent || IS_MOBILE}
+                    readOnly={loadingContent || IS_MOBILE || trashed}
                     token={token}
                     onUploadFile={uploadFileRaw}
                     onPatchContent={(fn) => setContent((prev) => fn(prev))}

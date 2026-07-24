@@ -6,12 +6,50 @@ import type { Env } from '../../src/types'
 
 export const articles = new Hono<AppEnv>()
 
+// 标签规范化(P9):去空白、去重、上限 20 个、单个 ≤30 字符;空集存 NULL。
+// 存 JSON 数组文本,查询用 SQLite json_each 展开,不建关联表。
+function normalizeTags(input: unknown): string | null {
+  if (!Array.isArray(input)) return null
+  const seen = new Set<string>()
+  for (const t of input) {
+    if (seen.size >= 20) break
+    const s = String(t).trim().slice(0, 30)
+    if (s) seen.add(s)
+  }
+  return seen.size > 0 ? JSON.stringify([...seen]) : null
+}
+
+// 回收站 30 天自动清理(P9):打开回收站时懒执行 + cron 兜底。
+// 附件按引用计数清理(与彻底删除同管线),失败静默下次重试。
+export async function purgeExpiredTrash(env: Env): Promise<number> {
+  try {
+    const { results } = await env.DB.prepare(
+      "SELECT id, user_id, content FROM articles WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')"
+    ).all<{ id: number; user_id: number; content: string }>()
+    if (!results || results.length === 0) return 0
+    const byUser = new Map<number, { ids: number[]; contents: string[] }>()
+    for (const r of results) {
+      const g = byUser.get(r.user_id) || { ids: [], contents: [] }
+      g.ids.push(r.id)
+      g.contents.push(r.content || '')
+      byUser.set(r.user_id, g)
+    }
+    for (const [uid, g] of byUser) await purgeUnreferencedAttachments(env, uid, g.ids, g.contents)
+    await env.DB.prepare(
+      `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
+    ).bind(...results.map((r) => r.id)).run()
+    return results.length
+  } catch {
+    return 0
+  }
+}
+
 // POST /api/articles - Create article
 articles.post('/', async (c) => {
   const user = c.get('user')
   try {
-    const { notebook_id, title, content } = await c.req.json<{
-      notebook_id: number; title: string; content: string
+    const { notebook_id, title, content, tags } = await c.req.json<{
+      notebook_id: number; title: string; content: string; tags?: string[]
     }>()
     if (!notebook_id || !title?.trim()) return err('笔记本ID和标题不能为空')
 
@@ -21,8 +59,8 @@ articles.post('/', async (c) => {
 
     const hash = await contentHash(content || '')
     const result = await c.env.DB.prepare(
-      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash) VALUES (?, ?, ?, ?, ?)'
-    ).bind(notebook_id, user.id, title.trim(), content || '', hash).run()
+      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, tags) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(notebook_id, user.id, title.trim(), content || '', hash, normalizeTags(tags)).run()
 
     const articleId = result.meta.last_row_id
 
@@ -111,12 +149,146 @@ articles.get('/private', async (c) => {
     const { results } = await c.env.DB.prepare(
       `SELECT id, notebook_id, title,
               SUBSTR(content, 1, 150) as summary,
-              is_vectorized, is_public, is_private, created_at, updated_at
-       FROM articles WHERE user_id = ? AND is_private = 1 ORDER BY updated_at DESC`
+              is_vectorized, is_public, is_private, tags, pinned, created_at, updated_at
+       FROM articles WHERE user_id = ? AND is_private = 1 AND deleted_at IS NULL
+       ORDER BY pinned DESC, updated_at DESC`
     ).bind(user.id).all()
     return ok(results)
   } catch (e: any) {
     return err('获取私有笔记失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/tags - 标签聚合(json_each 展开 JSON 列,不含回收站)
+articles.get('/tags', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT je.value AS name, COUNT(*) AS count
+       FROM articles a, json_each(COALESCE(a.tags, '[]')) je
+       WHERE a.user_id = ? AND a.deleted_at IS NULL
+       GROUP BY je.value ORDER BY count DESC, name`
+    ).bind(user.id).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取标签失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/by-tag?tag=xx - 按标签筛选(「标签」虚拟视图)
+articles.get('/by-tag', async (c) => {
+  const user = c.get('user')
+  const tag = (c.req.query('tag') || '').trim()
+  if (!tag) return err('缺少标签参数')
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, notebook_id, title,
+              SUBSTR(content, 1, 150) as summary,
+              is_vectorized, is_public, is_private, tags, pinned, created_at, updated_at
+       FROM articles a
+       WHERE a.user_id = ? AND a.deleted_at IS NULL
+         AND EXISTS (SELECT 1 FROM json_each(COALESCE(a.tags, '[]')) je WHERE je.value = ?)
+       ORDER BY pinned DESC, updated_at DESC`
+    ).bind(user.id, tag).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/trash - 回收站列表(顺带懒清理 30 天到期项)
+articles.get('/trash', async (c) => {
+  const user = c.get('user')
+  try {
+    await purgeExpiredTrash(c.env)
+    const { results } = await c.env.DB.prepare(
+      `SELECT a.id, a.notebook_id, a.title,
+              SUBSTR(a.content, 1, 150) as summary,
+              a.is_vectorized, a.is_public, a.is_private, a.tags, a.pinned,
+              a.deleted_at, a.created_at, a.updated_at, n.name AS notebook
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.user_id = ? AND a.deleted_at IS NOT NULL
+       ORDER BY a.deleted_at DESC`
+    ).bind(user.id).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取回收站失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/articles/trash/empty - 清空回收站(彻底删除全部,附件按引用计数清理)
+articles.post('/trash/empty', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, content FROM articles WHERE user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(user.id).all<{ id: number; content: string }>()
+    if (!results || results.length === 0) return ok({ purged: 0 })
+    await purgeUnreferencedAttachments(c.env, user.id, results.map((r) => r.id), results.map((r) => r.content || ''))
+    await c.env.DB.prepare(
+      `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
+    ).bind(...results.map((r) => r.id)).run()
+    return ok({ purged: results.length })
+  } catch (e: any) {
+    return err('清空失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/articles/:id/restore - 从回收站恢复(重新计入笔记本,并重建向量索引)
+articles.post('/:id/restore', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  try {
+    const article = await c.env.DB.prepare(
+      'SELECT * FROM articles WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(id, user.id).first<any>()
+    if (!article) return err('笔记不在回收站中', 404)
+
+    // 原笔记本因外键级联通常仍在;防御性兜底:不在则落到最近使用的笔记本
+    let targetNb = article.notebook_id
+    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
+      .bind(targetNb, user.id).first()
+    if (!nb) {
+      const first = await c.env.DB.prepare(
+        'SELECT id FROM notebooks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1'
+      ).bind(user.id).first<{ id: number }>()
+      if (!first) return err('请先创建一个笔记本再恢复')
+      targetNb = first.id
+    }
+
+    await c.env.DB.batch([
+      c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, notebook_id = ?, updated_at = datetime('now') WHERE id = ?")
+        .bind(targetNb, article.id),
+      c.env.DB.prepare("UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime('now') WHERE id = ?")
+        .bind(targetNb),
+    ])
+
+    // 重建向量索引(软删除时已清):失败不阻塞恢复,可由 reindex 补
+    let vectorize_error: string | null = null
+    if ((article.content || '').trim().length > 0) {
+      vectorize_error = await vectorizeArticle(c.env, article.id, user.id, targetNb, article.title, article.content)
+    }
+    const updated = await c.env.DB.prepare('SELECT * FROM articles WHERE id = ?').bind(article.id).first()
+    return ok({ ...updated as any, vectorize_error })
+  } catch (e: any) {
+    return err('恢复失败: ' + e.message, 500)
+  }
+})
+
+// DELETE /api/articles/:id/purge - 彻底删除回收站中的笔记(附件按引用计数清理)
+articles.delete('/:id/purge', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  try {
+    const article = await c.env.DB.prepare(
+      'SELECT id, content FROM articles WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(id, user.id).first<{ id: number; content: string }>()
+    if (!article) return err('笔记不在回收站中', 404)
+    await purgeUnreferencedAttachments(c.env, user.id, [article.id], [article.content || ''])
+    await c.env.DB.prepare('DELETE FROM articles WHERE id = ?').bind(article.id).run()
+    return ok({ message: '已彻底删除' })
+  } catch (e: any) {
+    return err('删除失败: ' + e.message, 500)
   }
 })
 
@@ -139,14 +311,16 @@ articles.put('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
   try {
-    const { title, content, notebook_id, is_public, is_private } = await c.req.json<{
+    const { title, content, notebook_id, is_public, is_private, tags, pinned } = await c.req.json<{
       title?: string; content?: string; notebook_id?: number
       is_public?: number | boolean; is_private?: number | boolean
+      tags?: string[]; pinned?: number | boolean
     }>()
 
     const article = await c.env.DB.prepare('SELECT * FROM articles WHERE id = ? AND user_id = ?')
       .bind(id, user.id).first<any>()
     if (!article) return err('文章不存在', 404)
+    if (article.deleted_at) return err('回收站中的笔记为只读,请先恢复')
 
     // 公开/私有互斥:设为私有强制取消公开;公开要求先取消私有
     let pub = article.is_public ? 1 : 0
@@ -178,10 +352,12 @@ articles.put('/:id', async (c) => {
     const newContent = content ?? article.content
     const newNotebook = notebook_id || article.notebook_id
     const newHash = await contentHash(newContent)
+    const newTags = tags === undefined ? (article.tags ?? null) : normalizeTags(tags)
+    const newPinned = pinned === undefined ? (article.pinned ? 1 : 0) : (pinned ? 1 : 0)
 
     await c.env.DB.prepare(
-      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, id).run()
+      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, tags = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, newTags, newPinned, id).run()
 
     // 每次保存都同步附件引用索引(幂等,兼顾索引缺行的自愈)
     await syncArticleFiles(c.env, user.id, Number(id), newContent)
@@ -210,7 +386,8 @@ articles.put('/:id', async (c) => {
   }
 })
 
-// DELETE /api/articles/:id - Delete article
+// DELETE /api/articles/:id - 移入回收站(P9 软删除):向量与分块即刻清除(搜索/AI 不再可见),
+// 同时取消公开与置顶;附件引用行保留(防共用附件被误清),30 天后自动彻底删除。
 articles.delete('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
@@ -218,6 +395,7 @@ articles.delete('/:id', async (c) => {
     const article = await c.env.DB.prepare('SELECT * FROM articles WHERE id = ? AND user_id = ?')
       .bind(id, user.id).first<any>()
     if (!article) return err('文章不存在', 404)
+    if (article.deleted_at) return err('已在回收站中')
 
     const { results: chunks } = await c.env.DB.prepare('SELECT vector_id FROM chunks WHERE article_id = ?')
       .bind(id).all<{ vector_id: string }>()
@@ -225,15 +403,17 @@ articles.delete('/:id', async (c) => {
       try { await c.env.VECTORIZE.deleteByIds(chunks.map((ch) => ch.vector_id)) } catch {}
     }
 
-    // 引用计数清理:删索引行后,引用归零且未入文件管理目录的附件连同边车缩略图清 R2
-    await purgeUnreferencedAttachments(c.env, user.id, [Number(id)], [article.content || ''])
+    await c.env.DB.batch([
+      c.env.DB.prepare('DELETE FROM chunks WHERE article_id = ?').bind(id),
+      c.env.DB.prepare(
+        "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0 WHERE id = ?"
+      ).bind(id),
+      c.env.DB.prepare(
+        "UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime('now') WHERE id = ?"
+      ).bind(article.notebook_id),
+    ])
 
-    await c.env.DB.prepare('DELETE FROM articles WHERE id = ?').bind(id).run()
-    await c.env.DB.prepare(
-      "UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime('now') WHERE id = ?"
-    ).bind(article.notebook_id).run()
-
-    return ok({ message: '已删除' })
+    return ok({ message: '已移入回收站,30 天后自动清除' })
   } catch (e: any) {
     return err('删除失败: ' + e.message, 500)
   }

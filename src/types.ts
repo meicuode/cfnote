@@ -45,8 +45,27 @@ export interface Article {
   is_private: number
   published_at?: string | null
   views?: number
+  /** P9 标签:JSON 数组文本(服务端 json_each 查询);空为 null */
+  tags?: string | null
+  /** P9 置顶:列表内排最前 */
+  pinned?: number
+  /** P9 回收站:非空表示已软删除(只读,30 天后自动清除) */
+  deleted_at?: string | null
+  /** 回收站列表附带的原笔记本名 */
+  notebook?: string | null
   created_at: string
   updated_at: string
+}
+
+/** 解析 Article.tags(JSON 数组文本)为字符串数组,坏值容错为空 */
+export function parseTags(tags: string | null | undefined): string[] {
+  if (!tags) return []
+  try {
+    const v = JSON.parse(tags)
+    return Array.isArray(v) ? v.map(String) : []
+  } catch {
+    return []
+  }
 }
 
 /** 「我的私有」虚拟笔记本:固定显示在笔记本列表末尾,筛选所有私有笔记(不落库) */
@@ -59,6 +78,25 @@ export const PRIVATE_NOTEBOOK: Notebook = {
   article_count: 0,
   created_at: '',
   updated_at: '',
+}
+
+/** 「回收站」虚拟笔记本(P9):软删除的笔记,只读,可恢复/彻底删除 */
+export const TRASH_NOTEBOOK: Notebook = {
+  id: -2,
+  user_id: 0,
+  name: '回收站',
+  description: '已删除的笔记,30 天后自动清除',
+  color: '#9ca3af',
+  article_count: 0,
+  created_at: '',
+  updated_at: '',
+}
+
+/** 标签虚拟视图 id(P9):name 字段即标签名 */
+export const TAG_VIEW_ID = -3
+
+export function tagNotebook(tag: string): Notebook {
+  return { id: TAG_VIEW_ID, user_id: 0, name: tag, description: `标签「${tag}」`, color: '#10b981', article_count: 0, created_at: '', updated_at: '' }
 }
 
 export interface Chunk {

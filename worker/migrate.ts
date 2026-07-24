@@ -8,6 +8,10 @@ const ARTICLE_COLUMNS: Record<string, string> = {
   is_private: 'ALTER TABLE articles ADD COLUMN is_private INTEGER DEFAULT 0',
   published_at: 'ALTER TABLE articles ADD COLUMN published_at TEXT',
   views: 'ALTER TABLE articles ADD COLUMN views INTEGER DEFAULT 0',
+  // P9:回收站(软删除时间戳)/ 标签(JSON 数组文本,json_each 查询)/ 置顶
+  deleted_at: 'ALTER TABLE articles ADD COLUMN deleted_at TEXT',
+  tags: 'ALTER TABLE articles ADD COLUMN tags TEXT',
+  pinned: 'ALTER TABLE articles ADD COLUMN pinned INTEGER DEFAULT 0',
 }
 
 // P8.1 附件体系三表(与 system.ts SCHEMA 保持一致;IF NOT EXISTS 幂等,对旧库是纯增量)

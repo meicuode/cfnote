@@ -77,7 +77,7 @@ search.post('/', async (c) => {
           const article = await c.env.DB.prepare(
             `SELECT a.id, a.title, a.notebook_id, n.name as notebook_name
              FROM articles a LEFT JOIN notebooks n ON a.notebook_id = n.id
-             WHERE a.id = ?`
+             WHERE a.id = ? AND a.deleted_at IS NULL`
           ).bind(articleId).first<any>()
 
           const chunk = await c.env.DB.prepare(
@@ -115,7 +115,7 @@ search.post('/', async (c) => {
       if (terms.length === 0) return []
       let sql = `SELECT a.id, a.title, a.content, a.notebook_id, n.name as notebook_name
                  FROM articles a LEFT JOIN notebooks n ON a.notebook_id = n.id
-                 WHERE a.user_id = ?`
+                 WHERE a.user_id = ? AND a.deleted_at IS NULL`
       const binds: unknown[] = [user.id]
       if (notebook_id) {
         sql += ' AND a.notebook_id = ?'

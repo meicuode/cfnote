@@ -344,7 +344,7 @@ export async function ragSearch(
       const article = await env.DB.prepare(
         `SELECT a.id, a.title, a.notebook_id, a.user_id, n.name as notebook_name
          FROM articles a LEFT JOIN notebooks n ON a.notebook_id = n.id
-         WHERE a.id = ?`
+         WHERE a.id = ? AND a.deleted_at IS NULL`
       ).bind(articleId).first<any>()
 
       const chunk = await env.DB.prepare(

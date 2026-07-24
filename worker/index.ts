@@ -5,7 +5,7 @@ import { ensureSchema } from './migrate'
 import { system } from './routes/system'
 import { auth } from './routes/auth'
 import { notebooks } from './routes/notebooks'
-import { articles } from './routes/articles'
+import { articles, purgeExpiredTrash } from './routes/articles'
 import { search } from './routes/search'
 import { conversations } from './routes/conversations'
 import { files, afile, share } from './routes/files'
@@ -64,5 +64,7 @@ export default {
   fetch: (request, env, ctx) => app.fetch(request, env, ctx),
   scheduled: (_event, env, ctx) => {
     ctx.waitUntil(runScheduledArchive(env))
+    // 回收站 30 天到期清理(cron 兜底;打开回收站时也会懒执行)
+    ctx.waitUntil(purgeExpiredTrash(env))
   },
 } satisfies ExportedHandler<Env>

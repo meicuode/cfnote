@@ -9,7 +9,7 @@ import SettingsPanel from './SettingsPanel'
 import SystemLogsPanel from './SystemLogsPanel'
 import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
-import { PRIVATE_NOTEBOOK } from '../types'
+import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID } from '../types'
 import type { Notebook, Article } from '../types'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -86,17 +86,28 @@ export default function Layout({ token, username, onLogout }: Props) {
 
   useEffect(() => { loadNotebooks() }, [loadNotebooks])
 
-  const loadArticles = useCallback(async (notebookId: number) => {
-    // 「我的私有」虚拟笔记本:跨笔记本筛选所有私有笔记
-    const res = await get<Article[]>(
-      notebookId === PRIVATE_NOTEBOOK.id ? '/articles/private' : `/notebooks/${notebookId}/articles`
-    )
+  // P9 标签聚合(侧栏标签区;保存/删除/恢复后刷新)
+  const [tags, setTags] = useState<{ name: string; count: number }[]>([])
+  const loadTags = useCallback(async () => {
+    const res = await get<{ name: string; count: number }[]>('/articles/tags')
+    if (res.ok && res.data) setTags(res.data)
+  }, [get])
+  useEffect(() => { loadTags() }, [loadTags])
+
+  const loadArticles = useCallback(async (nb: Notebook) => {
+    // 虚拟视图:我的私有 / 回收站 / 标签(name 即标签名);其余为真实笔记本
+    const url =
+      nb.id === PRIVATE_NOTEBOOK.id ? '/articles/private'
+      : nb.id === TRASH_NOTEBOOK.id ? '/articles/trash'
+      : nb.id === TAG_VIEW_ID ? `/articles/by-tag?tag=${encodeURIComponent(nb.name)}`
+      : `/notebooks/${nb.id}/articles`
+    const res = await get<Article[]>(url)
     if (res.ok && res.data) setArticles(res.data)
   }, [get])
 
   useEffect(() => {
     if (activeNotebook) {
-      loadArticles(activeNotebook.id)
+      loadArticles(activeNotebook)
       setActiveArticle(null)
     } else {
       setArticles([])
@@ -179,7 +190,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     } as Article)
   }
 
-  const saveArticle = async (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number }) => {
+  const saveArticle = async (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number; tags?: string[]; pinned?: number }) => {
     // 草稿首次保存:创建真实文章并替换草稿
     if (id < 0) {
       if (!activeNotebook || activeNotebook.id < 0) return { ok: false, error: '未选择笔记本' }
@@ -187,18 +198,21 @@ export default function Layout({ token, username, onLogout }: Props) {
         notebook_id: activeNotebook.id,
         title: data.title?.trim() || '无标题文章',
         content: data.content ?? '',
+        tags: data.tags,
       })
       if (res.ok && res.data) {
         setActiveArticle(res.data)
-        loadArticles(activeNotebook.id)
+        loadArticles(activeNotebook)
         loadNotebooks()
+        loadTags()
       }
       return res
     }
     const res = await put<Article>(`/articles/${id}`, data)
     if (res.ok && res.data) {
       setActiveArticle(res.data)
-      if (activeNotebook) loadArticles(activeNotebook.id)
+      if (activeNotebook) loadArticles(activeNotebook)
+      if (data.tags !== undefined) loadTags()
     }
     return res
   }
@@ -211,14 +225,54 @@ export default function Layout({ token, username, onLogout }: Props) {
       if (res.ok) {
         if (activeArticle?.id === id) setActiveArticle(null)
         if (activeNotebook) {
-          await loadArticles(activeNotebook.id)
+          await loadArticles(activeNotebook)
           loadNotebooks()
         }
+        loadTags()
       }
       return res
     } finally {
       setDeletingArticleId(null)
     }
+  }
+
+  // ---- P9 回收站与置顶 ----
+
+  const restoreArticle = async (id: number) => {
+    const res = await post(`/articles/${id}/restore`, {})
+    if (res.ok) {
+      if (activeArticle?.id === id) setActiveArticle(null)
+      if (activeNotebook) loadArticles(activeNotebook)
+      loadNotebooks()
+      loadTags()
+    }
+    return res
+  }
+
+  const purgeArticle = async (id: number) => {
+    const res = await del(`/articles/${id}/purge`)
+    if (res.ok) {
+      if (activeArticle?.id === id) setActiveArticle(null)
+      if (activeNotebook) loadArticles(activeNotebook)
+      loadTags()
+    }
+    return res
+  }
+
+  const emptyTrash = async () => {
+    const res = await post('/articles/trash/empty', {})
+    if (res.ok) {
+      setActiveArticle(null)
+      if (activeNotebook) loadArticles(activeNotebook)
+      loadTags()
+    }
+    return res
+  }
+
+  const togglePin = async (a: Article) => {
+    const res = await put(`/articles/${a.id}`, { pinned: a.pinned ? 0 : 1 })
+    if (res.ok && activeNotebook) loadArticles(activeNotebook)
+    return res
   }
 
   // Import article from URL
@@ -234,7 +288,7 @@ export default function Layout({ token, username, onLogout }: Props) {
       if (res.data) {
         setActiveArticle(res.data)
         setShowImport(false)
-        loadArticles(activeNotebook.id)
+        loadArticles(activeNotebook)
         loadNotebooks()
       }
     } finally {
@@ -276,7 +330,7 @@ export default function Layout({ token, username, onLogout }: Props) {
       }
 
       setShowImport(false)
-      loadArticles(activeNotebook.id)
+      loadArticles(activeNotebook)
       loadNotebooks()
     } finally {
       setImporting(false)
@@ -376,6 +430,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           <Sidebar
             notebooks={notebooks}
             activeNotebook={activeNotebook}
+            tags={tags}
             onSelect={setActiveNotebook}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
@@ -388,18 +443,23 @@ export default function Layout({ token, username, onLogout }: Props) {
             articles={articles}
             activeArticle={activeArticle}
             notebookName={activeNotebook?.name}
-            virtual={activeNotebook?.id === PRIVATE_NOTEBOOK.id}
+            virtual={!!activeNotebook && activeNotebook.id < 0}
+            trash={activeNotebook?.id === TRASH_NOTEBOOK.id}
             deletingId={deletingArticleId}
             onSelect={openArticle}
             onCreate={createArticle}
             onDelete={deleteArticle}
             onImport={() => setShowImport(true)}
+            onRestore={restoreArticle}
+            onPurge={purgeArticle}
+            onEmptyTrash={emptyTrash}
+            onTogglePin={togglePin}
           />
         </div>
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} />
+            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">
