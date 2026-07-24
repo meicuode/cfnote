@@ -108,7 +108,7 @@ notebooks.get('/:id/articles', async (c) => {
     const { results } = await c.env.DB.prepare(
       `SELECT id, notebook_id, title,
               SUBSTR(content, 1, 150) as summary,
-              is_vectorized, created_at, updated_at
+              is_vectorized, is_public, is_private, created_at, updated_at
        FROM articles WHERE notebook_id = ? ORDER BY updated_at DESC`
     ).bind(notebookId).all()
     return ok(results)

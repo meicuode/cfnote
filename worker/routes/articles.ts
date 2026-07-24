@@ -99,6 +99,22 @@ articles.post('/import', async (c) => {
   }
 })
 
+// GET /api/articles/private - 所有私有笔记(「我的私有」虚拟笔记本;须注册在 /:id 之前)
+articles.get('/private', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, notebook_id, title,
+              SUBSTR(content, 1, 150) as summary,
+              is_vectorized, is_public, is_private, created_at, updated_at
+       FROM articles WHERE user_id = ? AND is_private = 1 ORDER BY updated_at DESC`
+    ).bind(user.id).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取私有笔记失败: ' + e.message, 500)
+  }
+})
+
 // GET /api/articles/:id - Get article detail
 articles.get('/:id', async (c) => {
   const user = c.get('user')
@@ -118,13 +134,29 @@ articles.put('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
   try {
-    const { title, content, notebook_id } = await c.req.json<{
+    const { title, content, notebook_id, is_public, is_private } = await c.req.json<{
       title?: string; content?: string; notebook_id?: number
+      is_public?: number | boolean; is_private?: number | boolean
     }>()
 
     const article = await c.env.DB.prepare('SELECT * FROM articles WHERE id = ? AND user_id = ?')
       .bind(id, user.id).first<any>()
     if (!article) return err('文章不存在', 404)
+
+    // 公开/私有互斥:设为私有强制取消公开;公开要求先取消私有
+    let pub = article.is_public ? 1 : 0
+    let priv = article.is_private ? 1 : 0
+    let publishedAt: string | null = article.published_at ?? null
+    if (is_private !== undefined) {
+      priv = is_private ? 1 : 0
+      if (priv) pub = 0
+    }
+    if (is_public !== undefined) {
+      if (is_public && priv) return err('私有笔记不能公开,请先取消私有')
+      pub = is_public ? 1 : 0
+      // 每次公开动作刷新发布时间(博客按发布时间排序展示)
+      if (pub) publishedAt = new Date().toISOString().slice(0, 19).replace('T', ' ')
+    }
 
     // If moving to another notebook, verify ownership
     if (notebook_id && notebook_id !== article.notebook_id) {
@@ -143,8 +175,8 @@ articles.put('/:id', async (c) => {
     const newHash = await contentHash(newContent)
 
     await c.env.DB.prepare(
-      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(newTitle, newContent, newHash, newNotebook, id).run()
+      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, id).run()
 
     // Re-vectorize if content changed
     let vectorize_error: string | null = null

@@ -9,6 +9,7 @@ import SettingsPanel from './SettingsPanel'
 import SystemLogsPanel from './SystemLogsPanel'
 import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
+import { PRIVATE_NOTEBOOK } from '../types'
 import type { Notebook, Article } from '../types'
 
 interface Props {
@@ -82,7 +83,10 @@ export default function Layout({ token, username, onLogout }: Props) {
   useEffect(() => { loadNotebooks() }, [loadNotebooks])
 
   const loadArticles = useCallback(async (notebookId: number) => {
-    const res = await get<Article[]>(`/notebooks/${notebookId}/articles`)
+    // 「我的私有」虚拟笔记本:跨笔记本筛选所有私有笔记
+    const res = await get<Article[]>(
+      notebookId === PRIVATE_NOTEBOOK.id ? '/articles/private' : `/notebooks/${notebookId}/articles`
+    )
     if (res.ok && res.data) setArticles(res.data)
   }, [get])
 
@@ -149,18 +153,18 @@ export default function Layout({ token, username, onLogout }: Props) {
   }
 
   const createArticle = () => {
-    if (!activeNotebook) return
+    if (!activeNotebook || activeNotebook.id < 0) return
     // 本地草稿:不落库。用户首次输入触发保存时才真正创建记录(见 saveArticle 的 id<0 分支)
     setActiveArticle({
       id: -Date.now(), notebook_id: activeNotebook.id, title: '无标题文章', content: '',
-      is_vectorized: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      is_vectorized: 0, is_public: 0, is_private: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     } as Article)
   }
 
-  const saveArticle = async (id: number, data: { title?: string; content?: string }) => {
+  const saveArticle = async (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number }) => {
     // 草稿首次保存:创建真实文章并替换草稿
     if (id < 0) {
-      if (!activeNotebook) return { ok: false, error: '未选择笔记本' }
+      if (!activeNotebook || activeNotebook.id < 0) return { ok: false, error: '未选择笔记本' }
       const res = await post<Article>('/articles', {
         notebook_id: activeNotebook.id,
         title: data.title?.trim() || '无标题文章',
@@ -365,6 +369,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             articles={articles}
             activeArticle={activeArticle}
             notebookName={activeNotebook?.name}
+            virtual={activeNotebook?.id === PRIVATE_NOTEBOOK.id}
             deletingId={deletingArticleId}
             onSelect={openArticle}
             onCreate={createArticle}

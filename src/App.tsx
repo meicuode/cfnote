@@ -1,12 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { useAuth } from './hooks/useAuth'
 import SetupPage from './components/SetupPage'
 import LoginPage from './components/LoginPage'
 import Layout from './components/Layout'
 
+// 公开博客页(免登录,独立 chunk):/blog 列表,/blog/:id 详情
+const BlogPage = lazy(() => import('./components/BlogPage'))
+const IS_BLOG = /^\/blog(\/|$)/.test(window.location.pathname)
+
 type AppState = 'loading' | 'setup' | 'login' | 'app'
 
 export default function App() {
+  // 博客路径不进入应用壳(无鉴权、不请求 /api/status);模块级常量保证 hooks 顺序稳定
+  if (IS_BLOG) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#262626]" />}>
+        <BlogPage />
+      </Suspense>
+    )
+  }
+  return <MainApp />
+}
+
+function MainApp() {
   const { token, username, isLoggedIn, login, logout } = useAuth()
   const [state, setState] = useState<AppState>('loading')
   const [jwtMissing, setJwtMissing] = useState(false)

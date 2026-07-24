@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { err, getUser } from './utils'
 import { runScheduledArchive } from './archive'
+import { ensureSchema } from './migrate'
 import { system } from './routes/system'
 import { auth } from './routes/auth'
 import { notebooks } from './routes/notebooks'
@@ -9,6 +10,7 @@ import { search } from './routes/search'
 import { conversations } from './routes/conversations'
 import { files } from './routes/files'
 import { stats } from './routes/stats'
+import { blog } from './routes/blog'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -18,9 +20,14 @@ const app = new Hono<AppEnv>()
 const PUBLIC_ROUTES = ['/api/status', '/api/init', '/api/auth/login', '/api/auth/register']
 
 app.use('/api/*', async (c, next) => {
+  // 幂等列迁移:memoized,每个 isolate 只查一次;失败静默(表未初始化时由 /api/init 建表)
+  await ensureSchema(c.env).catch(() => {})
+
   if (PUBLIC_ROUTES.includes(c.req.path)) return next()
   // 附件下载/元信息免登录(供 <img> 直接引用、卡片展示大小):key 含 32 位随机段,不可枚举
   if ((c.req.method === 'GET' || c.req.method === 'HEAD') && c.req.path.startsWith('/api/files/')) return next()
+  // 公开博客只读接口免登录(仅暴露 is_public=1 且非私有的文章)
+  if (c.req.method === 'GET' && c.req.path.startsWith('/api/blog/')) return next()
 
   const user = await getUser(c.req.raw, c.env)
   if (!user) {
@@ -38,6 +45,7 @@ app.route('/api/search', search)
 app.route('/api/conversations', conversations)
 app.route('/api/files', files)
 app.route('/api/stats', stats)
+app.route('/api/blog', blog)
 
 app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
 

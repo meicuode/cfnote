@@ -1,0 +1,70 @@
+import { Hono } from 'hono'
+import { ok, err } from '../utils'
+import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
+import type { AppEnv } from '../types'
+
+// 公开博客只读接口(免登录,见 worker/index.ts 的 auth skip)。
+// 只暴露 is_public=1 且非私有的文章;私有/未公开的任何字段都不可达。
+export const blog = new Hono<AppEnv>()
+
+// GET /api/blog/posts - 公开文章列表(标题/摘要/缩略图/笔记本 tag/发布时间)
+blog.get('/posts', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
+              a.published_at, a.updated_at, a.views, n.name as tag
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.is_public = 1 AND a.is_private = 0
+       ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 100`
+    ).all<any>()
+    return ok(
+      (results || []).map((r) => ({
+        id: r.id,
+        title: r.title,
+        tag: r.tag || '未分类',
+        excerpt: mdExcerpt(r.head || '', 120),
+        thumb: mdFirstImage(r.head || ''),
+        published_at: r.published_at || r.updated_at,
+        views: r.views || 0,
+      }))
+    )
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/blog/posts/:id - 公开文章详情(浏览计数 +1,waitUntil 不阻塞响应)
+blog.get('/posts/:id', async (c) => {
+  const id = c.req.param('id')
+  try {
+    const a = await c.env.DB.prepare(
+      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, n.name as tag
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.id = ? AND a.is_public = 1 AND a.is_private = 0`
+    ).bind(id).first<any>()
+    if (!a) return err('文章不存在或未公开', 404)
+    c.executionCtx.waitUntil(
+      c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
+    )
+    return ok({ ...a, tag: a.tag || '未分类', published_at: a.published_at || a.updated_at, views: (a.views || 0) + 1 })
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/blog/hot?range=day|week|month - 热榜(时间窗内发布的文章按浏览量排序)
+blog.get('/hot', async (c) => {
+  const range = c.req.query('range') || 'day'
+  const windows: Record<string, string> = { day: '-1 day', week: '-7 day', month: '-30 day' }
+  const win = windows[range] || windows.day
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, title, views FROM articles
+       WHERE is_public = 1 AND is_private = 0 AND COALESCE(published_at, updated_at) >= datetime('now', ?)
+       ORDER BY views DESC, COALESCE(published_at, updated_at) DESC LIMIT 12`
+    ).bind(win).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})

@@ -39,8 +39,26 @@ export interface Article {
   content: string
   content_hash: string | null
   is_vectorized: number
+  /** 公开到博客(与 is_private 互斥,服务端保证) */
+  is_public: number
+  /** 私有笔记:不可公开,列表标题前显示私有标识 */
+  is_private: number
+  published_at?: string | null
+  views?: number
   created_at: string
   updated_at: string
+}
+
+/** 「我的私有」虚拟笔记本:固定显示在笔记本列表末尾,筛选所有私有笔记(不落库) */
+export const PRIVATE_NOTEBOOK: Notebook = {
+  id: -1,
+  user_id: 0,
+  name: '我的私有',
+  description: '所有私有笔记',
+  color: '#f59e0b',
+  article_count: 0,
+  created_at: '',
+  updated_at: '',
 }
 
 export interface Chunk {

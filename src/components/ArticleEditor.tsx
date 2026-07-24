@@ -4,6 +4,8 @@ import { formatBytes, formatDateTime } from '../lib/format'
 import { setImageWidth } from '../lib/imageResize'
 import TurndownService from 'turndown'
 import { sourceModePasteText } from '../lib/pasteDetect'
+import { scanSensitive, type SensitiveHit } from '../lib/sensitiveScan'
+import ConfirmDialog from './ConfirmDialog'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -16,9 +18,22 @@ const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fen
 interface Props {
   article: Article
   token: string
-  onSave: (id: number, data: { title?: string; content?: string }) => Promise<any>
+  onSave: (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number }) => Promise<any>
   highlight?: { text: string; ts: number } | null
   loadingContent?: boolean
+}
+
+// 私有标识(eye-off:斜杠划掉的眼睛,表示不可对外展示)
+export function EyeOffIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L6.59 6.59m7.532 7.532l3.29 3.29M3 3l18 18"
+      />
+    </svg>
+  )
 }
 
 // ---- Markdown insertion helper ----
@@ -210,6 +225,29 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     setSaving(false)
     if (res?.ok) setSaved(true)
   }, [article.id, title, content])
+
+  // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
+  const isPublic = !!article.is_public
+  const isPrivate = !!article.is_private
+  const [publishDialog, setPublishDialog] = useState<{ risks: SensitiveHit[] } | null>(null)
+  const [flagConfirm, setFlagConfirm] = useState<'private' | 'unprivate' | 'unpublish' | null>(null)
+  const [flagBusy, setFlagBusy] = useState(false)
+
+  // 切换公开/私有时连同当前编辑内容一并保存:保证博客展示的就是眼前这份
+  const applyFlags = async (flags: { is_public?: number; is_private?: number }) => {
+    setFlagBusy(true)
+    try {
+      await saveRef.current(article.id, { title, content, ...flags })
+    } finally {
+      setFlagBusy(false)
+      setPublishDialog(null)
+    }
+  }
+
+  // 点击公开:先对标题+正文做敏感信息全文扫描,弹窗列出全部风险项后才允许发布
+  const handlePublishClick = () => {
+    setPublishDialog({ risks: scanSensitive(`${title}\n${content}`) })
+  }
 
   // Ctrl+S / Cmd+S
   useEffect(() => {
@@ -628,8 +666,72 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           >
             预览
           </button>
+          {/* 公开到博客(私有笔记不显示;草稿先保存后才可操作) */}
+          {article.id > 0 && !isPrivate && (
+            <>
+              <span className="w-px h-4 bg-gray-200 mx-1" />
+              {isPublic ? (
+                <>
+                  <button
+                    onClick={() => setFlagConfirm('unpublish')}
+                    disabled={flagBusy}
+                    className="px-3 py-1 rounded text-sm bg-emerald-100 text-emerald-700 hover:bg-emerald-200 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                    title="已公开到博客,点击取消公开"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    已公开
+                  </button>
+                  <a
+                    href={`/blog/${article.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-1.5 rounded text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                    title="在博客中查看"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                </>
+              ) : (
+                <button
+                  onClick={handlePublishClick}
+                  disabled={flagBusy || loadingContent}
+                  className="px-3 py-1 rounded text-sm text-gray-500 hover:bg-gray-100 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                  title="公开到博客(发布前自动检查敏感信息)"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  公开
+                </button>
+              )}
+            </>
+          )}
         </div>
         <div className="flex items-center gap-3">
+          {/* 私有状态:私有显示标识(点击可取消),非私有显示设为私有按钮 */}
+          {article.id > 0 && (isPrivate ? (
+            <button
+              onClick={() => setFlagConfirm('unprivate')}
+              className="text-xs text-amber-600 hover:text-amber-700 flex items-center gap-1 transition-colors"
+              title="私有笔记:不会出现在公开博客;点击取消私有"
+            >
+              <EyeOffIcon className="w-3.5 h-3.5" />
+              私有
+            </button>
+          ) : (
+            <button
+              onClick={() => setFlagConfirm('private')}
+              className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 transition-colors"
+              title="设为私有(不可对外公开展示)"
+            >
+              <EyeOffIcon className="w-3.5 h-3.5" />
+              设为私有
+            </button>
+          ))}
           <span className="text-xs text-gray-300">{charCount} 字</span>
           {article.is_vectorized ? (
             <span className="text-xs text-emerald-500 flex items-center gap-1">
@@ -800,6 +902,94 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             </svg>
           </button>
         </div>
+      )}
+
+      {/* 公开前敏感信息检查弹窗:列出全部风险项,逐条确认后才可发布 */}
+      {publishDialog && (
+        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/40" onMouseDown={() => setPublishDialog(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[94vw] p-5" onMouseDown={(e) => e.stopPropagation()}>
+            {publishDialog.risks.length > 0 ? (
+              <>
+                <h3 className="text-sm font-semibold text-red-600 mb-1 flex items-center gap-1.5">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  检测到 {publishDialog.risks.length} 处疑似敏感信息
+                </h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  公开后任何人都能访问这篇笔记。请逐条确认以下内容(摘录已打码,原文未改动):
+                </p>
+                <div className="max-h-[45vh] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
+                  {publishDialog.risks.map((r, i) => (
+                    <div key={i} className="px-3 py-2 flex items-start gap-2">
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 shrink-0 mt-0.5 whitespace-nowrap">{r.label}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-gray-700 font-mono break-all">{r.excerpt}</p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">{r.line === 1 ? '标题' : `正文第 ${r.line - 1} 行`}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-2 mt-4">
+                  <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
+                    取消
+                  </button>
+                  <button
+                    onClick={() => applyFlags({ is_public: 1 })}
+                    disabled={flagBusy}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-50"
+                  >
+                    {flagBusy ? '发布中...' : '我已逐条确认,仍要公开'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-sm font-semibold text-gray-900 mb-1">✅ 未检测到敏感信息</h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  已检查:手机号 / 身份证 / 银行卡 / 邮箱 / 各类密钥令牌 / 密码。公开后这篇笔记会出现在博客页,任何人可访问。
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">
+                    取消
+                  </button>
+                  <button
+                    onClick={() => applyFlags({ is_public: 1 })}
+                    disabled={flagBusy}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors disabled:opacity-50"
+                  >
+                    {flagBusy ? '发布中...' : '确认公开'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {flagConfirm === 'private' && (
+        <ConfirmDialog
+          title="设为私有？"
+          message="私有笔记不会出现在公开博客(若已公开将同时取消公开),列表标题前会显示私有标识。"
+          onConfirm={() => { setFlagConfirm(null); applyFlags({ is_private: 1 }) }}
+          onCancel={() => setFlagConfirm(null)}
+        />
+      )}
+      {flagConfirm === 'unprivate' && (
+        <ConfirmDialog
+          title="取消私有？"
+          message="取消后这篇笔记恢复为普通笔记,可再次公开到博客。"
+          onConfirm={() => { setFlagConfirm(null); applyFlags({ is_private: 0 }) }}
+          onCancel={() => setFlagConfirm(null)}
+        />
+      )}
+      {flagConfirm === 'unpublish' && (
+        <ConfirmDialog
+          title="取消公开？"
+          message="取消后博客中将不再展示这篇笔记。"
+          onConfirm={() => { setFlagConfirm(null); applyFlags({ is_public: 0 }) }}
+          onCancel={() => setFlagConfirm(null)}
+        />
       )}
     </div>
   )

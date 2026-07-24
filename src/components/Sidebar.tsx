@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
+import { EyeOffIcon } from './ArticleEditor'
+import { PRIVATE_NOTEBOOK } from '../types'
 import type { Notebook } from '../types'
 
 interface Props {
@@ -97,6 +99,24 @@ export default function Sidebar({ notebooks, activeNotebook, onSelect, onCreate,
             还没有笔记本，点击上方 + 创建一个
           </p>
         )}
+
+        {/* 固定入口:我的私有(虚拟笔记本,筛选所有私有笔记,不可删除) */}
+        <div className="border-t border-gray-100 mt-2 pt-2">
+          <button
+            onClick={() => onSelect(PRIVATE_NOTEBOOK)}
+            className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
+              activeNotebook?.id === PRIVATE_NOTEBOOK.id
+                ? 'bg-amber-50 text-amber-700 font-medium'
+                : 'text-gray-700 hover:bg-gray-100'
+            }`}
+            title="所有标记为私有的笔记"
+          >
+            <span className="text-amber-500 shrink-0">
+              <EyeOffIcon className="w-3.5 h-3.5" />
+            </span>
+            <span className="truncate flex-1">我的私有</span>
+          </button>
+        </div>
       </div>
 
       {/* Context menu */}

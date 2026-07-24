@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
+import { EyeOffIcon } from './ArticleEditor'
 import type { Article } from '../types'
 
 interface Props {
@@ -7,13 +8,15 @@ interface Props {
   activeArticle: Article | null
   notebookName?: string
   deletingId?: number | null
+  /** 虚拟笔记本(如「我的私有」):只作筛选视图,不提供新建/导入 */
+  virtual?: boolean
   onSelect: (article: Article) => void
   onCreate: () => void
   onDelete: (id: number) => Promise<any>
   onImport: () => void
 }
 
-export default function ArticleList({ articles, activeArticle, notebookName, deletingId, onSelect, onCreate, onDelete, onImport }: Props) {
+export default function ArticleList({ articles, activeArticle, notebookName, deletingId, virtual, onSelect, onCreate, onDelete, onImport }: Props) {
   const [confirmId, setConfirmId] = useState<number | null>(null)
 
   const formatDate = (d: string) => {
@@ -34,7 +37,7 @@ export default function ArticleList({ articles, activeArticle, notebookName, del
           <h2 className="font-medium text-gray-900 text-sm">{notebookName || '选择笔记本'}</h2>
           <span className="text-xs text-gray-400">{articles.length} 篇文章</span>
         </div>
-        {notebookName && (
+        {notebookName && !virtual && (
           <div className="flex items-center gap-1">
             <button
               onClick={onImport}
@@ -72,11 +75,16 @@ export default function ArticleList({ articles, activeArticle, notebookName, del
             }`}
           >
             <div className="flex items-start justify-between">
-              <h3 className={`text-sm font-medium truncate flex-1 ${
+              <h3 className={`text-sm font-medium flex items-center gap-1 min-w-0 flex-1 ${
                 deleting ? 'text-gray-400' :
                 activeArticle?.id === article.id ? 'text-emerald-700' : 'text-gray-900'
               }`}>
-                {article.title}
+                {article.is_private ? (
+                  <span title="私有笔记(不可对外展示)" className="shrink-0 text-amber-500">
+                    <EyeOffIcon className="w-3.5 h-3.5" />
+                  </span>
+                ) : null}
+                <span className="truncate">{article.title}</span>
               </h3>
               {deleting ? (
                 <span className="flex items-center gap-1 shrink-0 ml-2 text-xs text-gray-400">
@@ -117,10 +125,12 @@ export default function ArticleList({ articles, activeArticle, notebookName, del
 
         {articles.length === 0 && notebookName && (
           <div className="text-center py-12 text-gray-400">
-            <p className="text-sm">暂无文章</p>
-            <button onClick={onCreate} className="text-sm text-emerald-500 hover:text-emerald-600 mt-1">
-              + 创建第一篇
-            </button>
+            <p className="text-sm">{virtual ? '还没有私有笔记' : '暂无文章'}</p>
+            {!virtual && (
+              <button onClick={onCreate} className="text-sm text-emerald-500 hover:text-emerald-600 mt-1">
+                + 创建第一篇
+              </button>
+            )}
           </div>
         )}
 
