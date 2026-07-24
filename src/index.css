@@ -128,8 +128,8 @@
   padding-bottom: 25vh; /* 文末留白可点击继续输入 */
 }
 .cfnote-wysiwyg .cfnote-wysiwyg-content img { cursor: default; }
-/* 节点选中态(图片/分割线等) */
-.cfnote-wysiwyg .ProseMirror-selectednode { outline: 2px solid #34d399; border-radius: 4px; }
+/* 节点选中态(图片/分割线等);outline 内缩,避免贴容器左缘时被裁掉 */
+.cfnote-wysiwyg .ProseMirror-selectednode { outline: 2px solid #34d399; outline-offset: -2px; border-radius: 4px; }
 /* 块间隙光标(表格/图片前后插入位置) */
 .cfnote-wysiwyg .ProseMirror-gapcursor { display: none; pointer-events: none; position: relative; }
 .cfnote-wysiwyg .ProseMirror-gapcursor:after {

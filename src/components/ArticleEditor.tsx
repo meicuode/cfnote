@@ -765,23 +765,55 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     }
   }
 
-  // 目录(预览与富文本模式共用)
-  const tocNav = headings.length >= 2 ? (
-    <nav className="w-44 shrink-0 hidden lg:block overflow-y-auto border-l border-gray-100 pl-3 py-1">
-      <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">目录</p>
-      {headings.map((h, i) => (
-        <button
-          key={`${h.text}-${i}`}
-          onClick={() => scrollToHeading(h)}
-          className="block w-full text-left text-xs text-gray-500 hover:text-emerald-600 py-1 truncate transition-colors"
-          style={{ paddingLeft: (h.level - 1) * 12 }}
-          title={h.text}
-        >
-          {h.text}
-        </button>
-      ))}
-    </nav>
-  ) : null
+  // 目录(预览与富文本模式共用;可折叠,状态存 localStorage)
+  const [tocOpen, setTocOpen] = useState(() => localStorage.getItem('cfnote-toc-open') !== '0')
+  const toggleToc = () =>
+    setTocOpen((v) => {
+      localStorage.setItem('cfnote-toc-open', v ? '0' : '1')
+      return !v
+    })
+  const tocNav =
+    headings.length >= 2 ? (
+      tocOpen ? (
+        <nav className="w-48 shrink-0 hidden lg:block overflow-y-auto border-l border-gray-100 pl-3 py-1">
+          <div className="flex items-center justify-between mb-2 pr-1">
+            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">目录</p>
+            <button
+              onClick={toggleToc}
+              title="折叠目录"
+              className="p-0.5 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+          {headings.map((h, i) => (
+            <button
+              key={`${h.text}-${i}`}
+              onClick={() => scrollToHeading(h)}
+              className="block w-full text-left text-xs text-gray-500 hover:text-emerald-600 py-1 truncate transition-colors"
+              style={{ paddingLeft: (h.level - 1) * 12 }}
+              title={h.text}
+            >
+              {h.text}
+            </button>
+          ))}
+        </nav>
+      ) : (
+        <div className="shrink-0 hidden lg:flex flex-col items-center border-l border-gray-100 py-1">
+          <button
+            onClick={toggleToc}
+            title="展开目录"
+            className="p-1 rounded text-gray-300 hover:text-gray-500 hover:bg-gray-100 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
+          </button>
+        </div>
+      )
+    ) : null
 
   return (
     <div className="h-full flex flex-col">

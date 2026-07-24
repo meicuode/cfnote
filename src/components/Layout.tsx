@@ -34,7 +34,12 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
   const [importing, setImporting] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('cfnote-sidebar-open') !== '0')
+  const toggleSidebar = () =>
+    setSidebarOpen((v) => {
+      localStorage.setItem('cfnote-sidebar-open', v ? '0' : '1')
+      return !v
+    })
   const [showChat, setShowChat] = useState(false)
   const chatMaxWidth = () => Math.max(300, Math.floor(window.innerWidth / 2))
   const [chatWidth, setChatWidth] = useState(() => {
@@ -42,6 +47,12 @@ export default function Layout({ token, username, onLogout }: Props) {
     return saved >= 300 && saved <= chatMaxWidth() ? saved : 380
   })
   const [chatDragging, setChatDragging] = useState(false)
+  // 文章列表宽度可拖拽:默认 288px(原 w-72),范围 220 ~ 576(原宽两倍),存 localStorage
+  const [listWidth, setListWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('cfnote-list-width'))
+    return saved >= 220 && saved <= 576 ? saved : 288
+  })
+  const [listDragging, setListDragging] = useState(false)
   const [highlight, setHighlight] = useState<{ text: string; ts: number } | null>(null)
   const restoredRef = useRef(false)
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
@@ -68,6 +79,28 @@ export default function Layout({ token, username, onLogout }: Props) {
       window.removeEventListener('mouseup', onUp)
       setChatDragging(false)
       setChatWidth((w) => { localStorage.setItem('cfnote-chat-width', String(w)); return w })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // 拖拽调整文章列表宽度(列表右缘,向右拖变宽)
+  const startListResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setListDragging(true)
+    const startX = e.clientX
+    const startW = listWidth
+    const onMove = (ev: MouseEvent) => {
+      setListWidth(Math.min(576, Math.max(220, startW + (ev.clientX - startX))))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setListDragging(false)
+      setListWidth((w) => {
+        localStorage.setItem('cfnote-list-width', String(w))
+        return w
+      })
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
@@ -368,7 +401,8 @@ export default function Layout({ token, username, onLogout }: Props) {
     <div className="h-screen flex flex-col bg-white">
       {/* Top Bar */}
       <header className="h-13 border-b border-gray-200 flex items-center px-4 shrink-0 bg-white z-10">
-        <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1.5 rounded-lg hover:bg-gray-100 mr-3 lg:hidden">
+        {/* 折叠/展开左侧笔记本列表(桌面与移动端通用,状态存 localStorage) */}
+        <button onClick={toggleSidebar} className="p-1.5 rounded-lg hover:bg-gray-100 mr-3" title={sidebarOpen ? '折叠侧栏' : '展开侧栏'}>
           <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
           </svg>
@@ -464,7 +498,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           />
         </div>
 
-        <div className="w-72 border-r border-gray-200 bg-white shrink-0 flex flex-col overflow-hidden">
+        <div className="relative border-r border-gray-200 bg-white shrink-0 flex flex-col overflow-hidden" style={{ width: listWidth }}>
           <ArticleList
             articles={articles}
             activeArticle={activeArticle}
@@ -480,6 +514,12 @@ export default function Layout({ token, username, onLogout }: Props) {
             onPurge={purgeArticle}
             onEmptyTrash={emptyTrash}
             onTogglePin={togglePin}
+          />
+          {/* 列表右缘拖拽条:调整列表/正文分配 */}
+          <div
+            onMouseDown={startListResize}
+            className={`absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors ${listDragging ? 'bg-emerald-400' : ''}`}
+            title="拖拽调整宽度"
           />
         </div>
 
