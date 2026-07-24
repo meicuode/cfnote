@@ -33,7 +33,25 @@ blog.get('/posts', async (c) => {
   }
 })
 
-// GET /api/blog/posts/:id - 公开文章详情(浏览计数 +1,waitUntil 不阻塞响应)
+// 浏览计数去重:同一 IP 对同一文章 1 小时内只计 1 次。
+// 用 Cache API(caches.default)存去重标记——免费、零配额、不占 D1 写额度;按数据中心(colo)生效,
+// 个人博客量级足够。缓存不可用的环境(本地 dev / workers.dev 域名)自动退化为每次计数。
+async function shouldCountView(id: string, ip: string): Promise<boolean> {
+  try {
+    const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(ip))
+    const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+    const key = new Request(`https://view-dedupe.cfnote.internal/${id}/${hex}`)
+    // 类型断言:tsconfig 同时含 DOM lib,caches 解析为 DOM CacheStorage(无 default);运行时是 Workers 的 caches.default
+    const cache = (caches as unknown as { default: Cache }).default
+    if (await cache.match(key)) return false
+    await cache.put(key, new Response('1', { headers: { 'Cache-Control': 'public, max-age=3600' } }))
+    return true
+  } catch {
+    return true
+  }
+}
+
+// GET /api/blog/posts/:id - 公开文章详情(浏览计数:去重后 +1,waitUntil 不阻塞响应)
 blog.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
   try {
@@ -43,10 +61,13 @@ blog.get('/posts/:id', async (c) => {
        WHERE a.id = ? AND a.is_public = 1 AND a.is_private = 0`
     ).bind(id).first<any>()
     if (!a) return err('文章不存在或未公开', 404)
-    c.executionCtx.waitUntil(
-      c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
-    )
-    return ok({ ...a, tag: a.tag || '未分类', published_at: a.published_at || a.updated_at, views: (a.views || 0) + 1 })
+    const counted = await shouldCountView(id, c.req.header('cf-connecting-ip') || '')
+    if (counted) {
+      c.executionCtx.waitUntil(
+        c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
+      )
+    }
+    return ok({ ...a, tag: a.tag || '未分类', published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }

@@ -971,6 +971,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         <ConfirmDialog
           title="设为私有？"
           message="私有笔记不会出现在公开博客(若已公开将同时取消公开),列表标题前会显示私有标识。"
+          confirmText="设为私有"
+          variant="amber"
           onConfirm={() => { setFlagConfirm(null); applyFlags({ is_private: 1 }) }}
           onCancel={() => setFlagConfirm(null)}
         />
@@ -979,6 +981,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         <ConfirmDialog
           title="取消私有？"
           message="取消后这篇笔记恢复为普通笔记,可再次公开到博客。"
+          confirmText="取消私有"
+          variant="emerald"
           onConfirm={() => { setFlagConfirm(null); applyFlags({ is_private: 0 }) }}
           onCancel={() => setFlagConfirm(null)}
         />
@@ -987,6 +991,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         <ConfirmDialog
           title="取消公开？"
           message="取消后博客中将不再展示这篇笔记。"
+          confirmText="取消公开"
           onConfirm={() => { setFlagConfirm(null); applyFlags({ is_public: 0 }) }}
           onCancel={() => setFlagConfirm(null)}
         />

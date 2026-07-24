@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { marked } from '../lib/markdown'
+import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
-// 公开博客页(IT之家风格深色布局,见 docs/public-blog.md):
+// 公开博客页(IT之家风格布局,见 docs/public-blog.md):
 // 免登录,数据来自 /api/blog/*(仅公开且非私有的笔记)。/blog 列表,/blog/:id 详情,pushState 路由。
+// 亮/暗双主题:默认跟随系统,导航栏可手动切换(存 localStorage);顶栏与页脚保持黑色 chrome,
+// 内容区配色走 index.css 的 --blog-* 变量(深色时根元素额外挂 dark)。
 
 interface BlogPost {
   id: number
@@ -78,12 +81,35 @@ export default function BlogPage() {
   const [detailErr, setDetailErr] = useState('')
   const [hot, setHot] = useState<HotItem[]>([])
   const [hotRange, setHotRange] = useState<'day' | 'week' | 'month'>('day')
+  const [theme, setTheme] = useState<BlogTheme>(initialBlogTheme)
+  const [themeManual, setThemeManual] = useState(() => storedBlogTheme() != null)
+  const [showTop, setShowTop] = useState(false)
 
   useEffect(() => {
     const onPop = () => setPostId(parsePath())
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
+
+  // 未手动选过主题时跟随系统实时变化;手动选择后固定
+  useEffect(() => {
+    if (themeManual) return
+    try {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)')
+      const onChange = (e: MediaQueryListEvent) => setTheme(e.matches ? 'dark' : 'light')
+      mq.addEventListener('change', onChange)
+      return () => mq.removeEventListener('change', onChange)
+    } catch {
+      /* 环境不支持监听:保持初始主题 */
+    }
+  }, [themeManual])
+
+  const toggleTheme = () => {
+    const next: BlogTheme = theme === 'dark' ? 'light' : 'dark'
+    saveBlogTheme(next)
+    setThemeManual(true)
+    setTheme(next)
+  }
 
   useEffect(() => {
     fetch('/api/blog/posts')
@@ -122,6 +148,18 @@ export default function BlogPage() {
       .catch(() => setDetailErr('加载失败,请稍后重试'))
   }, [postId])
 
+  // 详情页滚过约一屏后显示「回到顶部」
+  useEffect(() => {
+    if (postId == null) {
+      setShowTop(false)
+      return
+    }
+    const onScroll = () => setShowTop(window.scrollY > 480)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [postId])
+
   const openPost = (id: number) => {
     window.history.pushState(null, '', `/blog/${id}`)
     setPostId(id)
@@ -132,8 +170,8 @@ export default function BlogPage() {
   }
 
   return (
-    <div className="dark cfnote-blog min-h-screen bg-[#262626] flex flex-col">
-      {/* 顶栏 */}
+    <div className={`${theme === 'dark' ? 'dark ' : ''}cfnote-blog min-h-screen bg-[var(--blog-bg)] flex flex-col`}>
+      {/* 顶栏(两种主题下都保持黑色 chrome;文字用固定色值,避开应用深色映射对 gray 类的重排) */}
       <nav className="bg-[#0d0d0d] sticky top-0 z-20">
         <div className="max-w-[1400px] mx-auto px-5 h-14 flex items-center">
           <button onClick={goHome} className="flex items-center gap-2 mr-8 shrink-0">
@@ -145,14 +183,34 @@ export default function BlogPage() {
           <button
             onClick={goHome}
             className={`h-full px-4 text-[15px] border-b-2 transition-colors ${
-              postId == null ? 'text-white border-[#d43030] font-medium' : 'text-gray-300 border-transparent hover:text-white'
+              postId == null ? 'text-white border-[#d43030] font-medium' : 'text-[#c9c9c9] border-transparent hover:text-white'
             }`}
           >
             首页
           </button>
-          <a href="/" className="ml-auto text-sm text-gray-300 hover:text-white transition-colors">
-            进入笔记本 →
-          </a>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? '切换为明亮主题' : '切换为黑暗主题'}
+              aria-label="切换明暗主题"
+              className="w-9 h-9 rounded-full flex items-center justify-center text-[#c9c9c9] hover:text-white hover:bg-white/10 transition-colors"
+            >
+              {theme === 'dark' ? (
+                /* 太阳:当前深色,点击转亮 */
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
+                </svg>
+              ) : (
+                /* 月亮:当前明亮,点击转暗 */
+                <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
+                </svg>
+              )}
+            </button>
+            <a href="/" className="pl-2 text-sm text-[#c9c9c9] hover:text-white transition-colors">
+              进入笔记本 →
+            </a>
+          </div>
         </div>
       </nav>
 
@@ -173,7 +231,7 @@ export default function BlogPage() {
                 <article
                   key={p.id}
                   onClick={() => openPost(p.id)}
-                  className="flex gap-5 py-6 border-b border-white/[0.06] cursor-pointer group"
+                  className="flex gap-5 py-6 border-b border-[var(--blog-border)] cursor-pointer group"
                 >
                   {p.thumb ? (
                     <img
@@ -183,13 +241,13 @@ export default function BlogPage() {
                       className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] object-cover rounded-md bg-black/30 shrink-0"
                     />
                   ) : (
-                    <div className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] rounded-md shrink-0 bg-gradient-to-br from-[#383838] to-[#2a2a2a] flex flex-col items-center justify-center gap-1">
+                    <div className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] rounded-md shrink-0 bg-gradient-to-br from-[var(--blog-thumb1)] to-[var(--blog-thumb2)] flex flex-col items-center justify-center gap-1">
                       <span className="text-2xl">📝</span>
                       <span className="text-xs text-gray-500 hidden sm:block">CFNote</span>
                     </div>
                   )}
                   <div className="flex-1 min-w-0 flex flex-col py-0.5">
-                    <h2 className="text-base sm:text-[19px] font-bold leading-snug text-gray-100 group-hover:text-[#e05252] transition-colors line-clamp-2">
+                    <h2 className="text-base sm:text-[19px] font-bold leading-snug text-[var(--blog-title)] group-hover:text-[#e05252] transition-colors line-clamp-2">
                       {p.title}
                     </h2>
                     {p.excerpt && <p className="text-sm text-[#999] mt-2.5 leading-relaxed line-clamp-2 hidden sm:block">{p.excerpt}</p>}
@@ -215,13 +273,13 @@ export default function BlogPage() {
             <div className="pt-1">
               {/* 面包屑 */}
               <div className="text-[15px] flex items-center gap-2">
-                <button onClick={goHome} className="text-gray-400 hover:text-[#e05252] transition-colors">
+                <button onClick={goHome} className="text-[#8f8f8f] hover:text-[#e05252] transition-colors">
                   首页
                 </button>
-                <span className="text-gray-600">&gt;</span>
-                <span className="text-gray-400">{detail.tag}</span>
+                <span className="text-[#8f8f8f]">&gt;</span>
+                <span className="text-[#8f8f8f]">{detail.tag}</span>
               </div>
-              <h1 className="text-[26px] sm:text-[28px] font-bold leading-snug text-gray-100 mt-5">{detail.title}</h1>
+              <h1 className="text-[26px] sm:text-[28px] font-bold leading-snug text-[var(--blog-title)] mt-5">{detail.title}</h1>
               <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-gray-500 mt-4">
                 <span>{fmtFull(detail.published_at)}</span>
                 <span>来源：CFNote 笔记</span>
@@ -237,10 +295,10 @@ export default function BlogPage() {
               {/* 评论区(个人博客暂不开放,保留版式) */}
               <section className="mt-10 mb-4">
                 <div className="flex items-end justify-between border-b-2 border-[#d43030] pb-2">
-                  <h3 className="text-xl font-bold text-gray-100">评论</h3>
+                  <h3 className="text-xl font-bold text-[var(--blog-title)]">评论</h3>
                   <span className="text-xs text-gray-500 hidden sm:block">愿每一段记录,都有回响。</span>
                 </div>
-                <div className="bg-[#0d0d0d] rounded mt-4 py-5 text-center text-sm text-gray-400">
+                <div className="bg-[var(--blog-panel)] rounded mt-4 py-5 text-center text-sm text-[var(--blog-muted)]">
                   本博客为个人笔记博客,暂未开放评论
                 </div>
               </section>
@@ -250,14 +308,16 @@ export default function BlogPage() {
 
         {/* 右侧栏 */}
         <aside className="w-[380px] shrink-0 hidden xl:block">
-          <div className="bg-[#2f2f2f] rounded-lg overflow-hidden">
-            <div className="flex items-center gap-7 px-5 pt-3 border-b border-white/[0.08]">
+          <div className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg overflow-hidden">
+            <div className="flex items-center gap-7 px-5 pt-3 border-b border-[var(--blog-border)]">
               {(['day', 'week', 'month'] as const).map((r) => (
                 <button
                   key={r}
                   onClick={() => setHotRange(r)}
                   className={`pb-2.5 text-[15px] border-b-2 -mb-px transition-colors ${
-                    hotRange === r ? 'text-white font-medium border-[#d43030]' : 'text-gray-400 border-transparent hover:text-gray-200'
+                    hotRange === r
+                      ? 'text-[var(--blog-title)] font-medium border-[#d43030]'
+                      : 'text-[var(--blog-muted)] border-transparent hover:text-[var(--blog-text)]'
                   }`}
                 >
                   {r === 'day' ? '日榜' : r === 'week' ? '周榜' : '月榜'}
@@ -270,12 +330,12 @@ export default function BlogPage() {
                   <button onClick={() => openPost(h.id)} className="w-full flex items-center gap-2.5 py-[7px] group text-left min-w-0">
                     <span
                       className={`w-[18px] h-[18px] rounded-[3px] text-[11px] font-bold text-white flex items-center justify-center shrink-0 ${
-                        i < 3 ? 'bg-[#d43030]' : 'bg-[#4a4a4a]'
+                        i < 3 ? 'bg-[#d43030]' : 'bg-[var(--blog-rank)]'
                       }`}
                     >
                       {i + 1}
                     </span>
-                    <span className="flex-1 truncate text-sm text-gray-300 group-hover:text-[#e05252] transition-colors">{h.title}</span>
+                    <span className="flex-1 truncate text-sm text-[var(--blog-text)] group-hover:text-[#e05252] transition-colors">{h.title}</span>
                   </button>
                 </li>
               ))}
@@ -284,9 +344,9 @@ export default function BlogPage() {
           </div>
 
           {postId == null && (
-            <div className="bg-[#2f2f2f] rounded-lg mt-5 px-5 py-4">
-              <h3 className="text-[15px] font-bold text-white border-b border-white/[0.08] pb-2.5 mb-3">关于本站</h3>
-              <p className="text-sm text-gray-400 leading-relaxed">
+            <div className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg mt-5 px-5 py-4">
+              <h3 className="text-[15px] font-bold text-[var(--blog-title)] border-b border-[var(--blog-border)] pb-2.5 mb-3">关于本站</h3>
+              <p className="text-sm text-[var(--blog-muted)] leading-relaxed">
                 这里是我的公开笔记精选,由 CFNote 个人知识库发布:笔记在编辑器中一键公开,经敏感信息检查后即刻上线。
               </p>
             </div>
@@ -294,10 +354,24 @@ export default function BlogPage() {
         </aside>
       </div>
 
+      {/* 回到顶部(详情页,滚过约一屏后淡入;悬浮转为主题红) */}
+      <button
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        aria-label="回到顶部"
+        title="回到顶部"
+        className={`fixed right-5 bottom-8 z-30 w-11 h-11 rounded-full bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-lg flex items-center justify-center text-[var(--blog-muted)] hover:bg-[#d43030] hover:border-[#d43030] hover:text-white transition-all duration-300 ${
+          showTop ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'
+        }`}
+      >
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 15.75l7.5-7.5 7.5 7.5" />
+        </svg>
+      </button>
+
       <footer className="mt-10 bg-[#0d0d0d] py-8">
-        <div className="text-center text-sm text-gray-500 space-y-1.5">
+        <div className="text-center text-sm text-[#8f8f8f] space-y-1.5">
           <p>CFNote 博客 — 来自我的公开笔记</p>
-          <p className="text-gray-600">Powered by CFNote · Cloudflare Workers</p>
+          <p className="text-[#6f6f6f]">Powered by CFNote · Cloudflare Workers</p>
         </div>
       </footer>
     </div>

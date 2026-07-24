@@ -4,12 +4,21 @@ interface Props {
   title: string
   message?: string
   confirmText?: string
+  /** 确认按钮与图标配色:red=危险(默认,删除类),amber=谨慎操作(如设为私有),emerald=正向操作 */
+  variant?: 'red' | 'amber' | 'emerald'
   onConfirm: () => void
   onCancel: () => void
 }
 
+const VARIANTS = {
+  red: { icon: 'bg-red-50 text-red-500', btn: 'bg-red-500 hover:bg-red-600' },
+  amber: { icon: 'bg-amber-50 text-amber-500', btn: 'bg-amber-500 hover:bg-amber-600' },
+  emerald: { icon: 'bg-emerald-50 text-emerald-500', btn: 'bg-emerald-500 hover:bg-emerald-600' },
+} as const
+
 // 主题化确认弹窗(替代原生 confirm):Esc 取消,Enter 确认
-export default function ConfirmDialog({ title, message, confirmText = '删除', onConfirm, onCancel }: Props) {
+export default function ConfirmDialog({ title, message, confirmText = '删除', variant = 'red', onConfirm, onCancel }: Props) {
+  const v = VARIANTS[variant]
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
@@ -24,8 +33,8 @@ export default function ConfirmDialog({ title, message, confirmText = '删除', 
       <div className="absolute inset-0 bg-black/40" />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-            <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${v.icon}`}>
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
             </svg>
           </div>
@@ -43,7 +52,7 @@ export default function ConfirmDialog({ title, message, confirmText = '删除', 
           </button>
           <button
             onClick={onConfirm}
-            className="px-3.5 py-1.5 text-sm rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors"
+            className={`px-3.5 py-1.5 text-sm rounded-lg text-white transition-colors ${v.btn}`}
           >
             {confirmText}
           </button>

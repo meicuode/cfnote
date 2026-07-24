@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { useAuth } from './hooks/useAuth'
+import { initialBlogTheme } from './lib/blogTheme'
 import SetupPage from './components/SetupPage'
 import LoginPage from './components/LoginPage'
 import Layout from './components/Layout'
@@ -14,7 +15,7 @@ export default function App() {
   // 博客路径不进入应用壳(无鉴权、不请求 /api/status);模块级常量保证 hooks 顺序稳定
   if (IS_BLOG) {
     return (
-      <Suspense fallback={<div className="min-h-screen bg-[#262626]" />}>
+      <Suspense fallback={<div className={`min-h-screen ${initialBlogTheme() === 'dark' ? 'bg-[#262626]' : 'bg-[#f5f6f7]'}`} />}>
         <BlogPage />
       </Suspense>
     )
