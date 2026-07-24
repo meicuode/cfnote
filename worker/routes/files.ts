@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { ok, err, trackEvent, getUserLoose } from '../utils'
 import { parseFileRefs, buildAfileUrl, afileTailKind, categorizeFile, SIDECAR_SUFFIX } from '../../src/lib/fileRefs'
+import { collectPrivateIds } from '../../src/lib/fmUtils'
 import type { AppEnv } from '../types'
 
 export const files = new Hono<AppEnv>()
@@ -60,6 +61,38 @@ export async function isPubliclyReferenced(env: AppEnv['Bindings'], key: string)
   } catch {
     return false
   }
+}
+
+/**
+ * 私密文件夹子树的全部目录 id(P8.2 增强批):is_private 根目录 + 全部后代。
+ * 私密性纯结构化,目录移动即改变归属;单用户目录量小,整表拉取后内存判定。
+ */
+export async function getPrivateFolderIds(env: AppEnv['Bindings'], userId: number): Promise<Set<number>> {
+  try {
+    const { results } = await env.DB.prepare(
+      'SELECT id, parent_id, is_private FROM folders WHERE user_id = ?'
+    ).bind(userId).all<{ id: number; parent_id: number | null; is_private: number }>()
+    return collectPrivateIds((results || []).map((r) => ({ ...r, name: '' })))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * 免登录场景下 key 是否可读:私密文件夹内一票否决(即使被公开文章引用,发布弹窗已提示
+ * "私密文件,访客不可见"),其余看「被公开文章引用」。边车缩略图随主文件。
+ */
+export async function anonReadable(env: AppEnv['Bindings'], key: string): Promise<boolean> {
+  const mainKey = key.endsWith(SIDECAR_SUFFIX) ? key.slice(0, -SIDECAR_SUFFIX.length) : key
+  try {
+    const row = await env.DB.prepare('SELECT user_id, folder_id FROM files WHERE key = ?')
+      .bind(mainKey).first<{ user_id: number; folder_id: number | null }>()
+    if (row && row.folder_id != null) {
+      const priv = await getPrivateFolderIds(env, row.user_id)
+      if (priv.has(row.folder_id)) return false
+    }
+  } catch { /* files 表不可用时退回引用判定 */ }
+  return isPubliclyReferenced(env, mainKey)
 }
 
 /**
@@ -190,13 +223,12 @@ files.put('/*', async (c) => {
   }
 })
 
-// 免登录读取的访问分级:登录态(头或 cookie)放行;否则仅「被公开文章引用」的附件可读,
-// 边车缩略图随主文件的可见性。不满足一律 404(不区分"不存在/无权",避免探测)。
+// 免登录读取的访问分级:登录态(头或 cookie)放行;否则仅「被公开文章引用且不在私密文件夹」
+// 的附件可读,边车缩略图随主文件的可见性。不满足一律 404(不区分"不存在/无权",避免探测)。
 async function gateRead(c: any, key: string): Promise<Response | null> {
   const user = await getUserLoose(c.req.raw, c.env)
   if (user) return null
-  const mainKey = key.endsWith(SIDECAR_SUFFIX) ? key.slice(0, -SIDECAR_SUFFIX.length) : key
-  if (await isPubliclyReferenced(c.env, mainKey)) return null
+  if (await anonReadable(c.env, key)) return null
   return err('文件不存在', 404)
 }
 
@@ -244,13 +276,73 @@ function headResponse(obj: R2Object): Response {
   return new Response(null, { headers })
 }
 
-function getResponse(obj: R2ObjectBody): Response {
+function getResponse(obj: R2ObjectBody, cacheControl = 'public, max-age=31536000, immutable'): Response {
   const headers = new Headers()
   obj.writeHttpMetadata(headers as any)
-  headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  headers.set('Cache-Control', cacheControl)
   headers.set('etag', obj.httpEtag)
   return new Response(obj.body as any, { headers })
 }
+
+// ---- 分享路由 /api/share/:token/:tail?(P8.2 增强批)----
+// 免登录直达:token 32 位随机 hex,一个文件同时只有一个分享(files 表两列即状态);
+// 过期/取消/私密立即失效。尾部文件名仅用于浏览器展示与下载命名。
+
+export const share = new Hono<AppEnv>()
+
+// 面向人的极简提示页(分享链接常被直接在浏览器打开,JSON 报错体验差)
+function sharePage(msg: string, status: number): Response {
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${msg}</title>` +
+    `<body style="margin:0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;color:#6b7280;background:#f9fafb">${msg}</body>`,
+    { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
+  )
+}
+
+async function resolveShare(c: any): Promise<{ key: string } | Response> {
+  if (!c.env.BUCKET) return err(NO_BUCKET_MSG, 501)
+  const token = String(c.req.param('token') || '')
+  if (!/^[0-9a-f]{32}$/.test(token)) return sharePage('分享不存在或已取消', 404)
+  const row = (await c.env.DB.prepare(
+    'SELECT user_id, key, folder_id, share_expires_at FROM files WHERE share_token = ?'
+  ).bind(token).first().catch(() => null)) as
+    { user_id: number; key: string; folder_id: number | null; share_expires_at: string | null } | null
+  if (!row) return sharePage('分享不存在或已取消', 404)
+  if (row.share_expires_at && Date.parse(row.share_expires_at) <= Date.now()) {
+    return sharePage('分享链接已过期', 410)
+  }
+  // 防御:移入私密文件夹应已撤销分享,这里兜底再拦一道
+  if (row.folder_id != null) {
+    const priv = await getPrivateFolderIds(c.env, row.user_id)
+    if (priv.has(row.folder_id)) return sharePage('分享不存在或已取消', 404)
+  }
+  return { key: row.key }
+}
+
+share.get('/:token/:tail?', async (c) => {
+  try {
+    const r = await resolveShare(c)
+    if (r instanceof Response) return r
+    const obj = await c.env.BUCKET!.get(r.key)
+    if (!obj) return sharePage('文件不存在', 404)
+    // 内容可能被覆盖保存、分享可能到期/取消:只做短缓存,不用 immutable
+    return getResponse(obj, 'public, max-age=300')
+  } catch (e: any) {
+    return err('下载失败: ' + e.message, 500)
+  }
+})
+
+share.on('HEAD', '/:token/:tail?', async (c) => {
+  try {
+    const r = await resolveShare(c)
+    if (r instanceof Response) return r
+    const obj = await c.env.BUCKET!.head(r.key)
+    if (!obj) return sharePage('文件不存在', 404)
+    return headResponse(obj)
+  } catch (e: any) {
+    return err('查询失败: ' + e.message, 500)
+  }
+})
 
 // ---- 新式间接路由 /api/afile/:id/:tail? ----
 // 真实 key 只存 files 表;尾巴用于区分主文件/边车缩略图(<链接>.thumb.png),其余内容忽略。
@@ -275,7 +367,7 @@ afile.get('/:id/:tail?', async (c) => {
     const r = await resolveAfile(c)
     if (r instanceof Response) return r
     const user = await getUserLoose(c.req.raw, c.env)
-    if (!user && !(await isPubliclyReferenced(c.env, r.fileRow.key))) return err('文件不存在', 404)
+    if (!user && !(await anonReadable(c.env, r.fileRow.key))) return err('文件不存在', 404)
     const obj = await c.env.BUCKET!.get(r.key)
     if (!obj) return err('文件不存在', 404)
     return getResponse(obj)
@@ -289,7 +381,7 @@ afile.on('HEAD', '/:id/:tail?', async (c) => {
     const r = await resolveAfile(c)
     if (r instanceof Response) return r
     const user = await getUserLoose(c.req.raw, c.env)
-    if (!user && !(await isPubliclyReferenced(c.env, r.fileRow.key))) return err('文件不存在', 404)
+    if (!user && !(await anonReadable(c.env, r.fileRow.key))) return err('文件不存在', 404)
     const obj = await c.env.BUCKET!.head(r.key)
     if (!obj) return err('文件不存在', 404)
     return headResponse(obj)

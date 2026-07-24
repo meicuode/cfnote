@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
-import { buildFolderTree, fmtSize, previewKind, type FolderNode, type FolderRow } from '../lib/fmUtils'
+import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS, type FolderNode, type FolderRow } from '../lib/fmUtils'
 
 const XmindViewer = lazy(() => import('./XmindViewer'))
 
@@ -21,12 +21,15 @@ interface FmFile {
   category: 'image' | 'doc' | 'other'
   content_type: string | null
   folder_id: number | null
+  share_token: string | null
+  share_expires_at: string | null
   created_at: string
   updated_at: string
   url: string
   thumb: string | null
   ref_count: number
   pub_count: number
+  is_private_file: boolean
 }
 
 interface FmOverview {
@@ -41,6 +44,7 @@ interface RefItem {
   title: string
   is_public: number
   is_private: number
+  updated_at: string
   notebook: string | null
 }
 
@@ -53,6 +57,16 @@ type View =
 const CATE_LABEL: Record<string, string> = { image: '图片', doc: '文档', other: '其他' }
 const R2_FREE = 10 * 1024 * 1024 * 1024
 
+// 服务端时间统一 UTC(datetime('now') 无时区尾巴),补 Z 再按本地时区展示
+const fmtDateTime = (s: string) => {
+  const d = new Date(/[TZ]/.test(s) ? s : s.replace(' ', 'T') + 'Z')
+  return isNaN(d.getTime())
+    ? s
+    : d.toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+let uploadUid = 0
+
 export default function FileManager({ token, onClose }: Props) {
   const [overview, setOverview] = useState<FmOverview | null>(null)
   const [view, setView] = useState<View>({ kind: 'all' })
@@ -62,7 +76,8 @@ export default function FileManager({ token, onClose }: Props) {
   const [files, setFiles] = useState<FmFile[] | null>(null)
   const [notice, setNotice] = useState('')
   const [scanBusy, setScanBusy] = useState(false)
-  const [uploading, setUploading] = useState(0)
+  // 上传占位:列表顶部逐个显示上传中的文件行,完成一个消掉一个
+  const [uploadingItems, setUploadingItems] = useState<{ uid: number; name: string; size: number }[]>([])
 
   const [preview, setPreview] = useState<
     | { type: 'image'; url: string; name: string }
@@ -80,6 +95,11 @@ export default function FileManager({ token, onClose }: Props) {
   const [folderRename, setFolderRename] = useState<FolderRow | null>(null)
   const [folderRenameVal, setFolderRenameVal] = useState('')
   const [folderDelete, setFolderDelete] = useState<FolderRow | null>(null)
+  const [folderMove, setFolderMove] = useState<FolderNode | null>(null)
+  // 分享对话框:对着一份本地文件快照操作,生成/取消后同步回列表
+  const [shareDialog, setShareDialog] = useState<FmFile | null>(null)
+  const [sharePreset, setSharePreset] = useState<number | null>(604800)
+  const [shareBusy, setShareBusy] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -118,11 +138,11 @@ export default function FileManager({ token, onClose }: Props) {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !preview && !renameTarget && !moveTarget && !refsDialog && !deleteTarget) onClose()
+      if (e.key === 'Escape' && !preview && !renameTarget && !moveTarget && !refsDialog && !deleteTarget && !shareDialog && !folderMove) onClose()
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose, preview, renameTarget, moveTarget, refsDialog, deleteTarget])
+  }, [onClose, preview, renameTarget, moveTarget, refsDialog, deleteTarget, shareDialog, folderMove])
 
   const refresh = useCallback(() => { loadOverview(); loadFiles() }, [loadOverview, loadFiles])
 
@@ -180,6 +200,7 @@ export default function FileManager({ token, onClose }: Props) {
     if (!moveTarget) return
     const j = await api(`/api/fm/files/${moveTarget.id}`, { method: 'PUT', body: JSON.stringify({ folder_id: folderId }) })
     if (!j?.ok) flash(j?.error || '移动失败')
+    else if (j.data?.revoked_shares > 0) flash('已移入私密文件夹,原分享已取消')
     setMoveTarget(null)
     refresh()
   }
@@ -219,6 +240,58 @@ export default function FileManager({ token, onClose }: Props) {
     loadOverview()
   }
 
+  const submitFolderMove = async (parentId: number | null) => {
+    if (!folderMove) return
+    const j = await api(`/api/fm/folders/${folderMove.id}`, { method: 'PUT', body: JSON.stringify({ parent_id: parentId }) })
+    if (!j?.ok) flash(j?.error || '移动失败')
+    else if (j.data?.revoked_shares > 0) flash(`已移入私密文件夹,取消了 ${j.data.revoked_shares} 个文件的分享`)
+    setFolderMove(null)
+    refresh()
+  }
+
+  // ---- 分享 ----
+
+  const shareUrl = (tokenStr: string, name: string) => `${location.origin}/api/share/${tokenStr}/${encodeURIComponent(name)}`
+
+  const copyShareLink = async (f: FmFile) => {
+    if (!f.share_token) return
+    try {
+      await navigator.clipboard.writeText(shareUrl(f.share_token, f.name))
+      flash('分享链接已复制')
+    } catch {
+      flash('复制失败')
+    }
+  }
+
+  const submitShare = async () => {
+    if (!shareDialog || shareBusy) return
+    setShareBusy(true)
+    try {
+      const j = await api(`/api/fm/files/${shareDialog.id}/share`, { method: 'POST', body: JSON.stringify({ expires_in: sharePreset }) })
+      if (!j?.ok) {
+        flash(j?.error || '分享失败')
+        return
+      }
+      const updated = { ...shareDialog, share_token: j.data.token as string, share_expires_at: j.data.share_expires_at as string | null }
+      setShareDialog(updated)
+      await copyShareLink(updated)
+      refresh()
+    } finally {
+      setShareBusy(false)
+    }
+  }
+
+  const cancelShare = async () => {
+    if (!shareDialog) return
+    const j = await api(`/api/fm/files/${shareDialog.id}/share`, { method: 'DELETE' })
+    if (!j?.ok) flash(j?.error || '取消失败')
+    else {
+      setShareDialog({ ...shareDialog, share_token: null, share_expires_at: null })
+      flash('已取消分享,链接立即失效')
+    }
+    refresh()
+  }
+
   const runScan = async () => {
     setScanBusy(true)
     try {
@@ -234,9 +307,10 @@ export default function FileManager({ token, onClose }: Props) {
   const handleUpload = async (list: FileList | null) => {
     if (!list || list.length === 0) return
     const folderId = view.kind === 'folder' ? view.id : null
-    setUploading(list.length)
+    const items = Array.from(list).map((file) => ({ uid: ++uploadUid, file }))
+    setUploadingItems(items.map(({ uid, file }) => ({ uid, name: file.name, size: file.size })))
     let fail = 0
-    for (const file of Array.from(list)) {
+    for (const { uid, file } of items) {
       try {
         const headers: Record<string, string> = {
           Authorization: `Bearer ${token}`,
@@ -250,7 +324,7 @@ export default function FileManager({ token, onClose }: Props) {
       } catch {
         fail++
       }
-      setUploading((n) => n - 1)
+      setUploadingItems((prev) => prev.filter((p) => p.uid !== uid))
     }
     if (fail) flash(`${fail} 个文件上传失败(单文件限 10MB)`)
     refresh()
@@ -259,6 +333,8 @@ export default function FileManager({ token, onClose }: Props) {
   // ---- 渲染 ----
 
   const folderTree = buildFolderTree(overview?.folders || [])
+  // 私密子树(「我的私密文件夹」及其后代):锁图标、禁分享、移入撤销分享的判定都用它
+  const privateIds = collectPrivateIds(overview?.folders || [])
 
   const railItem = (active: boolean, onClick: () => void, content: ReactNode, extra?: ReactNode) => (
     <button
@@ -279,8 +355,13 @@ export default function FileManager({ token, onClose }: Props) {
           view.kind === 'folder' && view.id === node.id,
           () => setView({ kind: 'folder', id: node.id, name: node.name }),
           <>
-            <span className="shrink-0">📁</span>
-            <span className="truncate flex-1">{node.name}</span>
+            <span className="shrink-0">{privateIds.has(node.id) ? '🔒' : '📁'}</span>
+            <span
+              className="truncate flex-1"
+              title={privateIds.has(node.id) ? '私密文件夹:其中的文件禁止公开访问与分享' : undefined}
+            >
+              {node.name}
+            </span>
           </>,
           <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
             <span
@@ -291,22 +372,35 @@ export default function FileManager({ token, onClose }: Props) {
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M12 4v16m8-8H4" /></svg>
             </span>
-            <span
-              role="button"
-              title="重命名"
-              onClick={(e) => { e.stopPropagation(); setFolderRename(node); setFolderRenameVal(node.name) }}
-              className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-            >
-              ✏️
-            </span>
-            <span
-              role="button"
-              title="删除(须为空)"
-              onClick={(e) => { e.stopPropagation(); setFolderDelete(node) }}
-              className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-            >
-              🗑
-            </span>
+            {/* 系统私密根目录不可改名/移动/删除,只留新建子目录 */}
+            {!node.is_private && (
+              <>
+                <span
+                  role="button"
+                  title="重命名"
+                  onClick={(e) => { e.stopPropagation(); setFolderRename(node); setFolderRenameVal(node.name) }}
+                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
+                >
+                  ✏️
+                </span>
+                <span
+                  role="button"
+                  title="移动到其他文件夹"
+                  onClick={(e) => { e.stopPropagation(); setFolderMove(node) }}
+                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
+                >
+                  ⇄
+                </span>
+                <span
+                  role="button"
+                  title="删除(须为空)"
+                  onClick={(e) => { e.stopPropagation(); setFolderDelete(node) }}
+                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
+                >
+                  🗑
+                </span>
+              </>
+            )}
           </span>
         )}
       </div>
@@ -343,9 +437,15 @@ export default function FileManager({ token, onClose }: Props) {
             </button>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors"
+              disabled={uploadingItems.length > 0}
+              className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition-colors disabled:opacity-60 flex items-center gap-1.5"
             >
-              {uploading > 0 ? `上传中(${uploading})` : '上传文件'}
+              {uploadingItems.length > 0 ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  上传中({uploadingItems.length})
+                </>
+              ) : '上传文件'}
             </button>
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { handleUpload(e.target.files); e.target.value = '' }} />
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors" title="关闭">
@@ -447,7 +547,7 @@ export default function FileManager({ token, onClose }: Props) {
                 <div className="py-20 flex justify-center">
                   <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
                 </div>
-              ) : files.length === 0 ? (
+              ) : files.length === 0 && uploadingItems.length === 0 ? (
                 <div className="py-20 text-center text-gray-400 text-sm">
                   <p className="text-3xl mb-2">🗂</p>
                   <p>{view.kind === 'unref' ? '没有未引用的文件,很干净' : '这里还没有文件'}</p>
@@ -457,6 +557,18 @@ export default function FileManager({ token, onClose }: Props) {
                 </div>
               ) : (
                 <div className="divide-y divide-gray-50">
+                  {/* 上传占位行:完成一个消掉一个,全部完成后由 refresh 换成真实记录 */}
+                  {uploadingItems.map((u) => (
+                    <div key={`up-${u.uid}`} className="px-4 py-2 flex items-center gap-3 animate-pulse">
+                      <div className="w-10 h-10 rounded-md bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0">
+                        <span className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm text-gray-500 truncate block">{u.name}</span>
+                        <p className="text-[11px] text-gray-400 mt-0.5">{fmtSize(u.size)} · 上传中…</p>
+                      </div>
+                    </div>
+                  ))}
                   {files.map((f) => (
                     <div key={f.id} className="px-4 py-2 flex items-center gap-3 hover:bg-gray-50/70 group">
                       {f.thumb ? (
@@ -492,16 +604,45 @@ export default function FileManager({ token, onClose }: Props) {
                           </button>
                         </p>
                       </div>
-                      <span
-                        className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${
-                          f.pub_count > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'
-                        }`}
-                        title={f.pub_count > 0 ? '被公开笔记引用,任何人可访问' : '仅登录后可访问'}
-                      >
-                        {f.pub_count > 0 ? '公开可访问' : '仅自己'}
-                      </span>
+                      {f.is_private_file ? (
+                        <span
+                          className="text-[11px] px-1.5 py-0.5 rounded shrink-0 bg-amber-50 text-amber-700"
+                          title="在私密文件夹中:禁止公开访问与分享,笔记公开时该附件对访客不可见"
+                        >
+                          🔒 私密
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 ${
+                            f.pub_count > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'
+                          }`}
+                          title={f.pub_count > 0 ? '被公开笔记引用,任何人可访问' : '仅登录后可访问'}
+                        >
+                          {f.pub_count > 0 ? '公开可访问' : '仅自己'}
+                        </span>
+                      )}
+                      {f.share_token && (
+                        <span
+                          className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 cursor-pointer ${
+                            fmtRemaining(f.share_expires_at) === '已过期' ? 'bg-gray-100 text-gray-400' : 'bg-sky-50 text-sky-600'
+                          }`}
+                          title={fmtRemaining(f.share_expires_at) === '已过期' ? '分享已过期,点击重新生成' : '已分享,点击查看/复制链接'}
+                          onClick={() => { setShareDialog(f); setSharePreset(604800) }}
+                        >
+                          🔗 {fmtRemaining(f.share_expires_at)}
+                        </span>
+                      )}
                       <div className="hidden group-hover:flex items-center gap-0.5 shrink-0 text-gray-400">
                         <button onClick={() => copyLink(f)} title="复制链接" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">📋</button>
+                        {!f.is_private_file && (
+                          <button
+                            onClick={() => { setShareDialog(f); setSharePreset(604800) }}
+                            title="公开分享(可设有效期)"
+                            className="p-1.5 rounded-md hover:bg-gray-200 text-xs"
+                          >
+                            🔗
+                          </button>
+                        )}
                         <button onClick={() => { setRenameTarget(f); setRenameVal(f.name) }} title="重命名" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">✏️</button>
                         <button onClick={() => setMoveTarget(f)} title="移动到文件夹" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">📁</button>
                         <button
@@ -576,7 +717,10 @@ export default function FileManager({ token, onClose }: Props) {
         <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setMoveTarget(null)}>
           <div className="bg-white rounded-2xl shadow-2xl w-80 p-4" onMouseDown={(e) => e.stopPropagation()}>
             <h3 className="text-sm font-semibold text-gray-900 mb-1">移动「{moveTarget.name}」</h3>
-            <p className="text-[11px] text-gray-400 mb-2">目录是虚拟结构,移动不影响链接。归入目录的文件不会随笔记删除被清理。</p>
+            <p className="text-[11px] text-gray-400 mb-2">
+              目录是虚拟结构,移动不影响链接。归入目录的文件不会随笔记删除被清理。
+              移入 🔒 私密文件夹后禁止公开访问,已有分享会被取消。
+            </p>
             <div className="max-h-60 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
               <button onClick={() => submitMove(null)} className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">
                 (移出所有文件夹)
@@ -590,7 +734,7 @@ export default function FileManager({ token, onClose }: Props) {
                     className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 disabled:opacity-40"
                     style={{ paddingLeft: 12 + depth * 16 }}
                   >
-                    📁 {n.name}
+                    {privateIds.has(n.id) ? '🔒' : '📁'} {n.name}
                   </button>,
                   ...flat(n.children, depth + 1),
                 ])
@@ -609,16 +753,29 @@ export default function FileManager({ token, onClose }: Props) {
             {refsDialog.refs.length === 0 ? (
               <p className="text-xs text-gray-400">没有笔记引用这个文件。</p>
             ) : (
-              <div className="max-h-64 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded-lg">
+              <div className="max-h-72 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded-lg">
                 {refsDialog.refs.map((r) => (
-                  <div key={r.id} className="px-3 py-2 flex items-center gap-2 text-sm">
-                    <span className="truncate flex-1 text-gray-700">{r.title}</span>
-                    {r.notebook && <span className="text-[11px] text-gray-400 shrink-0">{r.notebook}</span>}
-                    {r.is_private ? (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 shrink-0">私有</span>
-                    ) : r.is_public ? (
-                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">公开</span>
-                    ) : null}
+                  <div key={r.id} className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => window.open(`/?article=${r.id}`, '_blank', 'noopener')}
+                        className="truncate flex-1 text-left text-sm text-gray-700 hover:text-emerald-600 hover:underline"
+                        title="在新窗口打开这篇笔记"
+                      >
+                        {r.title}
+                      </button>
+                      {r.is_private ? (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 shrink-0">私有</span>
+                      ) : r.is_public ? (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">公开</span>
+                      ) : (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-400 shrink-0">未公开</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2">
+                      <span>更新于 {fmtDateTime(r.updated_at)}</span>
+                      {r.notebook && <span className="truncate">{r.notebook}</span>}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -629,6 +786,114 @@ export default function FileManager({ token, onClose }: Props) {
           </div>
         </div>
       )}
+
+      {/* 分享(单分享:重新生成即替换,取消立即失效;私密文件夹内无此入口) */}
+      {shareDialog && (() => {
+        const active = !!shareDialog.share_token && fmtRemaining(shareDialog.share_expires_at) !== '已过期'
+        return (
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setShareDialog(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-[400px] max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-gray-900 mb-1 truncate">分享「{shareDialog.name}」</h3>
+              <p className="text-[11px] text-gray-400 mb-3">
+                任何拿到链接的人在有效期内都可访问该文件。一个文件同时只有一个分享链接,重新生成后旧链接立即失效。
+              </p>
+              {shareDialog.share_token && (
+                <div className="mb-3 border border-sky-100 bg-sky-50/60 rounded-lg p-2.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={shareUrl(shareDialog.share_token, shareDialog.name)}
+                      onFocus={(e) => e.target.select()}
+                      className="flex-1 min-w-0 text-[11px] text-gray-600 bg-white border border-gray-200 rounded px-2 py-1 focus:outline-none"
+                    />
+                    <button
+                      onClick={() => copyShareLink(shareDialog)}
+                      className="px-2 py-1 text-[11px] rounded bg-sky-500 text-white hover:bg-sky-600 shrink-0"
+                    >
+                      复制
+                    </button>
+                  </div>
+                  <p className="text-[11px] mt-1.5 flex items-center justify-between">
+                    <span className={active ? 'text-sky-600' : 'text-amber-600'}>
+                      {active ? `有效期:${fmtRemaining(shareDialog.share_expires_at)}` : '已过期,可选择有效期重新生成'}
+                    </span>
+                    <button onClick={cancelShare} className="text-red-400 hover:text-red-600 hover:underline">取消分享</button>
+                  </p>
+                </div>
+              )}
+              <p className="text-xs font-medium text-gray-600 mb-1.5">有效期</p>
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {EXPIRY_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    onClick={() => setSharePreset(p.seconds)}
+                    className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+                      sharePreset === p.seconds
+                        ? 'border-emerald-400 bg-emerald-50 text-emerald-700 font-medium'
+                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShareDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100">关闭</button>
+                <button
+                  onClick={submitShare}
+                  disabled={shareBusy}
+                  className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50"
+                >
+                  {shareBusy ? '生成中…' : shareDialog.share_token ? '重新生成链接' : '生成分享链接'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* 移动文件夹(排除自身及其子树;移入私密子树会取消其中文件的分享) */}
+      {folderMove && (() => {
+        const excluded = new Set<number>()
+        const walk = (n: FolderNode) => { excluded.add(n.id); n.children.forEach(walk) }
+        walk(folderMove)
+        return (
+          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setFolderMove(null)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-80 p-4" onMouseDown={(e) => e.stopPropagation()}>
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">移动文件夹「{folderMove.name}」</h3>
+              <p className="text-[11px] text-gray-400 mb-2">
+                移动不影响任何文件链接。移入 🔒 私密文件夹后,其中所有文件禁止公开,已有分享会被取消。
+              </p>
+              <div className="max-h-60 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+                <button
+                  onClick={() => submitFolderMove(null)}
+                  disabled={folderMove.parent_id == null}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+                >
+                  (移到根目录)
+                </button>
+                {(function flat(nodes: FolderNode[], depth: number): ReactNode[] {
+                  return nodes.flatMap((n) => {
+                    if (excluded.has(n.id)) return []
+                    return [
+                      <button
+                        key={n.id}
+                        onClick={() => submitFolderMove(n.id)}
+                        disabled={folderMove.parent_id === n.id}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 disabled:opacity-40"
+                        style={{ paddingLeft: 12 + depth * 16 }}
+                      >
+                        {privateIds.has(n.id) ? '🔒' : '📁'} {n.name}
+                      </button>,
+                      ...flat(n.children, depth + 1),
+                    ]
+                  })
+                })(folderTree, 0)}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 删除文件确认 */}
       {deleteTarget && (

@@ -1,6 +1,6 @@
 # P8 文件管理与附件关联体系
 
-**状态(2026-07-24)**:P8.1(数据层/间接链接/访问分级/发布弹窗附件清单)✅;P8.2 文件管理页、P8.3 编辑器文件库选择器待开工。与 [evernote-gap.md](evernote-gap.md) 的「附件公开治理(A1+A2)」共用地基,本文档为准(A2 的 LIKE 查询方案由关联索引表取代)。
+**状态(2026-07-24)**:P8.1(数据层/间接链接/访问分级/发布弹窗附件清单)✅;P8.2 文件管理页 ✅;P8.2.1 增强批(私密文件夹/分享链接/引用详情/上传占位)✅;P8.3 编辑器文件库选择器待开工。与 [evernote-gap.md](evernote-gap.md) 的「附件公开治理(A1+A2)」共用地基,本文档为准(A2 的 LIKE 查询方案由关联索引表取代)。
 
 ## 核心决策零:间接链接(P8.1 实现)
 
@@ -65,16 +65,32 @@ article_files(article_id, file_key, PRIMARY KEY(article_id, file_key))
 - 顶部统计:文件数 / 总占用 vs R2 免费 10GB。
 - 上传:沿用 POST /api/files(10MB 限制),带 folder_id 落到当前目录;常见格式不设白名单限制(维持 P4 通用附件语义)。
 
+## 私密文件夹与分享(P8.2.1)
+
+**私密文件夹**:每用户一个系统根目录「我的私密文件夹」(`folders.is_private=1`,overview 懒创建,不可改名/移动/删除,可建子目录)。私密性**纯结构化**——文件是否私密只看 `folder_id` 是否落在私密子树内(`collectPrivateIds` 前后端共用),不存每文件标志,移动目录即改变归属,永不漂移。规则:
+
+- 私密子树内文件**禁止一切免登录访问**:`anonReadable` 一票否决(优先于公开引用判定),新旧链接与边车缩略图同规则;登录本人不受限。
+- 笔记可以引用私密文件;笔记公开时发布弹窗把它们单列为「🔒 私密文件夹附件——不随笔记公开」(访客侧链接失效)。要公开只有一条路:在文件管理中把文件/目录移出私密文件夹(用户明确要求的手动动作)。
+- 私密文件禁止创建分享;文件/文件夹**移入**私密子树时服务端统一执行 `revokePrivateShares` 撤销其中所有分享(不变式兜底,前端提示撤销数量)。
+- 文件夹支持移动(改 parent):祖先链防环校验,系统私密根除外。
+
+**文件分享**:`files.share_token`(32 位随机 hex)+ `share_expires_at`(ISO,NULL=永久)两列即全部状态——**一个文件同时只有一个分享**天然成立,重新生成即替换(旧链接立即失效),取消置空。公开路由 `GET /api/share/{token}/{文件名}` 免登录,过期返回 410 提示页、未知 token 404(极简 HTML,人类可读);短缓存 `max-age=300`(内容可覆盖、分享可撤销,不用 immutable)。有效期档位:1h/1d/3d/7d/1月/1年/永久(`EXPIRY_PRESETS`);列表行显示 🔗 徽标 + 剩余有效期(`fmtRemaining`),过期灰显可重新生成。
+
+**引用清单弹窗**:每条引用显示笔记标题(点击 `/?article=<id>` 新窗口打开,Layout 深链启动定位,优先于"恢复上次打开")、最近更新时间、公开/未公开/私有徽标、所属笔记本。
+
+**上传体验**:上传中列表顶部逐文件占位行(转圈+文件名+大小,完成一个消一个),上传按钮带旋转动画与计数。
+
 ## 编辑器文件库选择器
 
 编辑器上传入口改为对话框双 Tab:「上传新文件」(现有流程)/「从文件库选择」(分类 chips + 名称搜索,选中插入既有 URL,不重复占用存储)。源码/富文本两模式共用。
 
 ## API 概要
 
-- `GET /api/fm/files?folder=|category=|q=|unref=1`(分页)、`PUT /api/fm/files/:id`(name/folder_id)、`DELETE /api/fm/files/:id`(被引用时须 force)、`GET /api/fm/files/:id/refs`
-- `POST/PUT/DELETE /api/fm/folders`
+- `GET /api/fm/files?folder=|category=|q=|unref=1`(分页)、`PUT /api/fm/files/:id`(name/folder_id,移入私密撤销分享)、`DELETE /api/fm/files/:id`(被引用时须 force)、`GET /api/fm/files/:id/refs`(含 updated_at)
+- `POST /api/fm/files/:id/share` {expires_in: 秒|null} / `DELETE /api/fm/files/:id/share`;公开读 `GET /api/share/:token/:名`
+- `POST/PUT/DELETE /api/fm/folders`(PUT 支持 name/parent_id,防环;私密根只读)
 - `GET /api/fm/stats`
-- 文章保存/删除钩子维护 article_files;files.ts GET/HEAD 接入访问分级。
+- 文章保存/删除钩子维护 article_files;files.ts GET/HEAD 接入访问分级(私密文件夹一票否决)。
 
 ## 迁移(开发阶段简化)
 
@@ -86,5 +102,6 @@ article_files(article_id, file_key, PRIMARY KEY(article_id, file_key))
 
 - **P8.1 数据层与访问分级** ✅(2026-07-24):三表 schema、afile 间接路由(GET/HEAD/PUT,主/边车尾巴分流)、cookie 登录态(`cfnote_t`,path=/api,仅附件 GET/HEAD 认)、新旧双轨访问分级(登录 OR 公开引用,索引缺行 instr 兜底)、文章创建/更新/URL 导入/备份导入的引用登记钩子、引用计数删除(修复共用附件误删与边车残留)、上传登记+新式链接、导出补 files/folders 表、发布弹窗附件清单+私有交叉引用警告。
 - **P8.2 文件管理页** ✅(2026-07-24):侧栏「文件管理」入口 → 全屏面板(懒加载 chunk)。左栏:全部文件/未引用(计数)/笔记附件按笔记本分组(派生只读)/我的文件夹树(多级,新建/改名/删空目录,悬浮操作);右侧:分类 chips(全部/图片/文档/其他)+ 名称搜索(防抖,LIKE 转义)+ 列表(缩略图、大小、引用数弹窗、公开可访问/仅自己徽标,悬浮 复制链接/重命名/移动/删除);预览分流(图片 lightbox、xmind 复用 XmindViewer 可编辑回存、md/txt/代码等文本弹窗渲染、pdf 新标签、office/其他下载);删除带引用警告(列出笔记名,须"仍要删除");上传落当前目录(x-folder-id);顶部统计(文件数/占用 vs 10GB)与「扫描登记」(存量 R2 对象登记 + 全量重建引用索引,幂等)。接口:GET overview/files/files-refs、PUT/DELETE files、folders CRUD、POST scan。
+- **P8.2.1 增强批** ✅(2026-07-24):「我的私密文件夹」(结构化私密,免登录访问一票否决,发布弹窗单列"私密文件",公开须手动移出);文件分享链接(单分享,1h~永久七档有效期,/api/share/:token 公开路由,行内 🔗 徽标+剩余时长,移入私密自动撤销);引用弹窗详情(标题新窗口打开 /?article= 深链、更新时间、公开/未公开/私有);文件夹移动(防环);上传占位行+按钮动画。
 - **P8.3 编辑器文件库选择器**。
 - 原 P8 其余项(回收站、标签、置顶)顺延为 P9,原 P9/P10 依次后移(见 evernote-gap.md)。

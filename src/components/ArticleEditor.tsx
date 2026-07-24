@@ -229,10 +229,12 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
   const isPublic = !!article.is_public
   const isPrivate = !!article.is_private
-  // 发布前附件清单(/api/fm/refcheck):files 为 null 表示检查中
+  // 发布前附件清单(/api/fm/refcheck):files 为 null 表示检查中;
+  // private_file 表示附件在私密文件夹内——不随笔记公开,访客不可见
   interface RefFile {
     key: string; name: string; url: string; size: number; category: string
     thumb: string | null
+    private_file: boolean
     other_refs: { id: number; title: string; is_public: boolean; is_private: boolean }[]
   }
   const [publishDialog, setPublishDialog] = useState<{ risks: SensitiveHit[]; files: RefFile[] | null } | null>(null)
@@ -918,10 +920,12 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
         </div>
       )}
 
-      {/* 公开前检查弹窗:文本风险项 + 将随文公开的附件清单(含私有交叉引用警告) */}
+      {/* 公开前检查弹窗:文本风险项 + 将随文公开的附件清单(含私有交叉引用警告 + 私密文件夹附件单列) */}
       {publishDialog && (() => {
         const files = publishDialog.files
-        const crossPrivate = (files || []).some((f) => f.other_refs.some((o) => o.is_private))
+        const pubFiles = (files || []).filter((f) => !f.private_file)
+        const privFiles = (files || []).filter((f) => f.private_file)
+        const crossPrivate = pubFiles.some((f) => f.other_refs.some((o) => o.is_private))
         const hasRisk = publishDialog.risks.length > 0 || crossPrivate
         return (
           <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/40" onMouseDown={() => setPublishDialog(null)}>
@@ -961,11 +965,11 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               {/* 附件清单:文本扫描覆盖不了截图等文件内容,列出让用户目视确认 */}
               {files === null ? (
                 <p className="text-xs text-gray-400 mt-3">附件检查中…</p>
-              ) : files.length > 0 ? (
+              ) : pubFiles.length > 0 ? (
                 <div className="mt-3">
-                  <p className="text-xs font-medium text-gray-600 mb-1.5">将随笔记公开的附件({files.length})</p>
+                  <p className="text-xs font-medium text-gray-600 mb-1.5">将随笔记公开的附件({pubFiles.length})</p>
                   <div className="max-h-[24vh] overflow-y-auto border border-gray-100 rounded-xl divide-y divide-gray-50">
-                    {files.map((f) => (
+                    {pubFiles.map((f) => (
                       <div key={f.key} className="px-3 py-2 flex items-center gap-2.5">
                         {f.thumb ? (
                           <img
@@ -998,6 +1002,34 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                   )}
                 </div>
               ) : null}
+
+              {/* 私密文件夹附件:不随笔记公开,访客访问链接会失效(要公开须先在文件管理中移出) */}
+              {privFiles.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-medium text-amber-700 mb-1.5">🔒 私密文件夹附件({privFiles.length})——不随笔记公开</p>
+                  <div className="max-h-[18vh] overflow-y-auto border border-amber-100 rounded-xl divide-y divide-amber-50 bg-amber-50/40">
+                    {privFiles.map((f) => (
+                      <div key={f.key} className="px-3 py-2 flex items-center gap-2.5">
+                        {f.thumb ? (
+                          <img
+                            src={f.thumb}
+                            alt=""
+                            className="w-9 h-9 rounded-md object-cover border border-amber-100 shrink-0"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                        ) : (
+                          <span className="w-9 h-9 rounded-md bg-white flex items-center justify-center text-base shrink-0">🔒</span>
+                        )}
+                        <p className="text-xs text-gray-700 truncate flex-1">{f.name}</p>
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">私密文件</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    这些附件在「我的私密文件夹」中,笔记公开后访客将看不到它们(链接失效)。要一并公开,请先在文件管理中把文件移出私密文件夹。
+                  </p>
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 mt-4">
                 <button onClick={() => setPublishDialog(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100 transition-colors">

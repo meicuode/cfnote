@@ -115,15 +115,19 @@ CREATE TABLE IF NOT EXISTS files (
   size INTEGER DEFAULT 0,
   content_type TEXT,
   category TEXT DEFAULT 'other',
+  share_token TEXT,
+  share_expires_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_files_share ON files(share_token);
 
 CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   name TEXT NOT NULL,
   parent_id INTEGER,
+  is_private INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
 

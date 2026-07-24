@@ -21,6 +21,8 @@ const FILE_TABLES = [
     size INTEGER DEFAULT 0,
     content_type TEXT,
     category TEXT DEFAULT 'other',
+    share_token TEXT,
+    share_expires_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )`,
@@ -29,6 +31,7 @@ const FILE_TABLES = [
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
     parent_id INTEGER,
+    is_private INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now'))
   )`,
   `CREATE TABLE IF NOT EXISTS article_files (
@@ -37,6 +40,14 @@ const FILE_TABLES = [
     PRIMARY KEY (article_id, file_key)
   )`,
   'CREATE INDEX IF NOT EXISTS idx_article_files_key ON article_files(file_key)',
+]
+
+// P8.2 增强批:文件分享(单分享:token+过期时间两列)与私密文件夹标志。
+// 对已建出三表的旧库补列;全新库由上方 CREATE 语句直接带列(见 EXTRA_COLUMNS 应用逻辑)。
+const EXTRA_COLUMNS: { table: string; col: string; sql: string }[] = [
+  { table: 'files', col: 'share_token', sql: 'ALTER TABLE files ADD COLUMN share_token TEXT' },
+  { table: 'files', col: 'share_expires_at', sql: 'ALTER TABLE files ADD COLUMN share_expires_at TEXT' },
+  { table: 'folders', col: 'is_private', sql: 'ALTER TABLE folders ADD COLUMN is_private INTEGER DEFAULT 0' },
 ]
 
 let ensured: Promise<void> | null = null
@@ -59,4 +70,14 @@ async function doEnsure(env: Env): Promise<void> {
     if (!names.has(col)) await env.DB.prepare(sql).run()
   }
   for (const sql of FILE_TABLES) await env.DB.prepare(sql).run()
+  // 旧库补列(全新建表已直接带列):按表分组查一次 PRAGMA
+  for (const table of [...new Set(EXTRA_COLUMNS.map((c) => c.table))]) {
+    const { results: cols } = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>()
+    const have = new Set((cols || []).map((r) => r.name))
+    for (const c of EXTRA_COLUMNS) {
+      if (c.table === table && !have.has(c.col)) await env.DB.prepare(c.sql).run()
+    }
+  }
+  // 分享 token 查询索引(列保证存在后建)
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_files_share ON files(share_token)').run()
 }

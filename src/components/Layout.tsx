@@ -118,16 +118,30 @@ export default function Layout({ token, username, onLogout }: Props) {
     loadArticleDetail(a.id).finally(() => setArticleLoading(false))
   }
 
-  // 首次加载完笔记本列表后,恢复上次打开的笔记本与文章
+  // 首次加载完笔记本列表后:优先处理 /?article=<id> 深链(文件管理引用弹窗等场景的新窗口打开),
+  // 否则恢复上次打开的笔记本与文章
   useEffect(() => {
     if (restoredRef.current || notebooks.length === 0) return
     restoredRef.current = true
+    const deepId = Number(new URLSearchParams(window.location.search).get('article'))
+    if (Number.isInteger(deepId) && deepId > 0) {
+      window.history.replaceState(null, '', window.location.pathname)
+      ;(async () => {
+        const res = await get<Article>(`/articles/${deepId}`)
+        if (!res.ok || !res.data) return
+        const nb = notebooks.find((n) => n.id === res.data!.notebook_id)
+        if (nb) setActiveNotebook(nb)
+        // 与"恢复上次打开"同构:切换笔记本的副作用会清空选中文章,正文由这次异步加载落位
+        loadArticleDetail(deepId)
+      })()
+      return
+    }
     const nb = notebooks.find((n) => n.id === Number(localStorage.getItem('cfnote-last-notebook')))
     if (!nb) return
     setActiveNotebook(nb)
     const artId = Number(localStorage.getItem('cfnote-last-article'))
     if (artId) loadArticleDetail(artId)
-  }, [notebooks, loadArticleDetail])
+  }, [notebooks, loadArticleDetail, get])
 
   // 记住当前打开的笔记本/文章(恢复完成后才开始写,避免覆盖已存值)
   useEffect(() => {
