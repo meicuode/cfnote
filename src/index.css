@@ -42,6 +42,23 @@
   font-size: 0.85em;
 }
 
+/* 代码语法高亮(highlight.js;代码块在明暗主题下均为深底,统一用浅色文字配色 GitHub Dark) */
+.cfnote-preview pre code.hljs { background: none; color: inherit; padding: 0; }
+.hljs-comment, .hljs-quote { color: #8b949e; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-name { color: #ff7b72; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta-string { color: #a5d6ff; }
+.hljs-number, .hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link { color: #79c0ff; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: #d2a8ff; }
+.hljs-built_in, .hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: #ffa657; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-selector-attr, .hljs-tag { color: #7ee787; }
+.hljs-deletion { color: #ffa198; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
+/* 数学公式(KaTeX):块级公式上下留白 + 过宽横向滚动 */
+.cfnote-preview .cfnote-math[data-display="1"] { margin: 0.8em 0; overflow-x: auto; overflow-y: hidden; }
+.cfnote-preview .katex { font-size: 1.05em; }
+
 .cfnote-preview blockquote {
   border-left: 4px solid #10b981;
   background: #f0fdf4;

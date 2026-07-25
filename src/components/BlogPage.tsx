@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { marked } from '../lib/markdown'
+import { enhanceRendered } from '../lib/renderEnhance'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -91,6 +92,12 @@ export default function BlogPage() {
   const [theme, setTheme] = useState<BlogTheme>(initialBlogTheme)
   const [themeManual, setThemeManual] = useState(() => storedBlogTheme() != null)
   const [showTop, setShowTop] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  // 详情渲染后做代码高亮 + 公式渲染(懒加载 hljs/KaTeX)
+  useEffect(() => {
+    if (detail && contentRef.current) enhanceRendered(contentRef.current)
+  }, [detail])
 
   useEffect(() => {
     const onPop = () => setPostId(parsePath())
@@ -302,6 +309,7 @@ export default function BlogPage() {
                 <span className="ml-auto">浏览：{detail.views}</span>
               </div>
               <div
+                ref={contentRef}
                 className="cfnote-preview prose prose-sm max-w-none mt-6"
                 dangerouslySetInnerHTML={renderMd(detail.content)}
               />

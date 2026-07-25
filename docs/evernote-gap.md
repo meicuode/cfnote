@@ -38,6 +38,10 @@
 
 - **标签区紧凑化 + 浏览器**:原来一标签一整行平铺、夹在笔记本与固定入口之间,标签多了撑长侧栏并把回收站/文件管理挤下去。改为:标签区可折叠(状态存 localStorage);内容按**使用频次降序**显示常用前 10 个为自动换行的紧凑 chips(`#名 计数`);超过 10 个时「全部标签(N)›」按钮打开可搜索浏览器 `TagBrowserDialog`(搜索框实时过滤 + 频次排序全部标签,点击进入该标签视图)。纵向占用有界,固定入口不再被挤走。纯前端,无 schema/后端改动。
 
+**P10.5(2026-07-25)✅**:补齐技术笔记渲染——代码高亮 + 数学公式。
+
+- **代码高亮 + 数学公式(KaTeX)**:渲染面(预览 + 博客)增强,源码/富文本编辑器不动(避免 Tiptap 序列化往返风险)。`src/lib/markdown.ts` 加 marked 扩展把 `$…$`(行内)/`$$…$$`(块级)**切为占位元素**(`.cfnote-math[data-math]`,不解析内部 markdown、避开 `$5 与 $10` 价格误判、下标不被当强调),GitHub/Pandoc 通行写法非私有方言。`src/lib/renderEnhance.ts` 的 `enhanceRendered(root)` 在渲染后**懒加载** highlight.js/lib/common 高亮 `pre code`、懒加载 KaTeX+CSS 渲染占位公式(打 `data-hl`/`data-rendered` 幂等,MutationObserver 反复触发不重复处理);无代码/无公式的页面完全不拉这两个库。ArticleEditor 预览 upgrade 与 BlogPage 详情各挂一次。代码块明暗主题下均深底,统一 GitHub Dark 配色写进 index.css。产物:highlight.js 懒 chunk ~54KB gzip、KaTeX ~77.6KB gzip + CSS 8KB gzip,主包仅 +0.5KB。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

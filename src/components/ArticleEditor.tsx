@@ -8,6 +8,7 @@ import { scanSensitive, type SensitiveHit } from '../lib/sensitiveScan'
 import ConfirmDialog from './ConfirmDialog'
 import { parseTags } from '../types'
 import { toggleTaskItem, enableTaskCheckboxes } from '../lib/markdownTasks'
+import { enhanceRendered } from '../lib/renderEnhance'
 import { EXPIRY_PRESETS, fmtRemaining } from '../lib/fmUtils'
 import { formatRemindTime } from '../lib/reminders'
 import type { Article } from '../types'
@@ -664,7 +665,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   // 预览 DOM 任何变化(含 React 重设 innerHTML)后都重建卡片与图片手柄,避免注入的增强被冲掉
   useEffect(() => {
     if (mode !== 'preview') return
-    const upgrade = () => { upgradeXmindCards(); upgradeImageResize() }
+    const upgrade = () => { upgradeXmindCards(); upgradeImageResize(); enhanceRendered(previewRef.current) }
     upgrade()
     const root = previewRef.current
     if (!root) return
