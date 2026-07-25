@@ -59,6 +59,18 @@ const EXTRA_COLUMNS: { table: string; col: string; sql: string }[] = [
 
 let ensured: Promise<void> | null = null
 
+// P10 版本历史:文章版本快照表(旧库幂等补建;全新库由 system.ts SCHEMA 直接带出)
+const VERSION_TABLE = `CREATE TABLE IF NOT EXISTS article_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+)`
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -88,4 +100,7 @@ async function doEnsure(env: Env): Promise<void> {
   // 分享 token 查询索引(列保证存在后建)
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_files_share ON files(share_token)').run()
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_articles_share ON articles(share_token)').run()
+  // 版本历史表 + 索引(幂等)
+  await env.DB.prepare(VERSION_TABLE).run()
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_article_versions ON article_versions(article_id, created_at)').run()
 }

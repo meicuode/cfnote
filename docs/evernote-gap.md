@@ -22,6 +22,10 @@
 
 - **网页剪藏**:侧栏「网页剪藏」入口打开 `/clip` 安装引导页(独立懒加载 chunk 3.1KB gzip);bookmarklet 拖入书签栏,在任意网页点击即抓取**选区(优先)或正文**(`article`/`main`/`body`,上限 800KB)→ `window.open` 打开 `/clip` → 轮询 postMessage 传输(收到 ack 停止;跨域无法探测子窗口就绪,轮询是唯一可靠方式);接收页做相对链接绝对化(含懒加载图 data-src 还原、剔除 script/style/iframe)→ turndown 转标准 Markdown 并附「剪藏自」来源行 → 可编辑标题/正文、选笔记本后 POST /api/articles 保存(走既有向量化管线),保存后可直接深链打开笔记。未登录提示先去主应用登录(token 同源共享)。CSP 严格站点(如 GitHub)会拦截书签脚本,引导页已注明改用复制粘贴。零后端改动。
 
+**P10.1(2026-07-25)✅**:下表 #10 版本历史。
+
+- **版本历史**:`article_versions` 表(article_id/user_id/title/content/tags/created_at,`ON DELETE CASCADE` 随文章硬删除清除;system.ts SCHEMA + migrate.ts 幂等建表,纯增量无需清库)。PUT 保存且内容变更时快照当前提交版本——**同小时合并**在 SQL 侧判定(`strftime('%Y-%m-%d %H')` 匹配则原地覆盖,每篇每小时至多一版,压住自动保存churn);新插一版后按保留策略裁剪:`versionsToPrune` 纯函数(`src/lib/versionRetention.ts`,worker 复用)算出待删 id——最近 24 版全留、更早每自然日只留最新一版、总量硬上限 60。`GET /:id/versions`(仅元信息+字数)、`GET /:id/versions/:vid`(全文)。编辑器顶栏「历史」按钮开对话框(懒加载 2.13KB gzip):左列版本时间/标题/字数,右侧全文预览,「恢复此版本」二次确认后把该版作为当前工作副本落库(既有保存链路会再快照,可反复回退)。回收站只读态不显示入口。版本不入导出(本地安全网,非主数据)。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

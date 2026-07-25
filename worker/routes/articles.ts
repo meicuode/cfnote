@@ -2,10 +2,34 @@ import { Hono } from 'hono'
 import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
 import { syncArticleFiles, purgeUnreferencedAttachments } from './files'
 import { escapeLike } from './search'
+import { versionsToPrune } from '../../src/lib/versionRetention'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
 export const articles = new Hono<AppEnv>()
+
+// P10 版本历史:内容变更保存时快照一版。同小时合并(每篇每小时至多一版)在 SQL 侧判定,
+// 保留策略(最近若干版全留 + 更早每日一版 + 硬上限)由 versionsToPrune 纯函数算出待删 id。
+async function snapshotVersion(env: Env, userId: number, articleId: number, title: string, content: string, tags: string | null) {
+  // 同小时已有版本 → 原地覆盖(合并),否则新插一行
+  const sameHour = await env.DB.prepare(
+    "SELECT id FROM article_versions WHERE article_id = ? AND strftime('%Y-%m-%d %H', created_at) = strftime('%Y-%m-%d %H', 'now') ORDER BY created_at DESC LIMIT 1"
+  ).bind(articleId).first<{ id: number }>()
+  if (sameHour) {
+    await env.DB.prepare("UPDATE article_versions SET title = ?, content = ?, tags = ?, created_at = datetime('now') WHERE id = ?")
+      .bind(title, content, tags, sameHour.id).run()
+    return
+  }
+  await env.DB.prepare('INSERT INTO article_versions (article_id, user_id, title, content, tags) VALUES (?, ?, ?, ?, ?)')
+    .bind(articleId, userId, title, content, tags).run()
+  // 新插一版后做保留裁剪(仅每小时首版触发,开销小)
+  const { results } = await env.DB.prepare('SELECT id, created_at FROM article_versions WHERE article_id = ? ORDER BY created_at DESC')
+    .bind(articleId).all<{ id: number; created_at: string }>()
+  const del = versionsToPrune(results || [])
+  if (del.length > 0) {
+    await env.DB.prepare(`DELETE FROM article_versions WHERE id IN (${del.map(() => '?').join(',')})`).bind(...del).run()
+  }
+}
 
 // 标签规范化(P9):去空白、去重、上限 20 个、单个 ≤30 字符;空集存 NULL。
 // 存 JSON 数组文本,查询用 SQLite json_each 展开,不建关联表。
@@ -333,8 +357,42 @@ articles.get('/:id/backlinks', async (c) => {
   }
 })
 
-// ---- P9.3 笔记私密分享(unlisted):/blog/share/<token> 可看,不入博客列表/热榜。
-// 与文件分享同构:token+过期两列即状态,单分享天然成立,重新生成即替换,取消置空。
+// GET /api/articles/:id/versions - 版本列表(P10;仅元信息,不含正文)
+articles.get('/:id/versions', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  try {
+    const article = await c.env.DB.prepare('SELECT id FROM articles WHERE id = ? AND user_id = ?')
+      .bind(id, user.id).first()
+    if (!article) return err('文章不存在', 404)
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, title, length(content) AS chars, created_at FROM article_versions WHERE article_id = ? ORDER BY created_at DESC'
+    ).bind(id).all()
+    return ok(results || [])
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/articles/:id/versions/:vid - 单个版本全文(P10,用于预览/恢复)
+articles.get('/:id/versions/:vid', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  const vid = c.req.param('vid')
+  try {
+    const v = await c.env.DB.prepare(
+      `SELECT v.id, v.title, v.content, v.tags, v.created_at
+         FROM article_versions v JOIN articles a ON a.id = v.article_id
+        WHERE v.id = ? AND v.article_id = ? AND a.user_id = ?`
+    ).bind(vid, id, user.id).first()
+    if (!v) return err('版本不存在', 404)
+    return ok(v)
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+
 // 私有笔记禁止分享;移入回收站/设为私有时自动撤销。
 
 // POST /api/articles/:id/share {expires_in: 秒|null(永久)}
@@ -453,6 +511,9 @@ articles.put('/:id', async (c) => {
     // Re-vectorize if content changed
     let vectorize_error: string | null = null
     if (newHash !== article.content_hash) {
+      // P10 版本历史:内容有变则快照当前提交(同小时合并 + 保留裁剪)
+      try { await snapshotVersion(c.env, user.id, Number(id), newTitle, newContent, newTags) } catch {}
+
       // Delete old vectors and chunks
       const { results: oldChunks } = await c.env.DB.prepare('SELECT vector_id FROM chunks WHERE article_id = ?')
         .bind(id).all<{ vector_id: string }>()

@@ -61,10 +61,22 @@ CREATE TABLE IF NOT EXISTS chunks (
   FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS article_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  tags TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_articles_notebook ON articles(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_articles_user ON articles(user_id);
 CREATE INDEX IF NOT EXISTS idx_articles_share ON articles(share_token);
 CREATE INDEX IF NOT EXISTS idx_chunks_article ON chunks(article_id);
+CREATE INDEX IF NOT EXISTS idx_article_versions ON article_versions(article_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notebooks_user ON notebooks(user_id);
 
 CREATE TABLE IF NOT EXISTS conversations (

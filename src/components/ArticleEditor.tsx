@@ -21,6 +21,8 @@ import type { PickedFile } from './FilePickerDialog'
 // 按需加载(P9.2 笔记链接选择器,源码与富文本共用)
 const NoteLinkDialog = lazy(() => import('./NoteLinkDialog'))
 import type { NoteLinkItem } from './NoteLinkDialog'
+// 按需加载(P10 版本历史对话框)
+const VersionHistoryDialog = lazy(() => import('./VersionHistoryDialog'))
 
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' })
 
@@ -267,6 +269,18 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     setSaving(false)
     if (res?.ok) setSaved(true)
   }, [article.id, title, content, tags])
+
+  // P10 版本历史:恢复=把选中版本作为当前工作副本并立即落库(既有保存链路会再快照一版)
+  const [showVersions, setShowVersions] = useState(false)
+  const restoreVersion = useCallback(async (v: { title: string; content: string; tags: string[] }) => {
+    setTitle(v.title)
+    setContent(v.content)
+    setTags(v.tags)
+    setSaving(true)
+    const res = await saveRef.current(article.id, { title: v.title, content: v.content, tags: v.tags })
+    setSaving(false)
+    if (res?.ok) setSaved(true)
+  }, [article.id])
 
   // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
   const isPublic = !!article.is_public
@@ -884,6 +898,19 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           )}
         </div>
         <div className="flex items-center gap-3">
+          {/* P10 版本历史:查看/恢复历史快照(草稿与回收站不可用) */}
+          {article.id > 0 && !trashed && (
+            <button
+              onClick={() => setShowVersions(true)}
+              className="text-xs text-gray-400 hover:text-emerald-600 flex items-center gap-1 transition-colors"
+              title="查看并恢复历史版本"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              历史
+            </button>
+          )}
           {/* P9.3 私密分享:凭链接可看,不入博客列表;私有/回收站不可用 */}
           {article.id > 0 && !trashed && !isPrivate && (
             <button
@@ -1265,6 +1292,22 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             onClose={() => setShowFilePicker(false)}
             onPick={insertPicked}
             onUpload={uploadPicked}
+          />
+        </Suspense>
+      )}
+
+      {/* P10 版本历史对话框 */}
+      {showVersions && (
+        <Suspense fallback={
+          <div className="fixed inset-0 z-[85] bg-black/40 flex items-center justify-center">
+            <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        }>
+          <VersionHistoryDialog
+            articleId={article.id}
+            token={token}
+            onClose={() => setShowVersions(false)}
+            onRestore={restoreVersion}
           />
         </Suspense>
       )}
