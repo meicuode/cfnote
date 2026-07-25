@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
+import { CHANNEL_META, CHANNEL_TYPES, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -19,6 +20,10 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [selected, setSelected] = useState('')
   const [jinaKey, setJinaKey] = useState('')
   const [showJinaKey, setShowJinaKey] = useState(false)
+  // P10.3 通知渠道(提醒推送)
+  const [channels, setChannels] = useState<NotifyChannel[]>([])
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -38,6 +43,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
       if (res.ok && res.data) {
         setSelected(res.data.llm_model)
         if (res.data.jina_api_key) setJinaKey(res.data.jina_api_key)
+        const nc = (res.data as any).notify_channels
+        if (nc) { try { setChannels(JSON.parse(nc)) } catch { /* 坏值忽略 */ } }
       } else {
         setError(res.error || '加载失败')
       }
@@ -51,6 +58,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
     const res = await api.put<Settings>('/settings', {
       llm_model: selected,
       ...(jinaKey ? { jina_api_key: jinaKey } : {}),
+      notify_channels: JSON.stringify(channels),
+      site_url: window.location.origin,
     })
     if (res.ok) {
       onClose()
@@ -180,6 +189,25 @@ export default function SettingsPanel({ token, onClose }: Props) {
   }
 
   const encodeKey = (key: string) => key.split('/').map(encodeURIComponent).join('/')
+
+  // ---- P10.3 通知渠道管理 ----
+  const addChannel = (type: ChannelType) =>
+    setChannels((cs) => [...cs, { id: crypto.randomUUID(), type, enabled: true, config: {} }])
+  const updateChannel = (id: string, patch: Partial<NotifyChannel>) =>
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)))
+  const updateConfig = (id: string, key: string, value: string) =>
+    setChannels((cs) => cs.map((c) => (c.id === id ? { ...c, config: { ...c.config, [key]: value } } : c)))
+  const removeChannel = (id: string) => {
+    setChannels((cs) => cs.filter((c) => c.id !== id))
+    setTestMsg((m) => { const n = { ...m }; delete n[id]; return n })
+  }
+  const testChannel = async (ch: NotifyChannel) => {
+    setTesting(ch.id)
+    setTestMsg((m) => ({ ...m, [ch.id]: '' }))
+    const r = await api.post<{ sent: boolean }>('/notify/test', { channel: ch })
+    setTestMsg((m) => ({ ...m, [ch.id]: r.ok ? '✅ 已发送,请检查是否收到' : `❌ ${r.error || '发送失败'}` }))
+    setTesting(null)
+  }
 
   // 完整备份:导出 JSON + 全部附件打包为 ZIP
   const handleExportZip = async () => {
@@ -363,6 +391,68 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   </div>
                 </div>
               </div>
+              {/* 通知渠道 / 提醒推送(P10.3) */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">通知渠道 / 提醒推送</h3>
+                <p className="text-[11px] text-gray-400 mb-3">
+                  给笔记设的提醒到期后,除应用内铃铛外还会推送到下列已启用的渠道(系统每 5 分钟检查一次)。
+                </p>
+                <div className="space-y-3">
+                  {channels.map((ch) => {
+                    const meta = CHANNEL_META[ch.type]
+                    return (
+                      <div key={ch.id} className="border border-gray-200 rounded-xl p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={ch.enabled}
+                              onChange={(e) => updateChannel(ch.id, { enabled: e.target.checked })}
+                              className="accent-emerald-500"
+                            />
+                            <span className="text-sm font-medium text-gray-800">{meta.label}</span>
+                            {!ch.enabled && <span className="text-[10px] text-gray-400">已停用</span>}
+                          </label>
+                          <button onClick={() => removeChannel(ch.id)} className="text-xs text-gray-400 hover:text-red-500">删除</button>
+                        </div>
+                        {meta.fields.map((f) => (
+                          <input
+                            key={f.key}
+                            value={ch.config[f.key] || ''}
+                            onChange={(e) => updateConfig(ch.id, f.key, e.target.value)}
+                            placeholder={f.placeholder || f.label + (f.optional ? '(可选)' : '')}
+                            className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 mb-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 font-mono"
+                          />
+                        ))}
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-[11px] text-gray-400 flex-1">{meta.help}</p>
+                          <button
+                            onClick={() => testChannel(ch)}
+                            disabled={testing === ch.id}
+                            className="text-xs text-emerald-600 hover:underline shrink-0 disabled:opacity-50"
+                          >
+                            {testing === ch.id ? '发送中...' : '测试'}
+                          </button>
+                        </div>
+                        {testMsg[ch.id] && <p className="text-[11px] mt-1 text-gray-600">{testMsg[ch.id]}</p>}
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {CHANNEL_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => addChannel(t)}
+                      className="text-xs px-2 py-1 rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-emerald-400 hover:text-emerald-600 transition-colors"
+                    >
+                      + {CHANNEL_META[t].label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-2">配置改动需点右下角「保存」后生效;推送消息含笔记标题与打开链接。</p>
+              </div>
+
               {/* 数据备份 */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">数据备份</h3>

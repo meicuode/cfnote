@@ -154,6 +154,7 @@ CREATE TABLE articles (
   share_token TEXT,                   -- 私密分享 token（单分享）
   share_expires_at TEXT,              -- 分享有效期（NULL=永久）
   remind_at TEXT,                     -- 应用内提醒时间（ISO UTC，NULL=无；移入回收站自动清空）
+  reminded_at TEXT,                   -- 提醒已推送时间（防 cron 重发；设置/清除提醒时置 NULL 重新武装）
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
@@ -329,6 +330,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | GET | `/api/blog/posts` `/:id` `/hot` | 博客列表 / 详情（计浏览）/ 热榜 |
 | GET | `/api/blog/share/:token` | 私密分享详情（不入列表/不计浏览，过期 410） |
 | GET/POST | `/api/stats` `/stats/archive` | 统计仪表盘 / 用量归档 |
+| POST | `/api/notify/test` | 用面板填写的渠道配置发一条测试消息 |
 
 ### 认证机制
 
@@ -431,7 +433,7 @@ not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
 [triggers]
-crons = ["47 2 2 * *"]            # 月度用量归档 + 回收站过期清理
+crons = ["47 2 2 * *", "*/5 * * * *"]    # 月度用量归档+回收站清理;每 5 分钟扫描到期提醒推送
 
 [[d1_databases]]
 binding = "DB"
@@ -463,5 +465,6 @@ bucket_name = "cfnote-files"      # 需先在 Dashboard 开通 R2
 4. **附件私密性**：能力 URL + 访问分级 + 私密文件夹一票否决；取消公开后新访客约 5 分钟内失效（已看过的浏览器缓存不可收回，属预期不可逆）。
 5. **删除语义**：单篇删除进回收站（软删除，30 天可恢复）；删除整本笔记本因 `ON DELETE CASCADE` 外键仍为彻底删除（弹窗注明）。
 6. **版本历史保留**：内容变更保存时快照提交版本；「同小时合并」在 SQL 侧判定（每篇每小时至多一版），保留策略（最近若干版全留 + 更早每自然日一版 + 硬上限）由 `src/lib/versionRetention.ts` 纯函数算出待删 id，控制 D1 占用；文章硬删除时版本随 `ON DELETE CASCADE` 清除。
-7. **安全基线**：密码 PBKDF2 + 随机盐；`JWT_SECRET` 存 Secret 不硬编码；除免登录项外所有 API 经中间件验证 JWT；导出文件排除 `*_api_key` 等敏感项。
-8. **Workers CPU 限制**：AI/DB 调用为 I/O 等待不计 CPU；实际 CPU 操作（JSON/字符串处理）远低于限额。
+7. **提醒推送渠道**：Telegram / 企业微信 / 飞书 / 钉钉 / Server酱 / 自定义 Webhook 统一为「一个 URL + 一段 JSON」，纯逻辑（类型/字段/请求构造）在 `src/lib/notifyChannels.ts`（前端表单与单测复用），实际 fetch 与钉钉/飞书 HMAC 加签在 `worker/routes/notify.ts`。配置以 JSON 存 `settings.notify_channels`（含 token/webhook，**不导出**）；`*/5` cron 扫 `datetime(remind_at) <= now AND reminded_at IS NULL` 的笔记逐条推送后置 `reminded_at` 防重发，`scheduled` 按 `event.cron` 分支（高频跑提醒、月度跑归档/清理）。
+8. **安全基线**：密码 PBKDF2 + 随机盐；`JWT_SECRET` 存 Secret 不硬编码；除免登录项外所有 API 经中间件验证 JWT；导出文件排除 `*_api_key`、`notify_channels` 等敏感项。
+9. **Workers CPU 限制**：AI/DB 调用为 I/O 等待不计 CPU；实际 CPU 操作（JSON/字符串处理）远低于限额。

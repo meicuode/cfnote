@@ -389,7 +389,7 @@ articles.put('/:id/reminder', async (c) => {
       if (isNaN(t.getTime())) return err('提醒时间格式无效')
       value = t.toISOString()
     }
-    await c.env.DB.prepare('UPDATE articles SET remind_at = ? WHERE id = ?').bind(value, id).run()
+    await c.env.DB.prepare('UPDATE articles SET remind_at = ?, reminded_at = NULL WHERE id = ?').bind(value, id).run()
     return ok({ id: Number(id), remind_at: value })
   } catch (e: any) {
     return err('设置失败: ' + e.message, 500)

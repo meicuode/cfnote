@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS articles (
   share_token TEXT,
   share_expires_at TEXT,
   remind_at TEXT,
+  reminded_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
@@ -270,7 +271,7 @@ system.get('/export', async (c) => {
 
     const settings: Record<string, string> = {}
     for (const r of settingsRows.results ?? []) {
-      if (SENSITIVE_PATTERNS.test(r.key)) continue
+      if (SENSITIVE_PATTERNS.test(r.key) || r.key === 'notify_channels') continue
       settings[r.key] = r.value
     }
 

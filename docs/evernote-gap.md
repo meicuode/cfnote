@@ -30,6 +30,10 @@
 
 - **提醒**:`articles.remind_at` 一列(ISO UTC,NULL=无;移入回收站的 UPDATE 一并置空)。`PUT /:id/reminder`(body `{remind_at: ISO|null}`,服务端 `new Date().toISOString()` 归一,回收站拒设)、`GET /articles/reminders`(设了提醒且未删除的笔记,LEFT JOIN 笔记本名,按 remind_at 升序)。纯逻辑抽 `src/lib/reminders.ts`(`isDue`/`formatRemindTime`/`splitReminders`,now 传入毫秒便于测试与避免隐藏时钟依赖,补 Z 处理无时区时间)。编辑器顶栏「提醒」按钮开设置弹窗(今晚 20:00/明天 09:00/下周 09:00 预设 + datetime-local 自定义 + 清除;remindOverride 本地覆盖,切换文章重置);Layout 顶栏铃铛按到期数显红色徽标,面板按「已到期/即将到期」分组,点击行打开笔记、「完成」清除提醒。铃铛列表每 60s 轮询 + 设置后即时刷新(编辑器经 onRemindersChanged 通知)。远期若接入 Email(#11)可加邮件推送,当前为纯应用内。
 
+**P10.3(2026-07-25)✅**:下表 #12 提醒的推送渠道扩展(超出 Evernote 单一提醒)。
+
+- **多渠道提醒推送**:通知渠道抽象——Telegram / 企业微信 / 飞书 / 钉钉 / Server酱(个人微信)/ 自定义 Webhook 统一为「一个 URL + 一段 JSON」,纯逻辑(类型/字段描述/请求构造)在 `src/lib/notifyChannels.ts`(前端表单与单测复用),fetch 与钉钉/飞书 HMAC-SHA256 加签在 `worker/routes/notify.ts`。配置以 JSON 存 `settings.notify_channels`(含 token/webhook,导出时排除)。新增 `articles.reminded_at` 列(纯增量)防重发。cron 加 `*/5 * * * *`(唯一一处 wrangler.toml 改动,forker 仍不用碰),`scheduled` 按 `event.cron` 分支:高频那条跑 `sendDueReminders`(扫 `datetime(remind_at)<=now AND reminded_at IS NULL AND deleted_at IS NULL` 逐条推送到所有启用渠道,含标题+深链,发送后置 `reminded_at`;失败写系统日志仍标记防刷屏),月度那条照旧归档/清理。`PUT /:id/reminder` 设置时清 `reminded_at` 重新武装。`POST /api/notify/test` 用面板当前配置发测试消息。SettingsPanel 加「通知渠道」区:渠道卡片(启用开关+按类型字段+测试/删除)、虚线按钮添加、保存写 `notify_channels` 并自动存 `site_url`(取 `window.location.origin` 用于深链)。QQ 因官方机器人需审核/或自建常驻 bridge、不契合 Workers 无状态,不做一等公民(可走自定义 webhook 接第三方)。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

@@ -17,6 +17,8 @@ const ARTICLE_COLUMNS: Record<string, string> = {
   share_expires_at: 'ALTER TABLE articles ADD COLUMN share_expires_at TEXT',
   // P10:应用内提醒时间(ISO UTC,NULL=无提醒;移入回收站自动清空)
   remind_at: 'ALTER TABLE articles ADD COLUMN remind_at TEXT',
+  // P10.3:提醒已推送时间(防 cron 重发;设置/清除提醒时置 NULL 重新武装)
+  reminded_at: 'ALTER TABLE articles ADD COLUMN reminded_at TEXT',
 }
 
 // P8.1 附件体系三表(与 system.ts SCHEMA 保持一致;IF NOT EXISTS 幂等,对旧库是纯增量)

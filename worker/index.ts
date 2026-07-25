@@ -12,6 +12,7 @@ import { files, afile, share } from './routes/files'
 import { fm } from './routes/fm'
 import { stats } from './routes/stats'
 import { blog } from './routes/blog'
+import { notify, sendDueReminders } from './routes/notify'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -54,6 +55,7 @@ app.route('/api/share', share)
 app.route('/api/fm', fm)
 app.route('/api/stats', stats)
 app.route('/api/blog', blog)
+app.route('/api/notify', notify)
 
 app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
 
@@ -62,7 +64,12 @@ app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
 // - not_found_handling = "single-page-application" 提供 SPA 回退
 export default {
   fetch: (request, env, ctx) => app.fetch(request, env, ctx),
-  scheduled: (_event, env, ctx) => {
+  scheduled: (event, env, ctx) => {
+    // 高频 cron(*/5)只跑提醒推送;每月那条跑用量归档 + 回收站清理
+    if (event.cron === '*/5 * * * *') {
+      ctx.waitUntil(sendDueReminders(env))
+      return
+    }
     ctx.waitUntil(runScheduledArchive(env))
     // 回收站 30 天到期清理(cron 兜底;打开回收站时也会懒执行)
     ctx.waitUntil(purgeExpiredTrash(env))
