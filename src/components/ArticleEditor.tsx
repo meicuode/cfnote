@@ -1031,8 +1031,14 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
           className="w-full text-2xl font-bold text-gray-900 border-none outline-none bg-transparent placeholder:text-gray-300"
           placeholder="文章标题"
         />
-        {/* P9 标签行:chips + 输入(datalist 补全已有标签);回收站只读展示 */}
-        <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+        {/* P9 标签行:前置标签图标 + chips + 虚线胶囊输入(datalist 补全已有标签);回收站只读展示 */}
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
+          <span className="text-gray-400 shrink-0" title="标签">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
+            </svg>
+          </span>
           {tags.map((t) => (
             <span key={t} className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
               # {t}
@@ -1048,7 +1054,13 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             </span>
           ))}
           {!trashed && tags.length < 20 && (
-            <>
+            <label
+              className={`inline-flex items-center gap-0.5 rounded-full border border-dashed px-2 py-0.5 cursor-text transition-colors ${
+                tags.length === 0 ? 'border-emerald-400/70 hover:bg-emerald-50' : 'border-gray-300 hover:border-emerald-400/70'
+              }`}
+              title="输入后回车或逗号添加标签"
+            >
+              <span className={`text-xs leading-none ${tags.length === 0 ? 'text-emerald-500' : 'text-gray-400'}`}>+</span>
               <input
                 value={tagInput}
                 onChange={(e) => setTagInput(e.target.value)}
@@ -1067,15 +1079,17 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                   setTagInput('')
                 }}
                 list="cfnote-tag-suggestions"
-                placeholder={tags.length === 0 ? '+ 标签' : '+'}
-                className="text-xs text-gray-600 bg-transparent border-none outline-none w-24 placeholder:text-gray-300"
+                placeholder={tags.length === 0 ? '添加标签' : '添加'}
+                className={`text-xs text-gray-700 bg-transparent border-none outline-none ${
+                  tags.length === 0 ? 'w-16 placeholder:text-emerald-600/70' : 'w-10 placeholder:text-gray-400'
+                }`}
               />
               <datalist id="cfnote-tag-suggestions">
                 {(allTags || []).filter((t) => !tags.includes(t)).map((t) => (
                   <option key={t} value={t} />
                 ))}
               </datalist>
-            </>
+            </label>
           )}
         </div>
       </div>

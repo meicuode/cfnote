@@ -2,7 +2,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/meicuode/cfnote)
 
-基于 Cloudflare 全栈基础设施构建的私人知识库，支持笔记本管理、Markdown 文章编辑、自动向量化和自然语言语义搜索。全程不依赖第三方 LLM API，所有 AI 能力由 Cloudflare Workers AI 提供，设计在免费额度内运行。
+基于 Cloudflare 全栈基础设施构建的私人知识库，支持笔记本管理、Markdown/富文本文章编辑、附件与图片、自动向量化与自然语言语义搜索、AI 问答、公开博客与私密分享、网页剪藏等。全程不依赖第三方 LLM API，所有 AI 能力由 Cloudflare Workers AI 提供，设计在免费额度内运行。
 
 ## 技术架构
 
@@ -12,42 +12,69 @@
 │                                                            │
 │   React + Tailwind CSS (SPA, 静态资源直出)                  │
 │   ┌────────┐ ┌──────────┐ ┌──────────────┐ ┌───────────┐  │
-│   │ 笔记本  │ │ 文章列表  │ │ Markdown编辑 │ │ AI 多轮   │  │
-│   │ 侧边栏  │ │          │ │ / 预览       │ │ 对话面板  │  │
+│   │ 笔记本  │ │ 文章列表  │ │ 源码/富文本/ │ │ AI 多轮   │  │
+│   │ 侧边栏  │ │ 标签/回收 │ │ 预览 编辑    │ │ 对话面板  │  │
 │   └────────┘ └──────────┘ └──────────────┘ └───────────┘  │
+│   公开博客 /blog · 私密分享 · 网页剪藏 /clip · 文件管理     │
 │                    │ /api/*                                │
 │         Worker (Hono 路由 + 月度归档 Cron)                  │
 │                    │                                       │
-│      ┌─────────┬───┴────┬────────────┐                     │
-│      │   D1    │Vectorize│ Workers AI │                     │
-│      │ SQLite  │ 向量索引 │ 嵌入 + LLM │                     │
-│      └─────────┴────────┴────────────┘                     │
+│   ┌─────────┬─────────┬────────────┬──────────┐            │
+│   │   D1    │Vectorize│ Workers AI │    R2     │            │
+│   │ SQLite  │ 向量索引 │ 嵌入 + LLM │ 附件存储  │            │
+│   └─────────┴─────────┴────────────┴──────────┘            │
 └────────────────────────────────────────────────────────────┘
 ```
 
 | 层级 | 技术 |
 |------|------|
 | 前端 | React 19 + TypeScript + Tailwind CSS 4 + Vite 6（Workers Static Assets 直出，请求免费不限量） |
+| 富文本 | Tiptap（ProseMirror）所见即所得编辑，标准 Markdown 存储；marked 渲染 + turndown 反向转换 |
 | 后端 | Cloudflare Worker + Hono 路由，`/api/*` 走 Worker，其余走静态资源 |
 | 数据库 | Cloudflare D1 (边缘 SQLite) |
 | 向量搜索 | Cloudflare Vectorize (1024维, cosine) |
+| 附件存储 | Cloudflare R2（图片/任意文件，免费额度 10GB） |
 | 嵌入模型 | `@cf/baai/bge-m3` (多语言) |
 | 文本生成 | 可在设置页面切换，默认 `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
-| 定时任务 | Cron Triggers，每月自动归档用量统计 |
+| 定时任务 | Cron Triggers，每月自动归档用量统计 + 回收站过期清理 |
 
 ## 核心功能
 
-- **笔记本管理**：创建/删除笔记本，每个笔记本包含多篇文章
-- **Markdown 编辑**：编辑模式 + 预览模式切换，3秒无操作自动保存
-- **自动向量化**：文章保存后自动分块（500字/块）→ 嵌入 → 存入 Vectorize
+### 编辑与组织
+
+- **笔记本管理**：创建/删除笔记本，每个笔记本包含多篇文章；侧栏可折叠（状态记忆）
+- **三模式编辑**：源码 Markdown / 富文本所见即所得 / 预览，一键切换，3秒无操作自动保存；全程标准 Markdown 存储（无私有方言，可自由迁移）
+- **富文本编辑器**：基于 Tiptap，支持标题/列表/引用/代码块/表格/图片等，粘贴网页富文本自动转 Markdown，粘贴代码/Markdown 原样保留
+- **附件与图片**：拖入/粘贴截图直传 R2，任意文件上传；XMind 文件在线预览+编辑回存；编辑器可从文件库选择已有附件插入
+- **标签**：文章标题下打标签（Enter/逗号添加，datalist 补全已有标签，上限 20），侧栏标签区按标签筛选，列表项显示前 3 个
+- **置顶**：列表悬浮 📌 切换，置顶排最前
+- **回收站**：删除进回收站（软删除），30 天内可恢复（重建向量索引）或彻底删除，30 天后自动清理
+- **任务清单**：GFM `- [ ]` 在预览模式可直接点击勾选并回写源文
+- **笔记间链接 + 反向链接**：工具栏插入笔记链接（标题搜索），预览中点击应用内跳转；编辑器顶部显示反链
+- **笔记模板**：约定「模板」笔记本，新建笔记时可选择套用
+- **深色模式**：跟随系统或手动切换（记忆）
+
+### 检索与 AI
+
 - **混合搜索**：向量语义召回 + 关键词召回（标题权重更高），RRF 融合排序——既能"按意思找"也能精确匹配函数名、专有名词等短词，不消耗 LLM 额度
-- **AI 多轮对话**：右侧常驻聊天面板，支持基于知识库的多轮问答，**流式逐字输出**（推理模型自动回退整段输出），历史对话持久化
-- **联网搜索**：AI 助手支持联网搜索，输入"搜索 xxx"触发，搜索结果可一键保存为笔记
-- **AI 模型设置**：支持切换 Workers AI 模型（Llama 3.1 8B / Llama 3.3 70B / DeepSeek R1 32B / QwQ 32B），推理模型自动清理 `<think>` 标签
+- **AI 多轮对话**：右侧常驻聊天面板，基于知识库多轮问答，**流式逐字输出**（推理模型下发 think 思考过程，前端折叠展示），历史对话持久化，面板宽度可拖拽
+- **联网搜索**：AI 助手支持联网搜索，输入"搜索 xxx"触发，结果可一键保存为笔记
+- **AI 模型设置**：切换 Workers AI 模型（Llama 3.1 8B / Llama 3.3 70B / DeepSeek R1 32B / QwQ 32B），推理模型自动清理 `<think>` 标签
+
+### 采集与发布
+
 - **URL 导入**：通过 Jina Reader 抓取网页内容并自动向量化入库
+- **网页剪藏**：书签栏 bookmarklet 抓取选区/正文 → `/clip` 页 turndown 转 Markdown → 选笔记本存为笔记
+- **公开博客**：一键公开笔记到整站博客 `/blog`（IT之家风格，亮/暗双主题，浏览计数去重，热榜）；发布前对全文做敏感信息检查
+- **私密分享**：为单篇笔记生成带有效期的私密链接 `/blog/share/<token>`，凭链接可看但不入博客列表/热榜，设为私有或删除自动撤销
+- **私有/私密文件夹**：私有笔记不可公开、列表标识；「我的私密文件夹」中的附件对访客一票否决
+
+### 系统
+
 - **统计仪表盘**：实时查看知识库规模、Workers AI 额度消耗、向量存储使用率、调用次数趋势和按模型分组的调用统计
+- **附件访问分级**：未公开笔记的附件对匿名访客返回 404（登录态 cookie 副本放行同源 `<img>`），取消公开后新访客最多 5 分钟内失效
 - **首次初始化引导**：自动检测系统状态，引导创建数据库和用户
-- **数据导出备份**：设置面板一键导出全部笔记本、文章与对话为 JSON 文件（不含 API Key 等敏感配置），建议定期备份
+- **数据导出/导入**：一键导出全部笔记本、文章、标签与对话为 JSON（不含敏感配置）；支持导入恢复与本地 md/txt 批量导入
 
 ## 免费额度适配
 
@@ -362,7 +389,7 @@ npm test          # 单次运行
 npm run test:watch  # 监听模式
 ```
 
-用 Vitest 覆盖 `worker/utils.ts` 中的纯函数（分块、JWT、密码哈希、内容哈希、think 标签清理、模型白名单、超时保护、AE 埋点结构），用例在 `tests/utils.test.ts`，无需任何 Cloudflare 环境即可运行。
+用 Vitest 覆盖后端 `worker/utils.ts` 中的纯函数（分块、JWT、密码哈希、内容哈希、think 标签清理、模型白名单、超时保护、AE 埋点结构）与前端纯逻辑（标签解析、任务勾选回写、私密文件夹判定与分享有效期、剪藏 bookmarklet 生成、敏感扫描、图片调宽等），共 16 个测试文件、149 个用例，无需任何 Cloudflare 环境即可运行。
 
 ### 构建
 
@@ -380,37 +407,52 @@ cfnote/
 │   ├── index.ts                # 入口：认证中间件 + 路由挂载 + scheduled 导出
 │   ├── types.ts                # Hono 应用环境类型
 │   ├── utils.ts                # 工具函数（JWT/哈希/分块/模型/AE/Jina）
+│   ├── migrate.ts              # 应用内幂等 schema 保障（增量加列/建表，与 system.ts 同步）
 │   ├── archive.ts              # 用量归档（POST /api/stats/archive 与月度 Cron 共用）
 │   └── routes/
 │       ├── system.ts           # /api/status、/api/init（表结构唯一来源）、/api/settings、/api/system-logs
 │       ├── auth.ts             # /api/auth/register、/api/auth/login
 │       ├── notebooks.ts        # /api/notebooks CRUD + /api/notebooks/:id/articles
-│       ├── articles.ts         # /api/articles 增删改查 + /import（含向量化）
-│       ├── search.ts           # /api/search（语义搜索）、/api/search/ai（AI问答）
+│       ├── articles.ts         # 文章增删改查/import/回收站/标签/置顶/私密分享/backlinks/titles
+│       ├── search.ts           # /api/search（混合搜索）、/api/search/ai（AI问答）
 │       ├── conversations.ts    # /api/conversations 及消息（AI 对话 + 联网搜索）
+│       ├── blog.ts             # /api/blog/*（公开博客列表/详情/热榜 + 私密分享）
+│       ├── files.ts            # /api/files/*（附件读写，免登录 GET + 访问分级）、/api/share/*（文件分享）
+│       ├── fm.ts               # /api/fm/*（文件管理：目录树、移动、引用、私密文件夹）
 │       └── stats.ts            # /api/stats（统计仪表盘）、/api/stats/archive
 ├── src/                        # 前端 React SPA
 │   ├── components/
 │   │   ├── SetupPage.tsx      # 初始化 + 注册引导
 │   │   ├── LoginPage.tsx      # 登录页
-│   │   ├── Layout.tsx         # 四栏主布局（含 AI 面板）
-│   │   ├── Sidebar.tsx        # 笔记本侧边栏
-│   │   ├── ArticleList.tsx    # 文章列表
-│   │   ├── ArticleEditor.tsx  # Markdown 编辑/预览
+│   │   ├── Layout.tsx         # 四栏主布局（含 AI 面板，列宽可拖拽/侧栏可折叠）
+│   │   ├── Sidebar.tsx        # 笔记本 + 标签 + 回收站 + 文件管理 + 网页剪藏侧边栏
+│   │   ├── ArticleList.tsx    # 文章列表（置顶/标签/回收站视图）
+│   │   ├── ArticleEditor.tsx  # 源码/富文本/预览三模式编辑器
+│   │   ├── WysiwygEditor.tsx  # Tiptap 所见即所得编辑器（懒加载）
 │   │   ├── AiChatPanel.tsx    # AI 多轮对话面板
-│   │   ├── SearchPanel.tsx    # 语义搜索面板
+│   │   ├── SearchPanel.tsx    # 混合搜索面板
+│   │   ├── BlogPage.tsx       # 公开博客页 /blog（免登录，独立 chunk）
+│   │   ├── ClipPage.tsx       # 网页剪藏接收页 /clip（独立 chunk）
+│   │   ├── FileManager.tsx    # 文件管理（目录/搜索/预览/分享/清理）
+│   │   ├── FilePickerDialog.tsx # 编辑器文件库选择器（懒加载共享 chunk）
+│   │   ├── NoteLinkDialog.tsx # 笔记间链接标题搜索（懒加载共享 chunk）
+│   │   ├── XmindViewer.tsx    # XMind 在线查看/编辑器（懒加载）
 │   │   ├── StatsPanel.tsx     # 统计仪表盘面板
-│   │   ├── SettingsPanel.tsx  # AI 模型设置面板
-│   │   └── ImportDialog.tsx   # URL导入对话框
+│   │   ├── SettingsPanel.tsx  # AI 模型 + API Key + 数据备份设置面板
+│   │   ├── SystemLogsPanel.tsx # 系统日志面板
+│   │   ├── ConfirmDialog.tsx  # 通用确认对话框
+│   │   └── ImportDialog.tsx   # URL导入 / 本地文件导入对话框
+│   ├── lib/                   # 前端纯逻辑（markdown 渲染、剪藏、缩略图、敏感扫描、图片调宽、xmind、fm 工具等）
 │   ├── hooks/
-│   │   ├── useAuth.ts         # 登录状态管理
+│   │   ├── useAuth.ts         # 登录状态 + 附件 cookie 副本
 │   │   └── useApi.ts          # API 请求封装
 │   ├── types.ts               # TypeScript 类型
-│   ├── App.tsx                # 应用入口 + 路由
+│   ├── App.tsx                # 应用入口 + 路由（/blog、/clip 分流懒加载）
 │   ├── main.tsx               # React 挂载
-│   └── index.css              # Tailwind 入口
+│   └── index.css              # Tailwind 入口 + 深色映射
+├── docs/                       # 需求与设计文档（roadmap、evernote-gap、file-manager、public-blog、wysiwyg-editor）
 ├── tests/                      # Vitest 单元测试
-├── wrangler.toml               # Worker 入口 + 静态资源 + Cron + 绑定配置
+├── wrangler.toml               # Worker 入口 + 静态资源 + Cron + 绑定（D1/Vectorize/AI/R2/AE）
 ├── vite.config.ts
 ├── tsconfig.json
 └── package.json
