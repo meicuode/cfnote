@@ -34,6 +34,10 @@
 
 - **多渠道提醒推送**:通知渠道抽象——Telegram / 企业微信 / 飞书 / 钉钉 / Server酱(个人微信)/ 自定义 Webhook 统一为「一个 URL + 一段 JSON」,纯逻辑(类型/字段描述/请求构造)在 `src/lib/notifyChannels.ts`(前端表单与单测复用),fetch 与钉钉/飞书 HMAC-SHA256 加签在 `worker/routes/notify.ts`。配置以 JSON 存 `settings.notify_channels`(含 token/webhook,导出时排除)。新增 `articles.reminded_at` 列(纯增量)防重发。cron 加 `*/5 * * * *`(唯一一处 wrangler.toml 改动,forker 仍不用碰),`scheduled` 按 `event.cron` 分支:高频那条跑 `sendDueReminders`(扫 `datetime(remind_at)<=now AND reminded_at IS NULL AND deleted_at IS NULL` 逐条推送到所有启用渠道,含标题+深链,发送后置 `reminded_at`;失败写系统日志仍标记防刷屏),月度那条照旧归档/清理。`PUT /:id/reminder` 设置时清 `reminded_at` 重新武装。`POST /api/notify/test` 用面板当前配置发测试消息。SettingsPanel 加「通知渠道」区:渠道卡片(启用开关+按类型字段+测试/删除)、虚线按钮添加、保存写 `notify_channels` 并自动存 `site_url`(取 `window.location.origin` 用于深链)。QQ 因官方机器人需审核/或自建常驻 bridge、不契合 Workers 无状态,不做一等公民(可走自定义 webhook 接第三方)。**各渠道逐步配置见 [notifications.md](notifications.md)。**
 
+**P10.4(2026-07-25)✅**:侧栏标签区重构(标签多时不再杂乱)。
+
+- **标签区紧凑化 + 浏览器**:原来一标签一整行平铺、夹在笔记本与固定入口之间,标签多了撑长侧栏并把回收站/文件管理挤下去。改为:标签区可折叠(状态存 localStorage);内容按**使用频次降序**显示常用前 10 个为自动换行的紧凑 chips(`#名 计数`);超过 10 个时「全部标签(N)›」按钮打开可搜索浏览器 `TagBrowserDialog`(搜索框实时过滤 + 频次排序全部标签,点击进入该标签视图)。纵向占用有界,固定入口不再被挤走。纯前端,无 schema/后端改动。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

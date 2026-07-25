@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
+import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import type { Notebook } from '../types'
@@ -22,6 +23,15 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  // P10.4 标签区:折叠(记忆)+ 常用前 N 个 chips + 「全部标签」浏览器
+  const [tagsOpen, setTagsOpen] = useState(() => localStorage.getItem('cfnote-tags-open') !== '0')
+  const [showTagBrowser, setShowTagBrowser] = useState(false)
+  const TAG_CHIP_LIMIT = 10
+  const sortedTags = [...tags].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh'))
+  const topTags = sortedTags.slice(0, TAG_CHIP_LIMIT)
+  const activeTagName = activeNotebook?.id === TAG_VIEW_ID ? activeNotebook.name : null
+  const toggleTags = () =>
+    setTagsOpen((v) => { localStorage.setItem('cfnote-tags-open', v ? '0' : '1'); return !v })
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -102,25 +112,57 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           </p>
         )}
 
-        {/* P9 标签区:聚合自笔记 tags,点击进入标签虚拟视图 */}
+        {/* P9/P10.4 标签区:折叠 + 常用前 N 个紧凑 chips(按频次排序)+「全部标签」搜索浏览器 */}
         {tags.length > 0 && (
           <div className="border-t border-gray-100 mt-2 pt-2">
-            <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-3 mb-1">标签</p>
-            {tags.map((t) => (
-              <button
-                key={t.name}
-                onClick={() => onSelect(tagNotebook(t.name))}
-                className={`w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg mb-0.5 text-sm transition-colors ${
-                  activeNotebook?.id === TAG_VIEW_ID && activeNotebook.name === t.name
-                    ? 'bg-emerald-50 text-emerald-700 font-medium'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
+            <button
+              onClick={toggleTags}
+              className="w-full flex items-center justify-between px-3 mb-1 group"
+              title={tagsOpen ? '折叠标签' : '展开标签'}
+            >
+              <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                标签 <span className="normal-case">({tags.length})</span>
+              </span>
+              <svg
+                className={`w-3.5 h-3.5 text-gray-300 group-hover:text-gray-500 transition-transform ${tagsOpen ? 'rotate-90' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
               >
-                <span className="text-gray-400 shrink-0">#</span>
-                <span className="truncate flex-1">{t.name}</span>
-                <span className="text-xs text-gray-400">{t.count}</span>
-              </button>
-            ))}
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            {tagsOpen && (
+              <div className="px-2">
+                <div className="flex flex-wrap gap-1">
+                  {topTags.map((t) => {
+                    const active = activeTagName === t.name
+                    return (
+                      <button
+                        key={t.name}
+                        onClick={() => onSelect(tagNotebook(t.name))}
+                        title={`${t.name}（${t.count}）`}
+                        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-xs transition-colors max-w-full ${
+                          active
+                            ? 'bg-emerald-100 text-emerald-700 font-medium'
+                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
+                      >
+                        <span className="text-gray-400">#</span>
+                        <span className="truncate max-w-[96px]">{t.name}</span>
+                        <span className="text-[10px] text-gray-400">{t.count}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                {tags.length > TAG_CHIP_LIMIT && (
+                  <button
+                    onClick={() => setShowTagBrowser(true)}
+                    className="mt-1.5 text-xs text-emerald-600 hover:text-emerald-700 transition-colors"
+                  >
+                    全部标签（{tags.length}）›
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -207,6 +249,15 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           message="其中的所有文章及其向量索引、附件引用将被彻底删除(不进入回收站),此操作不可撤销。"
           onConfirm={() => { const id = confirmId; setConfirmId(null); onDelete(id) }}
           onCancel={() => setConfirmId(null)}
+        />
+      )}
+
+      {showTagBrowser && (
+        <TagBrowserDialog
+          tags={tags}
+          activeName={activeTagName}
+          onPick={(name) => onSelect(tagNotebook(name))}
+          onClose={() => setShowTagBrowser(false)}
         />
       )}
     </div>
