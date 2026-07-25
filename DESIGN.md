@@ -2,7 +2,7 @@
 
 > 本文档描述当前架构（Cloudflare Workers + Static Assets）。分期演进的详细需求见 `docs/`：
 > `roadmap-2026-07.md`（总路线）、`wysiwyg-editor.md`（富文本）、`public-blog.md`（公开博客）、
-> `file-manager.md`（附件与文件管理）、`evernote-gap.md`（Evernote 功能对标与 P8/P9 实现要点）。
+> `file-manager.md`（附件与文件管理）、`notifications.md`（提醒与推送渠道配置）、`evernote-gap.md`（Evernote 功能对标与 P8/P9/P10 实现要点）。
 
 ## 1. 项目概述
 

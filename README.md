@@ -331,6 +331,10 @@ curl -X POST https://your-site/api/stats/archive -H "Authorization: Bearer <toke
 
 AI 助手支持联网搜索功能。在对话中输入"搜索 xxx"、"帮我查 xxx"等关键词触发。搜索使用 Jina Search API (`s.jina.ai`)，总结后可点击"保存为笔记"按钮将结果存入知识库。
 
+### 提醒与推送渠道
+
+给笔记设提醒后，到期会在顶栏铃铛提示；还可在 **设置 → 通知渠道 / 提醒推送** 配置企业微信 / 飞书 / 钉钉 / 个人微信(Server酱) / Telegram / 自定义 Webhook，到期由每 5 分钟的 Cron 推送到手机。各渠道逐步配置说明见 **[docs/notifications.md](docs/notifications.md)**（每个渠道从哪里拿 Webhook/token、填哪个字段、如何用「测试」按钮验证）。
+
 ### 设置接口
 
 - `GET /api/settings` — 获取所有设置（敏感 Key 自动脱敏）
@@ -452,7 +456,7 @@ cfnote/
 │   ├── App.tsx                # 应用入口 + 路由（/blog、/clip 分流懒加载）
 │   ├── main.tsx               # React 挂载
 │   └── index.css              # Tailwind 入口 + 深色映射
-├── docs/                       # 需求与设计文档（roadmap、evernote-gap、file-manager、public-blog、wysiwyg-editor）
+├── docs/                       # 需求与设计文档（roadmap、evernote-gap、file-manager、public-blog、wysiwyg-editor、notifications）
 ├── tests/                      # Vitest 单元测试
 ├── wrangler.toml               # Worker 入口 + 静态资源 + Cron + 绑定（D1/Vectorize/AI/R2/AE）
 ├── vite.config.ts
