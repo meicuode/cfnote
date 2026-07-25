@@ -9,6 +9,8 @@ import SettingsPanel from './SettingsPanel'
 import SystemLogsPanel from './SystemLogsPanel'
 import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
+import RemindersPanel from './RemindersPanel'
+import { isDue, type ReminderItem } from '../lib/reminders'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID } from '../types'
 import type { Notebook, Article } from '../types'
 
@@ -126,6 +128,21 @@ export default function Layout({ token, username, onLogout }: Props) {
     if (res.ok && res.data) setTags(res.data)
   }, [get])
   useEffect(() => { loadTags() }, [loadTags])
+
+  // P10 提醒:顶栏铃铛列表(设了 remind_at 且未删除的笔记);打开面板与设置提醒后刷新,并每分钟轮询
+  const [reminders, setReminders] = useState<ReminderItem[]>([])
+  const [showReminders, setShowReminders] = useState(false)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  const loadReminders = useCallback(async () => {
+    const res = await get<ReminderItem[]>('/articles/reminders')
+    if (res.ok && res.data) setReminders(res.data)
+  }, [get])
+  useEffect(() => {
+    loadReminders()
+    const t = setInterval(() => { setNowTick(Date.now()); loadReminders() }, 60000)
+    return () => clearInterval(t)
+  }, [loadReminders])
+  const dueCount = reminders.filter((r) => isDue(r.remind_at, nowTick)).length
 
   const loadArticles = useCallback(async (nb: Notebook) => {
     // 虚拟视图:我的私有 / 回收站 / 标签(name 即标签名);其余为真实笔记本
@@ -443,6 +460,20 @@ export default function Layout({ token, username, onLogout }: Props) {
             )}
           </button>
           <button
+            onClick={() => setShowReminders((v) => !v)}
+            className={`relative p-1.5 rounded-lg hover:bg-gray-100 transition-colors ${showReminders ? 'text-emerald-600 bg-emerald-50' : 'text-gray-400 hover:text-emerald-600'}`}
+            title="提醒"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+            </svg>
+            {dueCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                {dueCount > 99 ? '99+' : dueCount}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => setShowStats(!showStats)}
             className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title="使用统计"
@@ -525,7 +556,7 @@ export default function Layout({ token, username, onLogout }: Props) {
 
         <div className="flex-1 overflow-hidden">
           {activeArticle ? (
-            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} onOpenArticle={(id) => openArticleWithSnippet(id)} />
+            <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} onOpenArticle={(id) => openArticleWithSnippet(id)} onRemindersChanged={loadReminders} />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">
@@ -562,6 +593,16 @@ export default function Layout({ token, username, onLogout }: Props) {
 
       {showSearch && (
         <SearchPanel token={token} onClose={() => setShowSearch(false)} onOpenArticle={(id, snippet) => { openArticleWithSnippet(id, snippet); setShowSearch(false) }} />
+      )}
+
+      {showReminders && (
+        <RemindersPanel
+          token={token}
+          reminders={reminders}
+          onClose={() => setShowReminders(false)}
+          onOpenArticle={openArticleWithSnippet}
+          onChanged={loadReminders}
+        />
       )}
 
       {showStats && (

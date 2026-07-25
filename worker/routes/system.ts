@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS articles (
   pinned INTEGER DEFAULT 0,
   share_token TEXT,
   share_expires_at TEXT,
+  remind_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,

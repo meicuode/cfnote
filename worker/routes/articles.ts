@@ -221,7 +221,23 @@ articles.get('/by-tag', async (c) => {
   }
 })
 
-// GET /api/articles/trash - 回收站列表(顺带懒清理 30 天到期项)
+// GET /api/articles/reminders - 提醒列表(P10;设了提醒时间且未删除的笔记,按时间升序)
+articles.get('/reminders', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT a.id, a.title, a.remind_at, n.name AS notebook
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.user_id = ? AND a.remind_at IS NOT NULL AND a.deleted_at IS NULL
+       ORDER BY a.remind_at ASC`
+    ).bind(user.id).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取失败: ' + e.message, 500)
+  }
+})
+
+
 articles.get('/trash', async (c) => {
   const user = c.get('user')
   try {
@@ -354,6 +370,29 @@ articles.get('/:id/backlinks', async (c) => {
     return ok(results)
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
+  }
+})
+
+// PUT /api/articles/:id/reminder - 设置/清除提醒时间(P10;body {remind_at: ISO 字符串 | null})
+articles.put('/:id/reminder', async (c) => {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  try {
+    const { remind_at } = await c.req.json<{ remind_at?: string | null }>()
+    const article = await c.env.DB.prepare('SELECT id, deleted_at FROM articles WHERE id = ? AND user_id = ?')
+      .bind(id, user.id).first<any>()
+    if (!article) return err('文章不存在', 404)
+    if (article.deleted_at) return err('回收站中的笔记不可设置提醒,请先恢复')
+    let value: string | null = null
+    if (remind_at) {
+      const t = new Date(remind_at)
+      if (isNaN(t.getTime())) return err('提醒时间格式无效')
+      value = t.toISOString()
+    }
+    await c.env.DB.prepare('UPDATE articles SET remind_at = ? WHERE id = ?').bind(value, id).run()
+    return ok({ id: Number(id), remind_at: value })
+  } catch (e: any) {
+    return err('设置失败: ' + e.message, 500)
   }
 })
 
@@ -555,7 +594,7 @@ articles.delete('/:id', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare('DELETE FROM chunks WHERE article_id = ?').bind(id),
       c.env.DB.prepare(
-        "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0, share_token = NULL, share_expires_at = NULL WHERE id = ?"
+        "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0, share_token = NULL, share_expires_at = NULL, remind_at = NULL WHERE id = ?"
       ).bind(id),
       c.env.DB.prepare(
         "UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime('now') WHERE id = ?"

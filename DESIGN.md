@@ -153,6 +153,7 @@ CREATE TABLE articles (
   pinned INTEGER DEFAULT 0,           -- 置顶
   share_token TEXT,                   -- 私密分享 token（单分享）
   share_expires_at TEXT,              -- 分享有效期（NULL=永久）
+  remind_at TEXT,                     -- 应用内提醒时间（ISO UTC，NULL=无；移入回收站自动清空）
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
@@ -298,6 +299,8 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | POST | `/api/articles/trash/empty`、`/:id/restore`、DELETE `/:id/purge` | 清空/恢复/彻底删除 |
 | GET | `/api/articles/titles?q=`、`/:id/backlinks` | 笔记链接标题搜索 / 反向链接 |
 | GET | `/api/articles/:id/versions[/:vid]` | 版本历史列表（元信息）/ 单版本全文 |
+| GET | `/api/articles/reminders` | 提醒列表（设了 remind_at 且未删除的笔记，按时间升序） |
+| PUT | `/api/articles/:id/reminder` | 设置/清除提醒时间（body `{remind_at: ISO \| null}`） |
 | POST/DELETE | `/api/articles/:id/share` | 生成/撤销私密分享链接 |
 
 ### 6.3 搜索 / 对话（`/api/search`, `/api/conversations`）

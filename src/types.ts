@@ -54,6 +54,8 @@ export interface Article {
   /** P9.3 私密分享链接(/blog/share/<token>,单分享;私有/回收站自动撤销) */
   share_token?: string | null
   share_expires_at?: string | null
+  /** P10 应用内提醒时间(ISO UTC,NULL=无提醒;移入回收站自动清空) */
+  remind_at?: string | null
   /** 回收站列表附带的原笔记本名 */
   notebook?: string | null
   created_at: string

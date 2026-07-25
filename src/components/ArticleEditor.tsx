@@ -9,6 +9,7 @@ import ConfirmDialog from './ConfirmDialog'
 import { parseTags } from '../types'
 import { toggleTaskItem, enableTaskCheckboxes } from '../lib/markdownTasks'
 import { EXPIRY_PRESETS, fmtRemaining } from '../lib/fmUtils'
+import { formatRemindTime } from '../lib/reminders'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -36,6 +37,8 @@ interface Props {
   allTags?: string[]
   /** 应用内打开另一篇笔记(P9.2 笔记链接/反向链接点击) */
   onOpenArticle?: (id: number) => void
+  /** P10 提醒变更后通知外层刷新铃铛(设置/清除提醒时) */
+  onRemindersChanged?: () => void
 }
 
 // 私有标识(eye-off:斜杠划掉的眼睛,表示不可对外展示)
@@ -171,7 +174,7 @@ const IS_MOBILE = typeof navigator !== 'undefined' &&
 
 // ---- Component ----
 
-export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags, onOpenArticle }: Props) {
+export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags, onOpenArticle, onRemindersChanged }: Props) {
   const [title, setTitle] = useState(article.title)
   const [content, setContent] = useState(article.content)
   // P9 标签(chips 编辑,随保存提交)与回收站只读态
@@ -281,6 +284,44 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     setSaving(false)
     if (res?.ok) setSaved(true)
   }, [article.id])
+
+  // P10 提醒:remindOverride 为本地覆盖(undefined=沿用 article.remind_at),切换文章时重置
+  const [showRemind, setShowRemind] = useState(false)
+  const [remindBusy, setRemindBusy] = useState(false)
+  const [remindOverride, setRemindOverride] = useState<string | null | undefined>(undefined)
+  useEffect(() => { setRemindOverride(undefined); setShowRemind(false) }, [article.id])
+  const remindAt = remindOverride !== undefined ? remindOverride : (article.remind_at ?? null)
+  const setReminder = async (iso: string | null) => {
+    setRemindBusy(true)
+    try {
+      const res = await fetch(`/api/articles/${article.id}/reminder`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ remind_at: iso }),
+      })
+      const j = (await res.json()) as any
+      if (j.ok) {
+        setRemindOverride(j.data.remind_at ?? null)
+        onRemindersChanged?.()
+        setShowRemind(false)
+      }
+    } finally {
+      setRemindBusy(false)
+    }
+  }
+  // 预设时间(本地):今晚 20:00、明天 09:00、下周同一时刻;转 ISO UTC 提交
+  const remindPresets = (): { label: string; iso: string }[] => {
+    const mk = (d: Date) => d.toISOString()
+    const now = new Date()
+    const tonight = new Date(now); tonight.setHours(20, 0, 0, 0)
+    const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1); tomorrow.setHours(9, 0, 0, 0)
+    const nextWeek = new Date(now); nextWeek.setDate(now.getDate() + 7); nextWeek.setHours(9, 0, 0, 0)
+    const out: { label: string; iso: string }[] = []
+    if (tonight.getTime() > now.getTime()) out.push({ label: '今晚 20:00', iso: mk(tonight) })
+    out.push({ label: '明天 09:00', iso: mk(tomorrow) })
+    out.push({ label: '下周 09:00', iso: mk(nextWeek) })
+    return out
+  }
 
   // ---- 公开 / 私有(公开博客,详见 docs/public-blog.md)----
   const isPublic = !!article.is_public
@@ -911,6 +952,21 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               历史
             </button>
           )}
+          {/* P10 提醒:为本篇设置/清除提醒时间(草稿与回收站不可用) */}
+          {article.id > 0 && !trashed && (
+            <button
+              onClick={() => setShowRemind((v) => !v)}
+              className={`text-xs flex items-center gap-1 transition-colors ${
+                remindAt ? 'text-emerald-600 hover:text-emerald-700' : 'text-gray-400 hover:text-emerald-600'
+              }`}
+              title={remindAt ? `提醒:${formatRemindTime(remindAt, Date.now())}` : '设置提醒时间'}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+              </svg>
+              {remindAt ? formatRemindTime(remindAt, Date.now()) : '提醒'}
+            </button>
+          )}
           {/* P9.3 私密分享:凭链接可看,不入博客列表;私有/回收站不可用 */}
           {article.id > 0 && !trashed && !isPrivate && (
             <button
@@ -1310,6 +1366,51 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             onRestore={restoreVersion}
           />
         </Suspense>
+      )}
+
+      {/* P10 提醒设置对话框 */}
+      {showRemind && (
+        <div className="fixed inset-0 z-[85] bg-black/40 flex items-center justify-center p-4" onMouseDown={() => setShowRemind(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-80 max-w-[92vw] p-5" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">设置提醒</h3>
+            {remindAt ? (
+              <p className="text-xs text-emerald-600 mb-3">当前提醒:{formatRemindTime(remindAt, Date.now())}</p>
+            ) : (
+              <p className="text-xs text-gray-400 mb-3">选择一个时间,到期后会在顶栏铃铛提示。</p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {remindPresets().map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setReminder(p.iso)}
+                  disabled={remindBusy}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-500/10 disabled:opacity-40 transition-colors"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <label className="block mt-4 text-xs text-gray-500 dark:text-gray-400">
+              自定义时间
+              <input
+                type="datetime-local"
+                disabled={remindBusy}
+                onChange={(e) => { if (e.target.value) setReminder(new Date(e.target.value).toISOString()) }}
+                className="mt-1 w-full px-2 py-1.5 rounded-lg border border-gray-200 dark:border-gray-600 bg-transparent text-sm text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              />
+            </label>
+            <div className="mt-4 flex items-center justify-between">
+              {remindAt ? (
+                <button onClick={() => setReminder(null)} disabled={remindBusy} className="text-xs text-red-500 hover:text-red-600 disabled:opacity-40">
+                  清除提醒
+                </button>
+              ) : <span />}
+              <button onClick={() => setShowRemind(false)} className="px-3 py-1.5 rounded-lg text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700">
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 图片放大预览 */}

@@ -15,6 +15,8 @@ const ARTICLE_COLUMNS: Record<string, string> = {
   // P9.3:笔记私密分享链接(单分享,token+过期时间两列,与文件分享同构)
   share_token: 'ALTER TABLE articles ADD COLUMN share_token TEXT',
   share_expires_at: 'ALTER TABLE articles ADD COLUMN share_expires_at TEXT',
+  // P10:应用内提醒时间(ISO UTC,NULL=无提醒;移入回收站自动清空)
+  remind_at: 'ALTER TABLE articles ADD COLUMN remind_at TEXT',
 }
 
 // P8.1 附件体系三表(与 system.ts SCHEMA 保持一致;IF NOT EXISTS 幂等,对旧库是纯增量)

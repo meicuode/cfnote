@@ -26,6 +26,10 @@
 
 - **版本历史**:`article_versions` 表(article_id/user_id/title/content/tags/created_at,`ON DELETE CASCADE` 随文章硬删除清除;system.ts SCHEMA + migrate.ts 幂等建表,纯增量无需清库)。PUT 保存且内容变更时快照当前提交版本——**同小时合并**在 SQL 侧判定(`strftime('%Y-%m-%d %H')` 匹配则原地覆盖,每篇每小时至多一版,压住自动保存churn);新插一版后按保留策略裁剪:`versionsToPrune` 纯函数(`src/lib/versionRetention.ts`,worker 复用)算出待删 id——最近 24 版全留、更早每自然日只留最新一版、总量硬上限 60。`GET /:id/versions`(仅元信息+字数)、`GET /:id/versions/:vid`(全文)。编辑器顶栏「历史」按钮开对话框(懒加载 2.13KB gzip):左列版本时间/标题/字数,右侧全文预览,「恢复此版本」二次确认后把该版作为当前工作副本落库(既有保存链路会再快照,可反复回退)。回收站只读态不显示入口。版本不入导出(本地安全网,非主数据)。
 
+**P10.2(2026-07-25)✅**:下表 #12 提醒(应用内面板)。
+
+- **提醒**:`articles.remind_at` 一列(ISO UTC,NULL=无;移入回收站的 UPDATE 一并置空)。`PUT /:id/reminder`(body `{remind_at: ISO|null}`,服务端 `new Date().toISOString()` 归一,回收站拒设)、`GET /articles/reminders`(设了提醒且未删除的笔记,LEFT JOIN 笔记本名,按 remind_at 升序)。纯逻辑抽 `src/lib/reminders.ts`(`isDue`/`formatRemindTime`/`splitReminders`,now 传入毫秒便于测试与避免隐藏时钟依赖,补 Z 处理无时区时间)。编辑器顶栏「提醒」按钮开设置弹窗(今晚 20:00/明天 09:00/下周 09:00 预设 + datetime-local 自定义 + 清除;remindOverride 本地覆盖,切换文章重置);Layout 顶栏铃铛按到期数显红色徽标,面板按「已到期/即将到期」分组,点击行打开笔记、「完成」清除提醒。铃铛列表每 60s 轮询 + 设置后即时刷新(编辑器经 onRemindersChanged 通知)。远期若接入 Email(#11)可加邮件推送,当前为纯应用内。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 
