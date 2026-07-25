@@ -22,6 +22,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [showJinaKey, setShowJinaKey] = useState(false)
   // P10.3 通知渠道(提醒推送)
   const [channels, setChannels] = useState<NotifyChannel[]>([])
+  // 已保存渠道快照(归一化 JSON):测试走实时表单、cron 走已存配置,用它检测「测了但没保存」
+  const [savedChannels, setSavedChannels] = useState('[]')
   const [testing, setTesting] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -44,7 +46,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
         setSelected(res.data.llm_model)
         if (res.data.jina_api_key) setJinaKey(res.data.jina_api_key)
         const nc = (res.data as any).notify_channels
-        if (nc) { try { setChannels(JSON.parse(nc)) } catch { /* 坏值忽略 */ } }
+        if (nc) { try { const parsed = JSON.parse(nc); setChannels(parsed); setSavedChannels(JSON.stringify(parsed)) } catch { /* 坏值忽略 */ } }
       } else {
         setError(res.error || '加载失败')
       }
@@ -55,13 +57,15 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const handleSave = async () => {
     setSaving(true)
     setError('')
+    const channelsJson = JSON.stringify(channels)
     const res = await api.put<Settings>('/settings', {
       llm_model: selected,
       ...(jinaKey ? { jina_api_key: jinaKey } : {}),
-      notify_channels: JSON.stringify(channels),
+      notify_channels: channelsJson,
       site_url: window.location.origin,
     })
     if (res.ok) {
+      setSavedChannels(channelsJson)
       onClose()
     } else {
       setError(res.error || '保存失败')
@@ -205,7 +209,12 @@ export default function SettingsPanel({ token, onClose }: Props) {
     setTesting(ch.id)
     setTestMsg((m) => ({ ...m, [ch.id]: '' }))
     const r = await api.post<{ sent: boolean }>('/notify/test', { channel: ch })
-    setTestMsg((m) => ({ ...m, [ch.id]: r.ok ? '✅ 已发送,请检查是否收到' : `❌ ${r.error || '发送失败'}` }))
+    // 测试走的是面板里的实时配置;若尚未保存,cron 到期推送读的是旧的已存配置,必须提示
+    const unsaved = JSON.stringify(channels) !== savedChannels
+    const okMsg = unsaved
+      ? '✅ 已发送,请检查是否收到(注意:当前配置尚未保存,到期推送不会用它,请点右下角「保存」)'
+      : '✅ 已发送,请检查是否收到'
+    setTestMsg((m) => ({ ...m, [ch.id]: r.ok ? okMsg : `❌ ${r.error || '发送失败'}` }))
     setTesting(null)
   }
 
@@ -451,6 +460,11 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   ))}
                 </div>
                 <p className="text-[11px] text-gray-400 mt-2">配置改动需点右下角「保存」后生效;推送消息含笔记标题与打开链接。</p>
+                {JSON.stringify(channels) !== savedChannels && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mt-2">
+                    ⚠️ 通知渠道有未保存的修改。「测试」用的是当前填写的配置,但到期推送用的是<b>已保存</b>的配置——请点右下角「保存」后才会真正生效。
+                  </p>
+                )}
               </div>
 
               {/* 数据备份 */}
