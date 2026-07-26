@@ -45,6 +45,7 @@ export default function ClipPage() {
   const [saving, setSaving] = useState(false)
   const [savedId, setSavedId] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
   const gotPayload = useRef(false)
 
   const bookmarklet = useMemo(() => buildBookmarklet(window.location.origin), [])
@@ -150,7 +151,9 @@ export default function ClipPage() {
             </ol>
             <div className="mt-5 flex items-center gap-4">
               <a
-                href={bookmarklet}
+                // React 19 会拦截 href 里的 javascript: URL(安全策略),故不经 prop、
+                // 用 ref 原生 setAttribute 直接写入,浏览器才能拿到真正可拖拽的 bookmarklet
+                ref={(el) => { if (el) el.setAttribute('href', bookmarklet) }}
                 onClick={(e) => e.preventDefault()}
                 title="按住拖到书签栏"
                 className="px-5 py-2.5 rounded-lg bg-emerald-500 text-white font-medium cursor-grab select-none shadow hover:bg-emerald-600"
@@ -158,6 +161,23 @@ export default function ClipPage() {
                 ✂️ 剪藏到 CFNote
               </a>
               <span className="text-xs text-gray-400">← 按住拖到书签栏(点击无效)</span>
+            </div>
+            <div className="mt-3">
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(bookmarklet)
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  } catch { setError('复制失败,请手动选中下方代码复制') }
+                }}
+                className="text-xs text-emerald-600 hover:underline"
+              >
+                {copied ? '已复制 ✓' : '拖不动?点这里复制书签代码'}
+              </button>
+              <p className="text-[11px] text-gray-400 mt-1">
+                手动安装:新建一个书签 → 名称随意 → <b>网址(URL)</b>粘贴刚复制的代码保存即可。
+              </p>
             </div>
             <p className="text-xs text-gray-400 mt-5">
               提示:部分站点的 CSP 会拦截书签脚本(如 GitHub),此类页面请手动复制内容粘贴进编辑器(粘贴自带 HTML→Markdown 转换)。
