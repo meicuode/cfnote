@@ -55,6 +55,10 @@
 
 - **评论**:公开博客文章底部支持访客评论(昵称必填、邮箱可选不公开),**默认需审核**(设置 `comments_auto_approve` 可切免审核;`comments_enabled` 总开关)。新表 `comments`(`parent_id`/`root_id` 支持 2 层嵌套——回复的回复归并到同一顶层楼;`status` pending/approved/rejected;`is_admin` 博主回复;`ip_hash` 限流溯源不存明文;system.ts + migrate.ts 双声明幂等建表,无需清库)。纯逻辑抽 `src/lib/comments.ts`(`validateCommentInput`/`resolveThreadParent` 2 层夹取/`buildThread`/蜜罐,前端与 worker 复用,+12 用例)。公开 `GET/POST /api/blog/comments`(GET 已免登录,POST 在 `worker/index.ts` 中间件按确切路径单独放行);提交防刷=**强制审核 + Cache API 每 IP 每分钟 1 条(照搬浏览量去重)+ 蜜罐隐藏字段 + 昵称/正文长度上限**,fork 者零配置。鉴权 `worker/routes/comments.ts` 管理(列表/待审计数/通过/拒绝/回复/删除,所有权经 JOIN `articles.user_id`)。**评论正文一律纯文本渲染**(React 自动转义 + `whitespace-pre-wrap`,不过 marked——仓库无 HTML 消毒库,杜绝 XSS)。`BlogPage` 替换原「暂未开放评论」占位为真实评论区(表单 + 2 层线程 + 博主标识),私密分享页(`detail.shared`)不显示。`BlogManager` 加「评论」子 tab(待审/全部过滤 + 通过/拒绝/删除/回复,待审计数徽标)。`SettingsPanel` 加评论开关两项。有待审评论且配了通知渠道→复用 `sendToChannel` 推送管理员(`notifyPendingComment`)。QQ/富文本评论/邮件回复访客暂不做。
 
+**P11.3(2026-07-26)✅**:Mermaid 图表渲染。
+
+- **Mermaid**:预览 + 博客把 ` ```mermaid ` 代码块渲染为流程图/时序图/甘特图等 SVG。沿用 P10.5 的「渲染后懒加载增强」路子:`src/lib/renderEnhance.ts` 加 `renderMermaid`——扫描 `pre code.language-mermaid`(打 `data-mermaid` 幂等)→ **懒加载 mermaid 整库**(仅当页面含 mermaid 块才拉取,主包不受影响)→ `mermaid.render` 产出 SVG 替换代码块;`highlightCode` 选择器排除 `.language-mermaid` 以免被当普通代码高亮糊掉;跟随明暗主题(`dark`/`default`),`securityLevel:'strict'` 兜底;语法错误保留原始代码块并清理临时节点,绝不崩整页。无需 marked 扩展(mermaid 是标准围栏代码块,marked 原生输出 `language-mermaid`)。CSS `.cfnote-mermaid` 居中 + 过宽横向滚动。ArticleEditor 预览与 BlogPage 详情各自已挂 `enhanceRendered`,自动生效。纯前端,无 schema 改动。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

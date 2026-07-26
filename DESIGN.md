@@ -16,7 +16,7 @@
 | 样式 | Tailwind CSS 4 | 原子化 CSS，含深色映射 |
 | 构建工具 | Vite 6 | 快速构建，前端产物由 Workers Static Assets 直出 |
 | Markdown | marked（渲染）+ turndown（HTML→MD 反向转换） | 标准 Markdown |
-| 代码高亮/公式 | highlight.js + KaTeX（`$…$`/`$$…$$`）| 渲染后增强，均按需懒加载 |
+| 代码高亮/公式/图表 | highlight.js + KaTeX（`$…$`/`$$…$$`）+ mermaid（```mermaid）| 渲染后增强，均按需懒加载 |
 | 富文本 | Tiptap（ProseMirror） | 所见即所得编辑，序列化回标准 Markdown |
 | 后端 API | Cloudflare Worker + Hono 路由 | `/api/*` 走 Worker，其余走静态资源（SPA 回退） |
 | 数据库 | Cloudflare D1 | 边缘 SQLite 数据库 |

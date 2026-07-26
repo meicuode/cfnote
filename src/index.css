@@ -59,6 +59,10 @@
 .cfnote-preview .cfnote-math[data-display="1"] { margin: 0.8em 0; overflow-x: auto; overflow-y: hidden; }
 .cfnote-preview .katex { font-size: 1.05em; }
 
+/* Mermaid 图表(P11.3):渲染后的 SVG 居中,过宽横向滚动 */
+.cfnote-mermaid { display: flex; justify-content: center; margin: 1em 0; overflow-x: auto; }
+.cfnote-mermaid svg { max-width: 100%; height: auto; }
+
 .cfnote-preview blockquote {
   border-left: 4px solid #10b981;
   background: #f0fdf4;
