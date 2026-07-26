@@ -178,26 +178,35 @@ export default function WysiwygEditor({ value, onChange, readOnly, token, onUplo
 
   const st = useEditorState({
     editor,
-    selector: ({ editor: e }) =>
-      e
-        ? {
-            h1: e.isActive('heading', { level: 1 }),
-            h2: e.isActive('heading', { level: 2 }),
-            h3: e.isActive('heading', { level: 3 }),
-            bold: e.isActive('bold'),
-            italic: e.isActive('italic'),
-            strike: e.isActive('strike'),
-            code: e.isActive('code'),
-            codeBlock: e.isActive('codeBlock'),
-            blockquote: e.isActive('blockquote'),
-            bulletList: e.isActive('bulletList'),
-            orderedList: e.isActive('orderedList'),
-            link: e.isActive('link'),
-            table: e.isActive('table'),
-            canUndo: e.can().undo(),
-            canRedo: e.can().redo(),
-          }
-        : null,
+    // selector 由 useSyncExternalStore 在每次事务/订阅时同步调用。编辑器创建或销毁的瞬态窗口里,
+    // 其内部(view/commandManager)可能尚未就绪或已被置空,e.can()/e.isActive() 会抛
+    // "Cannot read properties of null (reading 'can')"——该异常从 useSyncExternalStore 冒出会带崩整页
+    // (tiptap-markdown 0.9 在 Tiptap v3 下解析较重内容时尤其易触发)。整体 try/catch 兜底:
+    // 取不到状态就返回 null,工具栏按 st?.xxx 退化为禁用/未激活,绝不让状态读取拖垮应用。
+    selector: ({ editor: e }) => {
+      if (!e || e.isDestroyed) return null
+      try {
+        return {
+          h1: e.isActive('heading', { level: 1 }),
+          h2: e.isActive('heading', { level: 2 }),
+          h3: e.isActive('heading', { level: 3 }),
+          bold: e.isActive('bold'),
+          italic: e.isActive('italic'),
+          strike: e.isActive('strike'),
+          code: e.isActive('code'),
+          codeBlock: e.isActive('codeBlock'),
+          blockquote: e.isActive('blockquote'),
+          bulletList: e.isActive('bulletList'),
+          orderedList: e.isActive('orderedList'),
+          link: e.isActive('link'),
+          table: e.isActive('table'),
+          canUndo: e.can().undo(),
+          canRedo: e.can().redo(),
+        }
+      } catch {
+        return null
+      }
+    },
   })
 
   const openLinkDialog = useCallback(() => {
