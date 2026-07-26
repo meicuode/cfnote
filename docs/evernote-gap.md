@@ -47,6 +47,11 @@
 - **URL 路由**:此前主应用是单棵组件树、视图全在 `Layout.tsx` 内存 state,刷新丢失文件管理/设置/统计等模块(仅 localStorage 恢复上次笔记本+文章),且无法把某篇笔记作为链接分享。改为把「当前笔记本/虚拟视图 + 打开的文章 + 主模块面板」编进 URL,刷新与浏览器前进/后退按 URL 恢复。纯逻辑抽 `src/lib/route.ts`(`parseLocation`/`buildLocation`/`isEmptyRoute`,前端与单测复用):路径 `/nb/:id[/:articleId]`、`/private`、`/trash`、`/tag/:name`(各可带文章),query `?panel=files|settings|stats|logs` 叠加主模块面板;兼容既有 `/?article=<id>` 深链(消费后规范化为 `/nb/:nbId/:id`)。`Layout.tsx` 双向同步:`URL→视图` 在首次笔记本加载后及 `popstate` 套用;`视图→URL` 20ms 去抖把「选笔记本→清空文章」等级联并为一次 `pushState`,**幂等等值比较 + applyingRef 抑制**防环(状态落位后自动释放,2s 兜底)。AI 对话折叠状态存 localStorage 不进 URL;搜索/提醒/导入/模板等临时弹层不进 URL。手写实现(与博客页一致),不引入 `react-router`,几乎零打包增量。`wrangler.toml` 的 SPA 回退已支持任意路径深链刷新,无后端/schema 改动。
 
 
+**P11.1(2026-07-26)✅**:博客管理(已公开文章的统一管理入口)。
+
+- **博客管理**:此前「已公开」文章散在各笔记本里,只能靠列表项小标识辨认,无统一入口。侧栏加「博客管理」→ 懒加载全屏模块 `BlogManager.tsx`(照搬 FileManager 叠层骨架),列出本人所有 `is_public=1 AND is_private=0 AND deleted_at IS NULL` 文章,支持标题搜索 + 按笔记本过滤,每行显示笔记本/发布时间/浏览量,操作「预览↗(新标签开 /blog/:id)/ 打开(回主应用 `/nb/:nbId/:id` 编辑)/ 取消公开」。后端新增鉴权端点 `GET /api/articles/published?q=&notebook_id=`(仿 `/articles/private`);取消公开复用既有 `PUT /articles/:id {is_public:0}`。接入 P10.6 路由:`?panel=blog` 刷新保持(`route.ts` 的 `RoutePanel`/`PANELS` 加 `blog`,Layout `showBlog` 双向同步)。评论管理子视图将在 P11.2 加入。纯增量,无 schema 改动。
+
+
 ## 一、附件与「公开」的关系(现状盘点)
 
 附件模型(worker/routes/files.ts):

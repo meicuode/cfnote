@@ -13,11 +13,12 @@ interface Props {
   onCreate: (name: string) => Promise<any>
   onDelete: (id: number) => Promise<any>
   onOpenFiles: () => void
+  onOpenBlog: () => void
 }
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -198,6 +199,19 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
               </svg>
             </span>
             <span className="truncate flex-1">回收站</span>
+          </button>
+          {/* 博客管理(P11):管理所有已公开文章 + 评论审核 */}
+          <button
+            onClick={onOpenBlog}
+            className="w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+            title="管理已公开的博客文章与评论"
+          >
+            <span className="text-gray-400 shrink-0">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785A5.969 5.969 0 006 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337z" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">博客管理</span>
           </button>
           {/* 文件管理(P8.2):管理应用内全部附件 */}
           <button

@@ -184,6 +184,31 @@ articles.get('/private', async (c) => {
   }
 })
 
+// GET /api/articles/published - 所有已公开(博客)文章;博客管理视图用。可选 q 标题搜索 + notebook_id 过滤(须注册在 /:id 之前)
+articles.get('/published', async (c) => {
+  const user = c.get('user')
+  try {
+    const q = (c.req.query('q') || '').trim()
+    const nbId = Number(c.req.query('notebook_id'))
+    const conds = ['a.user_id = ?', 'a.is_public = 1', 'a.is_private = 0', 'a.deleted_at IS NULL']
+    const binds: any[] = [user.id]
+    if (q) { conds.push('a.title LIKE ?'); binds.push(`%${q}%`) }
+    if (Number.isInteger(nbId) && nbId > 0) { conds.push('a.notebook_id = ?'); binds.push(nbId) }
+    const { results } = await c.env.DB.prepare(
+      `SELECT a.id, a.notebook_id, n.name AS notebook, a.title,
+              SUBSTR(a.content, 1, 150) AS summary,
+              a.published_at, a.updated_at, a.views, a.tags
+         FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY COALESCE(a.published_at, a.updated_at) DESC
+        LIMIT 500`
+    ).bind(...binds).all()
+    return ok(results)
+  } catch (e: any) {
+    return err('获取已公开文章失败: ' + e.message, 500)
+  }
+})
+
 // GET /api/articles/tags - 标签聚合(json_each 展开 JSON 列,不含回收站)
 articles.get('/tags', async (c) => {
   const user = c.get('user')

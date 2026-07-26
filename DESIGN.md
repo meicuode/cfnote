@@ -297,7 +297,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | POST | `/api/articles` | 创建（自动向量化） |
 | GET/PUT/DELETE | `/api/articles/:id` | 详情 / 更新（内容变则重向量化）/ 软删除入回收站 |
 | POST | `/api/articles/import` | URL 导入（Jina Reader） |
-| GET | `/api/articles/private` `/tags` `/by-tag` `/trash` | 私有/标签聚合/按标签/回收站视图 |
+| GET | `/api/articles/private` `/published` `/tags` `/by-tag` `/trash` | 私有 / 已公开(博客管理) / 标签聚合 / 按标签 / 回收站视图 |
 | POST | `/api/articles/trash/empty`、`/:id/restore`、DELETE `/:id/purge` | 清空/恢复/彻底删除 |
 | GET | `/api/articles/titles?q=`、`/:id/backlinks` | 笔记链接标题搜索 / 反向链接 |
 | GET | `/api/articles/:id/versions[/:vid]` | 版本历史列表（元信息）/ 单版本全文 |
@@ -358,7 +358,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | `/` | 未选笔记本(或回退 localStorage 恢复上次) |
 | `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
 | `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
-| `?panel=files\|settings\|stats\|logs` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志) |
+| `?panel=files\|settings\|stats\|logs\|blog` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志/博客管理) |
 | `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
 
 - **双向同步机制**:`URL→视图` 在首次笔记本加载后(及 `popstate`)`parseLocation` 套用到 `activeNotebook/activeArticle/面板`;`视图→URL` 以 20ms 去抖把「选笔记本→清空文章」等同步级联并为一次 `pushState`。**防环**靠幂等等值比较(目标 URL 已等于当前则不写)+ `applyingRef` 在套用期间抑制回写(状态落位后自动释放)。

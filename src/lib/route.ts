@@ -14,7 +14,7 @@ export type RouteView =
   | { kind: 'trash' }
   | { kind: 'tag'; name: string }
 
-export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | null
+export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | 'blog' | null
 
 export interface MainRoute {
   view: RouteView
@@ -24,7 +24,7 @@ export interface MainRoute {
   legacyArticleId: number | null
 }
 
-const PANELS = ['files', 'settings', 'stats', 'logs'] as const
+const PANELS = ['files', 'settings', 'stats', 'logs', 'blog'] as const
 
 /** 正整数(文章 id)否则 null;草稿负 id / 0 / 非法一律不入 URL */
 function posInt(s: string | null | undefined): number | null {

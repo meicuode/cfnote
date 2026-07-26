@@ -17,6 +17,8 @@ import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteV
 
 // 文件管理页(P8.2,懒加载独立 chunk)
 const FileManager = lazy(() => import('./FileManager'))
+// 博客管理页(P11.1,懒加载):管理已公开文章(+ 后续评论审核)
+const BlogManager = lazy(() => import('./BlogManager'))
 
 interface Props {
   token: string
@@ -36,6 +38,7 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
+  const [showBlog, setShowBlog] = useState(false)
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('cfnote-sidebar-open') !== '0')
   const toggleSidebar = () =>
@@ -201,6 +204,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     setShowSettings(r.panel === 'settings')
     setShowStats(r.panel === 'stats')
     setShowLogs(r.panel === 'logs')
+    setShowBlog(r.panel === 'blog')
   }, [notebooks, loadArticleDetail])
 
   // 由当前 state 反推规范 URL(pathname+search)
@@ -211,9 +215,9 @@ export default function Layout({ token, username, onLogout }: Props) {
       : activeNotebook.id === TRASH_NOTEBOOK.id ? { kind: 'trash' }
       : activeNotebook.id === TAG_VIEW_ID ? { kind: 'tag', name: activeNotebook.name }
       : { kind: 'notebook', id: activeNotebook.id }
-    const panel: RoutePanel = showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
+    const panel: RoutePanel = showBlog ? 'blog' : showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
     return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel })
-  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs])
+  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs, showBlog])
 
   // 首次加载完笔记本后:按 URL 恢复视图(兼容 /?article= 深链;裸根路径回退 localStorage)。
   // 全程置 applyingRef,落位到目标 URL 后由「视图→URL」effect 自动释放;2s 兜底防异步失败永久抑制。
@@ -613,6 +617,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             onCreate={createNotebook}
             onDelete={deleteNotebook}
             onOpenFiles={() => setShowFiles(true)}
+            onOpenBlog={() => setShowBlog(true)}
           />
         </div>
 
@@ -707,6 +712,12 @@ export default function Layout({ token, username, onLogout }: Props) {
       {showFiles && (
         <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
           <FileManager token={token} onClose={() => setShowFiles(false)} />
+        </Suspense>
+      )}
+
+      {showBlog && (
+        <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
+          <BlogManager token={token} notebooks={notebooks} onClose={() => setShowBlog(false)} onOpenArticle={openArticleWithSnippet} />
         </Suspense>
       )}
 
