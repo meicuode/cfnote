@@ -11,8 +11,9 @@ import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
 import RemindersPanel from './RemindersPanel'
 import { isDue, type ReminderItem } from '../lib/reminders'
-import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID } from '../types'
+import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import type { Notebook, Article } from '../types'
+import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel } from '../lib/route'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
 const FileManager = lazy(() => import('./FileManager'))
@@ -42,7 +43,9 @@ export default function Layout({ token, username, onLogout }: Props) {
       localStorage.setItem('cfnote-sidebar-open', v ? '0' : '1')
       return !v
     })
-  const [showChat, setShowChat] = useState(false)
+  const [showChat, setShowChat] = useState(() => localStorage.getItem('cfnote-chat-open') === '1')
+  // AI 对话折叠状态存本地(不进 URL):与 chatWidth 同属布局偏好
+  const setChatOpen = (v: boolean) => { setShowChat(v); localStorage.setItem('cfnote-chat-open', v ? '1' : '0') }
   const chatMaxWidth = () => Math.max(300, Math.floor(window.innerWidth / 2))
   const [chatWidth, setChatWidth] = useState(() => {
     const saved = Number(localStorage.getItem('cfnote-chat-width'))
@@ -57,6 +60,9 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [listDragging, setListDragging] = useState(false)
   const [highlight, setHighlight] = useState<{ text: string; ts: number } | null>(null)
   const restoredRef = useRef(false)
+  const didInitRef = useRef(false)          // URL 路由初始化只跑一次
+  const applyingRef = useRef(false)         // 正在把 URL 套用到视图:期间抑制 state→URL 回写
+  const urlTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
 
   const toggleTheme = () => {
@@ -179,30 +185,111 @@ export default function Layout({ token, username, onLogout }: Props) {
     loadArticleDetail(a.id).finally(() => setArticleLoading(false))
   }
 
-  // 首次加载完笔记本列表后:优先处理 /?article=<id> 深链(文件管理引用弹窗等场景的新窗口打开),
-  // 否则恢复上次打开的笔记本与文章
+  // URL → 视图:把解析出的路由套用到 state。与深链消费者同构——先设笔记本,
+  //「切笔记本清空文章」副作用会清空选中,正文由 loadArticleDetail 异步落位。
+  const applyRoute = useCallback((r: MainRoute) => {
+    const v = r.view
+    let nb: Notebook | null = null
+    if (v.kind === 'notebook') nb = notebooks.find((n) => n.id === v.id) ?? null
+    else if (v.kind === 'private') nb = PRIVATE_NOTEBOOK
+    else if (v.kind === 'trash') nb = TRASH_NOTEBOOK
+    else if (v.kind === 'tag') nb = tagNotebook(v.name)
+    setActiveNotebook(nb)
+    if (r.articleId) loadArticleDetail(r.articleId)
+    else setActiveArticle(null)
+    setShowFiles(r.panel === 'files')
+    setShowSettings(r.panel === 'settings')
+    setShowStats(r.panel === 'stats')
+    setShowLogs(r.panel === 'logs')
+  }, [notebooks, loadArticleDetail])
+
+  // 由当前 state 反推规范 URL(pathname+search)
+  const currentTarget = useCallback((): string => {
+    const view: RouteView =
+      !activeNotebook ? { kind: 'none' }
+      : activeNotebook.id === PRIVATE_NOTEBOOK.id ? { kind: 'private' }
+      : activeNotebook.id === TRASH_NOTEBOOK.id ? { kind: 'trash' }
+      : activeNotebook.id === TAG_VIEW_ID ? { kind: 'tag', name: activeNotebook.name }
+      : { kind: 'notebook', id: activeNotebook.id }
+    const panel: RoutePanel = showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
+    return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel })
+  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs])
+
+  // 首次加载完笔记本后:按 URL 恢复视图(兼容 /?article= 深链;裸根路径回退 localStorage)。
+  // 全程置 applyingRef,落位到目标 URL 后由「视图→URL」effect 自动释放;2s 兜底防异步失败永久抑制。
   useEffect(() => {
-    if (restoredRef.current || notebooks.length === 0) return
+    if (didInitRef.current || notebooks.length === 0) return
+    didInitRef.current = true
     restoredRef.current = true
-    const deepId = Number(new URLSearchParams(window.location.search).get('article'))
-    if (Number.isInteger(deepId) && deepId > 0) {
-      window.history.replaceState(null, '', window.location.pathname)
+    applyingRef.current = true
+    const safety = setTimeout(() => { applyingRef.current = false }, 2000)
+    const route = parseLocation(window.location.pathname, window.location.search)
+
+    // 1) 兼容深链 /?article=<id>:拉文章定位笔记本,规范化到 /nb/:nbId/:id
+    if (route.legacyArticleId) {
+      const id = route.legacyArticleId
       ;(async () => {
-        const res = await get<Article>(`/articles/${deepId}`)
-        if (!res.ok || !res.data) return
-        const nb = notebooks.find((n) => n.id === res.data!.notebook_id)
+        const res = await get<Article>(`/articles/${id}`)
+        if (!res.ok || !res.data) { window.history.replaceState(null, '', '/'); applyingRef.current = false; return }
+        const nb = notebooks.find((n) => n.id === res.data!.notebook_id) ?? null
         if (nb) setActiveNotebook(nb)
-        // 与"恢复上次打开"同构:切换笔记本的副作用会清空选中文章,正文由这次异步加载落位
-        loadArticleDetail(deepId)
+        loadArticleDetail(id)
+        window.history.replaceState(null, '', buildLocation({ view: nb ? { kind: 'notebook', id: nb.id } : { kind: 'none' }, articleId: id, panel: null }))
       })()
-      return
+      return () => clearTimeout(safety)
     }
-    const nb = notebooks.find((n) => n.id === Number(localStorage.getItem('cfnote-last-notebook')))
-    if (!nb) return
+
+    // 2) URL 明确表达了视图 → 以 URL 为准
+    if (!isEmptyRoute(route)) {
+      applyRoute(route)
+      return () => clearTimeout(safety)
+    }
+
+    // 3) 裸根路径 → 回退 localStorage(真实/私有/回收站可复原;标签视图未存名字,跳过),并规范化地址栏
+    const lastId = Number(localStorage.getItem('cfnote-last-notebook'))
+    const nb: Notebook | null =
+      lastId === PRIVATE_NOTEBOOK.id ? PRIVATE_NOTEBOOK
+      : lastId === TRASH_NOTEBOOK.id ? TRASH_NOTEBOOK
+      : notebooks.find((n) => n.id === lastId) ?? null
+    if (!nb) { applyingRef.current = false; return () => clearTimeout(safety) }
     setActiveNotebook(nb)
     const artId = Number(localStorage.getItem('cfnote-last-article'))
-    if (artId) loadArticleDetail(artId)
-  }, [notebooks, loadArticleDetail, get])
+    const validArt = Number.isInteger(artId) && artId > 0 ? artId : null
+    if (validArt) loadArticleDetail(validArt)
+    window.history.replaceState(null, '', buildLocation({
+      view: nb.id === PRIVATE_NOTEBOOK.id ? { kind: 'private' } : nb.id === TRASH_NOTEBOOK.id ? { kind: 'trash' } : { kind: 'notebook', id: nb.id },
+      articleId: validArt, panel: null,
+    }))
+    return () => clearTimeout(safety)
+  }, [notebooks, applyRoute, loadArticleDetail, get])
+
+  // 浏览器前进/后退:重新解析 URL 套用到视图
+  useEffect(() => {
+    const onPop = () => {
+      applyingRef.current = true
+      setTimeout(() => { applyingRef.current = false }, 2000)
+      applyRoute(parseLocation(window.location.pathname, window.location.search))
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [applyRoute])
+
+  // 视图 → URL:去抖 20ms(把「选笔记本→清空文章」等同步级联并为一次 push),幂等等值比较防环。
+  // applyingRef 期间不 push;一旦状态落位到目标 URL(target===cur)即释放抑制。
+  useEffect(() => {
+    if (!didInitRef.current) return
+    urlTimerRef.current = setTimeout(() => {
+      urlTimerRef.current = null
+      const target = currentTarget()
+      const cur = window.location.pathname + window.location.search
+      if (applyingRef.current) {
+        if (target === cur) applyingRef.current = false
+        return
+      }
+      if (target !== cur) window.history.pushState(null, '', target)
+    }, 20)
+    return () => { if (urlTimerRef.current) { clearTimeout(urlTimerRef.current); urlTimerRef.current = null } }
+  }, [currentTarget])
 
   // 记住当前打开的笔记本/文章(恢复完成后才开始写,避免覆盖已存值)
   useEffect(() => {
@@ -502,7 +589,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             </svg>
           </button>
           <button
-            onClick={() => setShowChat(!showChat)}
+            onClick={() => setChatOpen(!showChat)}
             className={`p-1.5 rounded-lg hover:bg-gray-100 transition-colors ${showChat ? 'text-emerald-600 bg-emerald-50' : 'text-gray-400 hover:text-emerald-600'}`}
             title="AI 助手"
           >
@@ -584,7 +671,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           <div style={{ width: chatWidth }} className="h-full">
             <AiChatPanel
               token={token}
-              onClose={() => setShowChat(false)}
+              onClose={() => setChatOpen(false)}
               onOpenArticle={openArticleWithSnippet}
             />
           </div>

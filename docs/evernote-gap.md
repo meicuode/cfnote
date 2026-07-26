@@ -42,6 +42,10 @@
 
 - **代码高亮 + 数学公式(KaTeX)**:渲染面(预览 + 博客)增强,源码/富文本编辑器不动(避免 Tiptap 序列化往返风险)。`src/lib/markdown.ts` 加 marked 扩展把 `$…$`(行内)/`$$…$$`(块级)**切为占位元素**(`.cfnote-math[data-math]`,不解析内部 markdown、避开 `$5 与 $10` 价格误判、下标不被当强调),GitHub/Pandoc 通行写法非私有方言。`src/lib/renderEnhance.ts` 的 `enhanceRendered(root)` 在渲染后**懒加载** highlight.js/lib/common 高亮 `pre code`、懒加载 KaTeX+CSS 渲染占位公式(打 `data-hl`/`data-rendered` 幂等,MutationObserver 反复触发不重复处理);无代码/无公式的页面完全不拉这两个库。ArticleEditor 预览 upgrade 与 BlogPage 详情各挂一次。代码块明暗主题下均深底,统一 GitHub Dark 配色写进 index.css。产物:highlight.js 懒 chunk ~54KB gzip、KaTeX ~77.6KB gzip + CSS 8KB gzip,主包仅 +0.5KB。
 
+**P10.6(2026-07-26)✅**:主应用 URL 路由(刷新/前进后退恢复视图)。
+
+- **URL 路由**:此前主应用是单棵组件树、视图全在 `Layout.tsx` 内存 state,刷新丢失文件管理/设置/统计等模块(仅 localStorage 恢复上次笔记本+文章),且无法把某篇笔记作为链接分享。改为把「当前笔记本/虚拟视图 + 打开的文章 + 主模块面板」编进 URL,刷新与浏览器前进/后退按 URL 恢复。纯逻辑抽 `src/lib/route.ts`(`parseLocation`/`buildLocation`/`isEmptyRoute`,前端与单测复用):路径 `/nb/:id[/:articleId]`、`/private`、`/trash`、`/tag/:name`(各可带文章),query `?panel=files|settings|stats|logs` 叠加主模块面板;兼容既有 `/?article=<id>` 深链(消费后规范化为 `/nb/:nbId/:id`)。`Layout.tsx` 双向同步:`URL→视图` 在首次笔记本加载后及 `popstate` 套用;`视图→URL` 20ms 去抖把「选笔记本→清空文章」等级联并为一次 `pushState`,**幂等等值比较 + applyingRef 抑制**防环(状态落位后自动释放,2s 兜底)。AI 对话折叠状态存 localStorage 不进 URL;搜索/提醒/导入/模板等临时弹层不进 URL。手写实现(与博客页一致),不引入 `react-router`,几乎零打包增量。`wrangler.toml` 的 SPA 回退已支持任意路径深链刷新,无后端/schema 改动。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

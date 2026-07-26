@@ -343,12 +343,26 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 ### 7.1 路由（前端 SPA + 平台分流）
 
+**顶层分流**(`App.tsx` 模块级正则判定 `window.location.pathname`,独立懒加载 chunk):
+
 | 路径 | 页面 | 鉴权 |
 |------|------|------|
-| `/` | 主应用（setup/login/app 三态自动切换） | 需登录 |
-| `/blog`、`/blog/:id`、`/blog/share/:token` | 公开博客（独立 chunk，不进应用壳） | 免登录 |
+| `/blog`、`/blog/:id`、`/blog/share/:token` | 公开博客（独立 chunk，不进应用壳；自带 pushState/popstate） | 免登录 |
 | `/clip` | 网页剪藏接收页（独立 chunk） | 需登录 |
-| `/?article=<id>` | 深链打开指定笔记（笔记间链接/AI 引用复用） | 需登录 |
+| 其余全部 | 主应用 `MainApp`（setup/login/app 三态自动切换） | 需登录 |
+
+**主应用内部路由**(P10.6,`src/lib/route.ts` 纯函数解析/生成 + `Layout.tsx` 双向同步;刷新与前进/后退按 URL 恢复视图):
+
+| 路径 / 参数 | 视图 |
+|------|------|
+| `/` | 未选笔记本(或回退 localStorage 恢复上次) |
+| `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
+| `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
+| `?panel=files\|settings\|stats\|logs` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志) |
+| `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
+
+- **双向同步机制**:`URL→视图` 在首次笔记本加载后(及 `popstate`)`parseLocation` 套用到 `activeNotebook/activeArticle/面板`;`视图→URL` 以 20ms 去抖把「选笔记本→清空文章」等同步级联并为一次 `pushState`。**防环**靠幂等等值比较(目标 URL 已等于当前则不写)+ `applyingRef` 在套用期间抑制回写(状态落位后自动释放)。
+- AI 对话折叠状态、各列宽度等布局偏好仍存 localStorage(不进 URL);搜索/提醒/导入/模板等临时弹层不进 URL。
 
 ### 7.2 主应用布局（四栏，emerald 绿 Evernote 风格）
 
