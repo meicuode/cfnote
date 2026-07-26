@@ -13,6 +13,7 @@ import { fm } from './routes/fm'
 import { stats } from './routes/stats'
 import { blog } from './routes/blog'
 import { notify, sendDueReminders } from './routes/notify'
+import { comments } from './routes/comments'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -34,6 +35,8 @@ app.use('/api/*', async (c, next) => {
   ) return next()
   // 公开博客只读接口免登录(仅暴露 is_public=1 且非私有的文章)
   if (c.req.method === 'GET' && c.req.path.startsWith('/api/blog/')) return next()
+  // 访客提交评论:仅放行这一个确切的 POST 路径(路由内部再校验文章公开/限流/审核)
+  if (c.req.method === 'POST' && c.req.path === '/api/blog/comments') return next()
 
   const user = await getUser(c.req.raw, c.env)
   if (!user) {
@@ -56,6 +59,7 @@ app.route('/api/fm', fm)
 app.route('/api/stats', stats)
 app.route('/api/blog', blog)
 app.route('/api/notify', notify)
+app.route('/api/comments', comments)
 
 app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
 

@@ -27,6 +27,8 @@ interface BlogDetail {
   tags?: string[]
   /** 私密分享视图(P9.3):不在博客列表/热榜,凭链接访问 */
   shared?: boolean
+  /** 评论开关(P11.2;仅公开详情返回) */
+  comments_enabled?: boolean
   published_at: string
   views: number
 }
@@ -81,6 +83,158 @@ const Spinner = () => (
     <div className="w-6 h-6 border-2 border-[#d43030] border-t-transparent rounded-full animate-spin" />
   </div>
 )
+
+// ---- 评论(P11.2)----
+// 正文一律纯文本渲染({c.content} 由 React 自动转义 + whitespace-pre-wrap),不解析 markdown/HTML,杜绝 XSS。
+interface CommentRowData {
+  id: number
+  parent_id: number | null
+  root_id: number | null
+  author_name: string
+  content: string
+  is_admin?: number | boolean
+  created_at: string
+}
+interface CommentThread extends CommentRowData {
+  replies: CommentRowData[]
+}
+
+function CommentRow({ c, enabled, onReply, parentName }: {
+  c: CommentRowData
+  enabled: boolean
+  onReply: (r: { id: number; name: string }) => void
+  parentName?: string
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-sm">
+        <span className="font-medium text-[var(--blog-title)]">{c.author_name}</span>
+        {c.is_admin ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#d43030] text-white">博主</span> : null}
+        {parentName && <span className="text-xs text-[var(--blog-muted)]">回复 @{parentName}</span>}
+        <span className="text-xs text-[var(--blog-muted)] ml-auto">{fmtFull(c.created_at)}</span>
+      </div>
+      <div className="text-sm text-[var(--blog-text)] mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+      {enabled && (
+        <button onClick={() => onReply({ id: c.id, name: c.author_name })} className="text-xs text-[var(--blog-muted)] hover:text-[#e05252] mt-1">回复</button>
+      )}
+    </div>
+  )
+}
+
+// 楼中楼的「回复 @X」:回复对象不是楼主本身时才显示
+function replyParentName(top: CommentThread, r: CommentRowData): string | undefined {
+  if (r.parent_id == null || r.parent_id === top.id) return undefined
+  return top.replies.find((x) => x.id === r.parent_id)?.author_name
+}
+
+function CommentsSection({ articleId, enabled }: { articleId: number; enabled: boolean }) {
+  const [threads, setThreads] = useState<CommentThread[] | null>(null)
+  const [name, setName] = useState(() => localStorage.getItem('cfnote-cmt-name') || '')
+  const [email, setEmail] = useState(() => localStorage.getItem('cfnote-cmt-email') || '')
+  const [content, setContent] = useState('')
+  const [website, setWebsite] = useState('') // 蜜罐
+  const [replyTo, setReplyTo] = useState<{ id: number; name: string } | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const load = () => {
+    fetch(`/api/blog/comments?article_id=${articleId}`)
+      .then((r) => r.json() as Promise<any>)
+      .then((j) => setThreads(j.ok && Array.isArray(j.data) ? j.data : []))
+      .catch(() => setThreads([]))
+  }
+  useEffect(() => { load() }, [articleId])
+
+  const count = threads ? threads.reduce((n, t) => n + 1 + t.replies.length, 0) : 0
+
+  const submit = async () => {
+    if (submitting) return
+    if (!name.trim()) { setMsg('请填写昵称'); return }
+    if (!content.trim()) { setMsg('评论内容不能为空'); return }
+    setSubmitting(true); setMsg('')
+    try {
+      const res = await fetch('/api/blog/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          article_id: articleId,
+          parent_id: replyTo?.id,
+          author_name: name.trim(),
+          author_email: email.trim() || undefined,
+          content: content.trim(),
+          website,
+        }),
+      })
+      const j = (await res.json()) as any
+      if (j.ok) {
+        localStorage.setItem('cfnote-cmt-name', name.trim())
+        if (email.trim()) localStorage.setItem('cfnote-cmt-email', email.trim())
+        setContent(''); setReplyTo(null)
+        if (j.data?.status === 'approved') { setMsg('评论已发布'); load() }
+        else setMsg('评论已提交,待博主审核后显示')
+      } else setMsg(j.error || '提交失败')
+    } catch {
+      setMsg('提交失败,请稍后重试')
+    }
+    setSubmitting(false)
+  }
+
+  return (
+    <section className="mt-10 mb-4">
+      <div className="flex items-end justify-between border-b-2 border-[#d43030] pb-2">
+        <h3 className="text-xl font-bold text-[var(--blog-title)]">评论{count > 0 ? ` (${count})` : ''}</h3>
+        <span className="text-xs text-gray-500 hidden sm:block">愿每一段记录,都有回响。</span>
+      </div>
+
+      {enabled ? (
+        <div className="mt-4 bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg p-4">
+          {replyTo && (
+            <div className="text-xs text-[var(--blog-muted)] mb-2">
+              回复 @{replyTo.name}
+              <button onClick={() => setReplyTo(null)} className="text-[#e05252] hover:underline ml-1">取消</button>
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2 mb-2">
+            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder="昵称(必填)" className="flex-1 text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[#d43030]" />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="邮箱(可选,不公开)" className="flex-1 text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[#d43030]" />
+          </div>
+          <textarea value={content} onChange={(e) => setContent(e.target.value)} maxLength={2000} rows={3} placeholder="写下你的评论…" className="w-full text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[#d43030] resize-y" />
+          {/* 蜜罐:视觉移出屏幕,真人看不见;机器人常自动填充 → 后端静默丢弃 */}
+          <input value={website} onChange={(e) => setWebsite(e.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" className="absolute -left-[9999px] w-px h-px overflow-hidden" />
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-xs text-[var(--blog-muted)]">{msg}</span>
+            <button onClick={submit} disabled={submitting} className="px-4 py-1.5 rounded bg-[#d43030] text-white text-sm hover:bg-[#e05252] disabled:opacity-50">
+              {submitting ? '提交中…' : replyTo ? '回复' : '发表评论'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-[var(--blog-panel)] rounded mt-4 py-5 text-center text-sm text-[var(--blog-muted)]">评论已关闭</div>
+      )}
+
+      <div className="mt-6 space-y-5">
+        {threads === null ? (
+          <div className="py-6 flex justify-center"><div className="w-5 h-5 border-2 border-[#d43030] border-t-transparent rounded-full animate-spin" /></div>
+        ) : threads.length === 0 ? (
+          <p className="text-center text-sm text-[var(--blog-muted)] py-6">还没有评论,来抢沙发~</p>
+        ) : (
+          threads.map((t) => (
+            <div key={t.id}>
+              <CommentRow c={t} enabled={enabled} onReply={setReplyTo} />
+              {t.replies.length > 0 && (
+                <div className="mt-3 ml-6 sm:ml-10 space-y-3 border-l-2 border-[var(--blog-border)] pl-4">
+                  {t.replies.map((r) => (
+                    <CommentRow key={r.id} c={r} enabled={enabled} onReply={setReplyTo} parentName={replyParentName(t, r)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
 
 export default function BlogPage() {
   const [postId, setPostId] = useState<number | string | null>(parsePath())
@@ -315,16 +469,10 @@ export default function BlogPage() {
               />
               <p className="text-center text-gray-600 text-sm mt-12">· 完 ·</p>
 
-              {/* 评论区(个人博客暂不开放,保留版式) */}
-              <section className="mt-10 mb-4">
-                <div className="flex items-end justify-between border-b-2 border-[#d43030] pb-2">
-                  <h3 className="text-xl font-bold text-[var(--blog-title)]">评论</h3>
-                  <span className="text-xs text-gray-500 hidden sm:block">愿每一段记录,都有回响。</span>
-                </div>
-                <div className="bg-[var(--blog-panel)] rounded mt-4 py-5 text-center text-sm text-[var(--blog-muted)]">
-                  本博客为个人笔记博客,暂未开放评论
-                </div>
-              </section>
+              {/* 评论区(P11.2):仅公开文章展示;私密分享页不显示 */}
+              {!detail.shared && (
+                <CommentsSection articleId={detail.id} enabled={detail.comments_enabled !== false} />
+              )}
             </div>
           )}
         </main>

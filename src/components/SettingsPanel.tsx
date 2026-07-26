@@ -24,6 +24,9 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [channels, setChannels] = useState<NotifyChannel[]>([])
   // 已保存渠道快照(归一化 JSON):测试走实时表单、cron 走已存配置,用它检测「测了但没保存」
   const [savedChannels, setSavedChannels] = useState('[]')
+  // P11.2 评论设置
+  const [commentsEnabled, setCommentsEnabled] = useState(true)
+  const [commentsAutoApprove, setCommentsAutoApprove] = useState(false)
   const [testing, setTesting] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -47,6 +50,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
         if (res.data.jina_api_key) setJinaKey(res.data.jina_api_key)
         const nc = (res.data as any).notify_channels
         if (nc) { try { const parsed = JSON.parse(nc); setChannels(parsed); setSavedChannels(JSON.stringify(parsed)) } catch { /* 坏值忽略 */ } }
+        setCommentsEnabled((res.data as any).comments_enabled !== '0')
+        setCommentsAutoApprove((res.data as any).comments_auto_approve === '1')
       } else {
         setError(res.error || '加载失败')
       }
@@ -62,6 +67,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
       llm_model: selected,
       ...(jinaKey ? { jina_api_key: jinaKey } : {}),
       notify_channels: channelsJson,
+      comments_enabled: commentsEnabled ? '1' : '0',
+      comments_auto_approve: commentsAutoApprove ? '1' : '0',
       site_url: window.location.origin,
     })
     if (res.ok) {
@@ -465,6 +472,21 @@ export default function SettingsPanel({ token, onClose }: Props) {
                     ⚠️ 通知渠道有未保存的修改。「测试」用的是当前填写的配置,但到期推送用的是<b>已保存</b>的配置——请点右下角「保存」后才会真正生效。
                   </p>
                 )}
+              </div>
+
+              {/* 评论(P11.2) */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">评论</h3>
+                <p className="text-[11px] text-gray-400 mb-2">公开博客文章底部的访客评论。关闭后访客看不到评论区、也无法提交。</p>
+                <label className="flex items-center gap-2 cursor-pointer py-1">
+                  <input type="checkbox" checked={commentsEnabled} onChange={(e) => setCommentsEnabled(e.target.checked)} className="accent-emerald-500" />
+                  <span className="text-sm text-gray-800">开启评论</span>
+                </label>
+                <label className={`flex items-center gap-2 cursor-pointer py-1 ${commentsEnabled ? '' : 'opacity-40 pointer-events-none'}`}>
+                  <input type="checkbox" checked={commentsAutoApprove} onChange={(e) => setCommentsAutoApprove(e.target.checked)} className="accent-emerald-500" />
+                  <span className="text-sm text-gray-800">免审核(提交后直接显示)</span>
+                </label>
+                <p className="text-[11px] text-gray-400 mt-1">默认需审核:新评论进入待审核队列,在「博客管理 → 评论」通过后才公开显示。</p>
               </div>
 
               {/* 数据备份 */}

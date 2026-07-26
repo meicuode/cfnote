@@ -92,3 +92,29 @@ export async function sendDueReminders(env: Env): Promise<void> {
     await env.DB.prepare("UPDATE articles SET reminded_at = datetime('now') WHERE id = ?").bind(art.id).run()
   }
 }
+
+// 有新评论待审核时推送管理员(复用已配置的通知渠道;无渠道则静默,失败不影响主流程)。
+export async function notifyPendingComment(
+  env: Env,
+  info: { articleId: number; articleTitle: string; author: string; content: string }
+): Promise<void> {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'notify_channels'").first<{ value: string }>()
+    let channels: NotifyChannel[] = []
+    try { channels = row?.value ? JSON.parse(row.value) : [] } catch { channels = [] }
+    const enabled = channels.filter((ch) => ch?.enabled)
+    if (enabled.length === 0) return
+    const siteRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'site_url'").first<{ value: string }>()
+    const site = (siteRow?.value || '').replace(/\/+$/, '')
+    const snippet = info.content.length > 80 ? info.content.slice(0, 80) + '…' : info.content
+    const msg: NotifyMessage = {
+      title: `💬 新评论待审核:${info.articleTitle || '(无标题)'}`,
+      body: `${info.author}:${snippet}`,
+      url: site ? `${site}/blog/${info.articleId}` : undefined,
+    }
+    for (const ch of enabled) {
+      const r = await sendToChannel(ch, msg)
+      if (!r.ok) logSystem(env, 'warn', 'notify', `渠道 ${ch.type} 评论通知失败`, r.error)
+    }
+  } catch { /* 通知失败不影响评论提交 */ }
+}

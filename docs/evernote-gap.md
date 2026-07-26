@@ -51,6 +51,10 @@
 
 - **博客管理**:此前「已公开」文章散在各笔记本里,只能靠列表项小标识辨认,无统一入口。侧栏加「博客管理」→ 懒加载全屏模块 `BlogManager.tsx`(照搬 FileManager 叠层骨架),列出本人所有 `is_public=1 AND is_private=0 AND deleted_at IS NULL` 文章,支持标题搜索 + 按笔记本过滤,每行显示笔记本/发布时间/浏览量,操作「预览↗(新标签开 /blog/:id)/ 打开(回主应用 `/nb/:nbId/:id` 编辑)/ 取消公开」。后端新增鉴权端点 `GET /api/articles/published?q=&notebook_id=`(仿 `/articles/private`);取消公开复用既有 `PUT /articles/:id {is_public:0}`。接入 P10.6 路由:`?panel=blog` 刷新保持(`route.ts` 的 `RoutePanel`/`PANELS` 加 `blog`,Layout `showBlog` 双向同步)。评论管理子视图将在 P11.2 加入。纯增量,无 schema 改动。
 
+**P11.2(2026-07-26)✅**:访客评论(默认审核 + 2 层嵌套)。
+
+- **评论**:公开博客文章底部支持访客评论(昵称必填、邮箱可选不公开),**默认需审核**(设置 `comments_auto_approve` 可切免审核;`comments_enabled` 总开关)。新表 `comments`(`parent_id`/`root_id` 支持 2 层嵌套——回复的回复归并到同一顶层楼;`status` pending/approved/rejected;`is_admin` 博主回复;`ip_hash` 限流溯源不存明文;system.ts + migrate.ts 双声明幂等建表,无需清库)。纯逻辑抽 `src/lib/comments.ts`(`validateCommentInput`/`resolveThreadParent` 2 层夹取/`buildThread`/蜜罐,前端与 worker 复用,+12 用例)。公开 `GET/POST /api/blog/comments`(GET 已免登录,POST 在 `worker/index.ts` 中间件按确切路径单独放行);提交防刷=**强制审核 + Cache API 每 IP 每分钟 1 条(照搬浏览量去重)+ 蜜罐隐藏字段 + 昵称/正文长度上限**,fork 者零配置。鉴权 `worker/routes/comments.ts` 管理(列表/待审计数/通过/拒绝/回复/删除,所有权经 JOIN `articles.user_id`)。**评论正文一律纯文本渲染**(React 自动转义 + `whitespace-pre-wrap`,不过 marked——仓库无 HTML 消毒库,杜绝 XSS)。`BlogPage` 替换原「暂未开放评论」占位为真实评论区(表单 + 2 层线程 + 博主标识),私密分享页(`detail.shared`)不显示。`BlogManager` 加「评论」子 tab(待审/全部过滤 + 通过/拒绝/删除/回复,待审计数徽标)。`SettingsPanel` 加评论开关两项。有待审评论且配了通知渠道→复用 `sendToChannel` 推送管理员(`notifyPendingComment`)。QQ/富文本评论/邮件回复访客暂不做。
+
 
 ## 一、附件与「公开」的关系(现状盘点)
 

@@ -191,6 +191,24 @@ CREATE INDEX idx_articles_share ON articles(share_token);
 CREATE INDEX idx_chunks_article ON chunks(article_id);
 CREATE INDEX idx_article_versions ON article_versions(article_id, created_at);
 CREATE INDEX idx_notebooks_user ON notebooks(user_id);
+
+-- 访客评论（P11.2）
+CREATE TABLE comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  parent_id INTEGER,                 -- 被回复评论 id（NULL=顶层）
+  root_id INTEGER,                   -- 顶层祖先 id；2 层展示按它分组
+  author_name TEXT NOT NULL,
+  author_email TEXT,                 -- 可选，不公开
+  content TEXT NOT NULL,             -- 纯文本渲染，不解析 markdown/HTML
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|rejected
+  is_admin INTEGER DEFAULT 0,        -- 博主回复
+  ip_hash TEXT,                      -- SHA-1(ip)，限流/溯源，不存明文
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_comments_article ON comments(article_id, status, created_at);
+CREATE INDEX idx_comments_status ON comments(status, created_at);
 ```
 
 ### 5.2 AI 对话
@@ -330,6 +348,10 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 |------|------|------|
 | GET | `/api/blog/posts` `/:id` `/hot` | 博客列表 / 详情（计浏览）/ 热榜 |
 | GET | `/api/blog/share/:token` | 私密分享详情（不入列表/不计浏览，过期 410） |
+| GET/POST | `/api/blog/comments` | 某公开文章已通过评论（2 层线程）/ 访客提交（免登录，默认待审核，限流+蜜罐） |
+| GET | `/api/comments` `/counts` | 评论审核列表 / 待审计数（鉴权，经文章所有权） |
+| POST | `/api/comments/:id/approve` `/reject` `/reply` | 通过 / 拒绝 / 博主回复（自动通过） |
+| DELETE | `/api/comments/:id` | 删除评论 |
 | GET/POST | `/api/stats` `/stats/archive` | 统计仪表盘 / 用量归档 |
 | POST | `/api/notify/test` | 用面板填写的渠道配置发一条测试消息 |
 
@@ -430,6 +452,8 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 - `/blog` 免登录整站博客（IT之家风格，亮/暗双主题，热榜，浏览计数 Cache API 去重）；仅 `is_public=1 AND is_private=0 AND deleted_at IS NULL` 的笔记可见。
 - 发布前对全文做敏感信息扫描 + 附件清单目视确认（`sensitiveScan`）。
 - 私密分享：`articles.share_token/share_expires_at` 两列即全部状态（单分享），`/blog/share/<token>` 凭链接可看，不入列表/热榜、不计浏览量，过期 410；设为私有或移入回收站自动撤销。
+- 博客管理（P11.1）：侧栏「博客管理」全屏模块（`?panel=blog`），列出本人全部已公开文章（`GET /api/articles/published`），搜索/按笔记本过滤/预览/打开编辑/取消公开。
+- 评论（P11.2）：`comments` 表（`parent_id`/`root_id` 支持 2 层嵌套，`status` pending/approved/rejected，`is_admin` 博主回复，`ip_hash` 限流）；公开 `GET/POST /api/blog/comments`（POST 中间件单独放行，默认待审核、每 IP 每分钟限流、蜜罐、正文纯文本渲染防 XSS），鉴权 `/api/comments/*` 审核；开关与免审核存 `settings.comments_enabled/comments_auto_approve`；私密分享页不显示评论；待审可复用通知渠道推送。管理在「博客管理 → 评论」子 tab。
 
 ## 11. 项目结构
 

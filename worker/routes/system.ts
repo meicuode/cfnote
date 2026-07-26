@@ -157,6 +157,23 @@ CREATE TABLE IF NOT EXISTS article_files (
   PRIMARY KEY (article_id, file_key)
 );
 CREATE INDEX IF NOT EXISTS idx_article_files_key ON article_files(file_key);
+
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  parent_id INTEGER,
+  root_id INTEGER,
+  author_name TEXT NOT NULL,
+  author_email TEXT,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  is_admin INTEGER DEFAULT 0,
+  ip_hash TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status, created_at);
 `
 
 // GET /api/status - Check if system is initialized

@@ -75,6 +75,22 @@ const VERSION_TABLE = `CREATE TABLE IF NOT EXISTS article_versions (
   FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
 )`
 
+// P11.2 评论:访客评论表(旧库幂等补建;全新库由 system.ts SCHEMA 直接带出)
+const COMMENTS_TABLE = `CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  article_id INTEGER NOT NULL,
+  parent_id INTEGER,
+  root_id INTEGER,
+  author_name TEXT NOT NULL,
+  author_email TEXT,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  is_admin INTEGER DEFAULT 0,
+  ip_hash TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
+)`
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -107,4 +123,8 @@ async function doEnsure(env: Env): Promise<void> {
   // 版本历史表 + 索引(幂等)
   await env.DB.prepare(VERSION_TABLE).run()
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_article_versions ON article_versions(article_id, created_at)').run()
+  // P11.2 评论表 + 索引(幂等)
+  await env.DB.prepare(COMMENTS_TABLE).run()
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id, status, created_at)').run()
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status, created_at)').run()
 }
