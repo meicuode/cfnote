@@ -4,6 +4,7 @@ import {
   resolveThreadParent,
   buildThread,
   isHoneypotTripped,
+  commentAvatar,
   MAX_NAME,
   MAX_CONTENT,
   type FlatComment,
@@ -75,5 +76,31 @@ describe('isHoneypotTripped', () => {
   })
   it('有值 = 机器人', () => {
     expect(isHoneypotTripped('http://spam')).toBe(true)
+  })
+})
+
+describe('commentAvatar(头像占位,P11.7)', () => {
+  it('取昵称首字并大写', () => {
+    expect(commentAvatar('alice').char).toBe('A')
+    expect(commentAvatar('  张三 ').char).toBe('张')
+  })
+
+  it('emoji 昵称按码点切分,不出半个代理对', () => {
+    const { char } = commentAvatar('🐱喵')
+    expect(char).toBe('🐱')
+    expect(Array.from(char)).toHaveLength(1)
+  })
+
+  it('空昵称回退 ?', () => {
+    expect(commentAvatar('').char).toBe('?')
+    expect(commentAvatar(null).char).toBe('?')
+    expect(commentAvatar('   ').char).toBe('?')
+  })
+
+  it('同一昵称永远同色,不同昵称至少能分出多种色', () => {
+    expect(commentAvatar('alice').color).toBe(commentAvatar('alice').color)
+    expect(commentAvatar('alice').color).toMatch(/^#[0-9a-f]{6}$/)
+    const colors = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((n) => commentAvatar(n).color))
+    expect(colors.size).toBeGreaterThan(1)
   })
 })

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
 import ArticleEditor from './ArticleEditor'
+import { commentAvatar } from '../lib/comments'
 import type { Notebook, Article } from '../types'
 
 // 博客管理(P11.1 + P11.2;P11.4 内联;P11.7 两栏可编辑):占据侧栏右侧整个工作区。
@@ -307,9 +308,13 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                 <div className="py-20 text-center text-sm text-gray-400">{cStatus === 'pending' ? '没有待审核的评论' : '还没有评论'}</div>
               ) : (
                 <ul className="space-y-2">
-                  {comments.map((cm) => (
+                  {comments.map((cm) => {
+                    const av = commentAvatar(cm.author_name)
+                    return (
                     <li key={cm.id} className="px-3 py-2.5 rounded-lg border border-gray-100">
                       <div className="flex items-center gap-2 text-sm flex-wrap">
+                        {/* 头像占位:与博客页同一套取色(博主固定 emerald) */}
+                        <span aria-hidden className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-white text-[10px] font-semibold select-none" style={{ backgroundColor: cm.is_admin ? '#10b981' : av.color }}>{av.char}</span>
                         <span className="font-medium text-gray-800">{cm.author_name}</span>
                         {cm.is_admin ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500 text-white">博主</span> : null}
                         {statusBadge(cm.status)}
@@ -342,7 +347,8 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                         </div>
                       )}
                     </li>
-                  ))}
+                    )
+                  })}
                 </ul>
               )}
             </div>

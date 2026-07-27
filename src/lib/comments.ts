@@ -87,3 +87,20 @@ export function buildThread(flat: FlatComment[]): ThreadedComment[] {
 export function isHoneypotTripped(hp: string | null | undefined): boolean {
   return !!(hp && hp.trim())
 }
+
+// 头像占位(P11.7):不接 Gravatar——那要把访客邮箱哈希发到第三方(公开评论接口本就不返回邮箱),
+// 且国内访问不稳。改为「昵称首字 + 按昵称确定性取色」的本地色块:零请求、同一昵称永远同色。
+// 博主等特殊身份的配色由调用方覆盖(博客页红、管理端绿),这里只管中性调色板。
+const AVATAR_COLORS = [
+  '#dc2626', '#ea580c', '#d97706', '#65a30d', '#16a34a', '#0d9488',
+  '#0891b2', '#2563eb', '#4f46e5', '#7c3aed', '#c026d3', '#db2777',
+]
+
+/** 昵称 → 头像占位的首字与背景色(首字用码点切分,兼容 emoji 昵称;空昵称回退「?」) */
+export function commentAvatar(name: string | null | undefined): { char: string; color: string } {
+  const s = (name || '').trim()
+  const char = s ? Array.from(s)[0].toUpperCase() : '?'
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  return { char, color: AVATAR_COLORS[h % AVATAR_COLORS.length] }
+}

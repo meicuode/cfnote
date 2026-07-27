@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { marked } from '../lib/markdown'
 import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
+import { commentAvatar } from '../lib/comments'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -108,22 +109,33 @@ function CommentRow({ c, enabled, onReply, parentName }: {
   onReply: (r: { id: number; name: string }) => void
   parentName?: string
 }) {
+  const av = commentAvatar(c.author_name)
   return (
     // id 供「评论管理 → 查看↗」的 #comment-<id> 锚点定位(P11.7);scroll-mt 避开顶栏
-    <div id={`comment-${c.id}`} className={`scroll-mt-24 ${c.pending ? 'opacity-60' : ''}`}>
-      <div className="flex items-center gap-2 text-sm">
-        <span className="font-medium text-[var(--blog-title)]">{c.author_name}</span>
-        {c.is_admin ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#d43030] text-white">博主</span> : null}
-        {c.pending && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--blog-panel)] text-[var(--blog-muted)] border border-[var(--blog-border)]">待审核</span>}
-        {parentName && <span className="text-xs text-[var(--blog-muted)]">回复 @{parentName}</span>}
-        <span className="text-xs text-[var(--blog-muted)] ml-auto">{fmtFull(c.created_at)}</span>
+    <div id={`comment-${c.id}`} className={`scroll-mt-24 flex gap-3 ${c.pending ? 'opacity-60' : ''}`}>
+      {/* 头像占位:昵称首字 + 确定性配色;博主固定用博客红 */}
+      <span
+        aria-hidden
+        className="mt-0.5 w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-white text-xs font-semibold select-none"
+        style={{ backgroundColor: c.is_admin ? '#d43030' : av.color }}
+      >
+        {av.char}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-medium text-[var(--blog-title)]">{c.author_name}</span>
+          {c.is_admin ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#d43030] text-white">博主</span> : null}
+          {c.pending && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--blog-panel)] text-[var(--blog-muted)] border border-[var(--blog-border)]">待审核</span>}
+          {parentName && <span className="text-xs text-[var(--blog-muted)]">回复 @{parentName}</span>}
+          <span className="text-xs text-[var(--blog-muted)] ml-auto">{fmtFull(c.created_at)}</span>
+        </div>
+        <div className="text-sm text-[var(--blog-text)] mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+        {c.pending ? (
+          <p className="text-xs text-[var(--blog-muted)] mt-1 italic">你的评论已提交,待博主审核后对其他人可见。</p>
+        ) : enabled ? (
+          <button onClick={() => onReply({ id: c.id, name: c.author_name })} className="text-xs text-[var(--blog-muted)] hover:text-[#e05252] mt-1">回复</button>
+        ) : null}
       </div>
-      <div className="text-sm text-[var(--blog-text)] mt-1 whitespace-pre-wrap break-words">{c.content}</div>
-      {c.pending ? (
-        <p className="text-xs text-[var(--blog-muted)] mt-1 italic">你的评论已提交,待博主审核后对其他人可见。</p>
-      ) : enabled ? (
-        <button onClick={() => onReply({ id: c.id, name: c.author_name })} className="text-xs text-[var(--blog-muted)] hover:text-[#e05252] mt-1">回复</button>
-      ) : null}
     </div>
   )
 }
