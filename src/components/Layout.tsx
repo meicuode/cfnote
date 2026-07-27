@@ -122,7 +122,9 @@ export default function Layout({ token, username, onLogout }: Props) {
   const openArticleWithSnippet = (id: number, snippet?: string) => {
     loadArticleDetail(id)
     if (snippet) setHighlight({ text: snippet, ts: Date.now() })
-    setBlogView(null) // 打开文章即回到笔记工作区(否则被博客管理内联模块挡住)
+    // 打开文章即回到笔记工作区(否则被博客管理/文件管理内联模块挡住)
+    setBlogView(null)
+    setShowFiles(false)
   }
 
   const loadNotebooks = useCallback(async () => {
@@ -618,12 +620,13 @@ export default function Layout({ token, username, onLogout }: Props) {
             notebooks={notebooks}
             activeNotebook={activeNotebook}
             tags={tags}
-            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null) }}
+            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); setShowFiles(false) }}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
-            onOpenFiles={() => setShowFiles(true)}
+            onOpenFiles={() => { setShowFiles(true); setBlogView(null) }}
+            filesActive={showFiles}
             blogView={blogView}
-            onOpenBlog={(v) => setBlogView(v)}
+            onOpenBlog={(v) => { setBlogView(v); setShowFiles(false) }}
           />
         </div>
 
@@ -639,6 +642,13 @@ export default function Layout({ token, username, onLogout }: Props) {
                 onClose={() => setBlogView(null)}
                 onOpenArticle={openArticleWithSnippet}
               />
+            </Suspense>
+          </div>
+        ) : showFiles ? (
+          /* 文件管理(P11.5):同样内联展示,不再弹窗 */
+          <div className="flex-1 overflow-hidden">
+            <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
+              <FileManager token={token} onClose={() => setShowFiles(false)} />
             </Suspense>
           </div>
         ) : (
@@ -731,12 +741,6 @@ export default function Layout({ token, username, onLogout }: Props) {
 
       {showLogs && (
         <SystemLogsPanel token={token} onClose={() => setShowLogs(false)} />
-      )}
-
-      {showFiles && (
-        <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
-          <FileManager token={token} onClose={() => setShowFiles(false)} />
-        </Suspense>
       )}
 
       {showImport && (

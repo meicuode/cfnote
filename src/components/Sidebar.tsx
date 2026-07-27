@@ -13,6 +13,8 @@ interface Props {
   onCreate: (name: string) => Promise<any>
   onDelete: (id: number) => Promise<any>
   onOpenFiles: () => void
+  /** 文件管理是否为当前视图,用于高亮 */
+  filesActive: boolean
   /** 博客管理当前子视图(null=未打开),用于高亮 */
   blogView: 'articles' | 'comments' | null
   onOpenBlog: (view: 'articles' | 'comments') => void
@@ -20,7 +22,7 @@ interface Props {
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, blogView, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, filesActive, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -232,13 +234,15 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             </span>
             <span className="truncate flex-1">评论管理</span>
           </button>
-          {/* 文件管理(P8.2):管理应用内全部附件 */}
+          {/* 文件管理(P8.2):管理应用内全部附件;P11.5 起内联展示于右侧工作区 */}
           <button
             onClick={onOpenFiles}
-            className="w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100 transition-colors"
+            className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
+              filesActive ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-gray-700 hover:bg-gray-100'
+            }`}
             title="管理全部附件:目录、搜索、预览、清理"
           >
-            <span className="text-gray-400 shrink-0">
+            <span className={`shrink-0 ${filesActive ? 'text-emerald-500' : 'text-gray-400'}`}>
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
               </svg>

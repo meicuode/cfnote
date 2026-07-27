@@ -380,7 +380,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | `/` | 未选笔记本(或回退 localStorage 恢复上次) |
 | `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
 | `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
-| `?panel=files\|settings\|stats\|logs\|blog\|comments` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志;博客管理的「已公开文章」与「评论管理」两个内联子视图) |
+| `?panel=files\|settings\|stats\|logs\|blog\|comments` | 叠加在基础路径上的主模块面板。**文件管理(files)与博客管理(blog/comments)为内联工作区视图**(占据侧栏右侧区域,非弹窗);设置/统计/日志仍为叠层面板 |
 | `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
 
 - **双向同步机制**:`URL→视图` 在首次笔记本加载后(及 `popstate`)`parseLocation` 套用到 `activeNotebook/activeArticle/面板`;`视图→URL` 以 20ms 去抖把「选笔记本→清空文章」等同步级联并为一次 `pushState`。**防环**靠幂等等值比较(目标 URL 已等于当前则不写)+ `applyingRef` 在套用期间抑制回写(状态落位后自动释放)。

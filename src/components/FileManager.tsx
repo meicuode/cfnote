@@ -136,13 +136,8 @@ export default function FileManager({ token, onClose }: Props) {
     return () => clearTimeout(t)
   }, [q])
 
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !preview && !renameTarget && !moveTarget && !refsDialog && !deleteTarget && !shareDialog && !folderMove) onClose()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose, preview, renameTarget, moveTarget, refsDialog, deleteTarget, shareDialog, folderMove])
+  // 注:P11.5 改为内联模块后不再监听 Esc 关闭整个视图——搜索框里按 Esc 会误关工作区。
+  // 各子弹窗(重命名/移动/分享等)自身的 Esc 关闭仍在各自处理。
 
   const refresh = useCallback(() => { loadOverview(); loadFiles() }, [loadOverview, loadFiles])
 
@@ -415,8 +410,7 @@ export default function FileManager({ token, onClose }: Props) {
     : `文件夹 · ${view.name}`
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-3 sm:p-6">
-      <div className="bg-white rounded-2xl shadow-2xl w-full h-full max-w-[1200px] flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col bg-white overflow-hidden">
         {/* 顶栏 */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
           <h2 className="text-sm font-semibold text-gray-900">文件管理</h2>
@@ -448,8 +442,8 @@ export default function FileManager({ token, onClose }: Props) {
               ) : '上传文件'}
             </button>
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { handleUpload(e.target.files); e.target.value = '' }} />
-            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors" title="关闭">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            <button onClick={onClose} className="text-xs text-gray-400 hover:text-emerald-600 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors shrink-0" title="返回笔记工作区">
+              返回笔记
             </button>
           </div>
         </div>
@@ -660,7 +654,6 @@ export default function FileManager({ token, onClose }: Props) {
             </div>
           </div>
         </div>
-      </div>
 
       {/* 图片预览 */}
       {preview?.type === 'image' && (
