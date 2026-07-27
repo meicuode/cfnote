@@ -248,9 +248,17 @@ export default function BlogPage() {
   const [showTop, setShowTop] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
 
-  // 详情渲染后做代码高亮 + 公式渲染(懒加载 hljs/KaTeX)
+  // 详情渲染后做代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid)。
+  // 与编辑器预览同一套路,用 MutationObserver 兜底重跑(各库靠 data-* 标记幂等,不会重复处理):
+  // 一次性 effect 在异步 import 期间若遇到 React 重渲染(主题切换/热榜/评论加载)或内容注入,
+  // 捕获到的旧节点可能被换掉导致高亮丢失;观察者在 DOM 落定后再增强,确保稳定生效。
   useEffect(() => {
-    if (detail && contentRef.current) enhanceRendered(contentRef.current)
+    const root = contentRef.current
+    if (!detail || !root) return
+    enhanceRendered(root)
+    const mo = new MutationObserver(() => enhanceRendered(root))
+    mo.observe(root, { childList: true, subtree: true })
+    return () => mo.disconnect()
   }, [detail])
 
   useEffect(() => {
