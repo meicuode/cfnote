@@ -381,6 +381,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
 | `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
 | `?panel=files\|settings\|stats\|logs\|blog\|comments` | 叠加在基础路径上的主模块面板。**文件管理(files)与博客管理(blog/comments)为内联工作区视图**(占据侧栏右侧区域,非弹窗);设置/统计/日志仍为叠层面板 |
+| `&fm=unref\|nb:<id>\|folder:<id>` | 文件管理子视图(P11.6,侧栏二级菜单选中项);默认「全部文件」不写入,非法值与非 files 面板一律忽略 |
 | `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
 
 - **双向同步机制**:`URL→视图` 在首次笔记本加载后(及 `popstate`)`parseLocation` 套用到 `activeNotebook/activeArticle/面板`;`视图→URL` 以 20ms 去抖把「选笔记本→清空文章」等同步级联并为一次 `pushState`。**防环**靠幂等等值比较(目标 URL 已等于当前则不写)+ `applyingRef` 在套用期间抑制回写(状态落位后自动释放)。
@@ -446,6 +447,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 - 文章与附件无表级强关联，靠内容中的 URL（`extractFileKeys`）派生 `article_files` 引用索引；删除文章按引用计数清理 R2。
 - **访问分级**：匿名请求仅当 key 被某篇「公开且非私有」或「有未过期私密分享」的文章引用才放行，否则 404；「我的私密文件夹」子树的附件对匿名一票否决。取消公开后新访客最多 5 分钟内失效（Cache API 缓存判定）。
 - XMind 文件在编辑器内以缩略图卡片呈现，双击打开在线查看/编辑并回存 R2。
+- 文件管理界面（P11.5/P11.6）：内联占据侧栏右侧工作区；导航（全部文件/未引用/笔记附件/我的文件夹树）是侧栏「文件管理」下的二级菜单，仅进入时展开。侧栏导航与右侧列表共用 `src/hooks/useFileManager.ts` 的 `overview` 与文件夹增删改，单次拉取、双向同步刷新。
 
 ## 10. 公开博客与分享（详见 public-blog.md、evernote-gap.md）
 

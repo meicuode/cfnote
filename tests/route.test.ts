@@ -66,6 +66,41 @@ describe('parseLocation', () => {
     expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'comments' })).toBe('/?panel=comments')
   })
 
+  // P11.6:文件管理子视图(侧栏二级菜单)进 URL
+  it('?fm= 解析:unref / nb:id / folder:id', () => {
+    expect(parseLocation('/nb/5', '?panel=files&fm=unref').fm).toEqual({ kind: 'unref' })
+    expect(parseLocation('/nb/5', '?panel=files&fm=nb:7').fm).toEqual({ kind: 'notebook', id: 7 })
+    expect(parseLocation('/nb/5', '?panel=files&fm=folder:3').fm).toEqual({ kind: 'folder', id: 3 })
+  })
+
+  it('?fm= 非法值与非 files 面板一律回落 null', () => {
+    expect(parseLocation('/nb/5', '?panel=files&fm=bogus').fm).toBeNull()
+    expect(parseLocation('/nb/5', '?panel=files&fm=folder:0').fm).toBeNull()
+    expect(parseLocation('/nb/5', '?panel=files&fm=nb:abc').fm).toBeNull()
+    // 面板不是文件管理时,fm 无意义
+    expect(parseLocation('/nb/5', '?panel=blog&fm=folder:3').fm).toBeNull()
+    expect(parseLocation('/nb/5', '?fm=folder:3').fm).toBeNull()
+  })
+
+  it('fm 生成:仅 panel=files 且非 all 时才写进 URL', () => {
+    const view: RouteView = { kind: 'notebook', id: 5 }
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: { kind: 'folder', id: 3 } })).toBe('/nb/5?panel=files&fm=folder:3')
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: { kind: 'notebook', id: 7 } })).toBe('/nb/5?panel=files&fm=nb:7')
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: { kind: 'all' } })).toBe('/nb/5?panel=files')
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: null })).toBe('/nb/5?panel=files')
+    // 别的面板不带 fm
+    expect(buildLocation({ view, articleId: null, panel: 'blog', fm: { kind: 'folder', id: 3 } })).toBe('/nb/5?panel=blog')
+  })
+
+  it('fm 往返一致', () => {
+    const subs = [{ kind: 'unref' }, { kind: 'notebook', id: 7 }, { kind: 'folder', id: 3 }] as const
+    for (const fm of subs) {
+      const loc = buildLocation({ view: { kind: 'trash' }, articleId: null, panel: 'files', fm })
+      const [path, search] = loc.split('?')
+      expect(parseLocation(path, '?' + search).fm).toEqual(fm)
+    }
+  })
+
   it('兼容深链 ?article=7', () => {
     const r = parseLocation('/', '?article=7')
     expect(r.legacyArticleId).toBe(7)

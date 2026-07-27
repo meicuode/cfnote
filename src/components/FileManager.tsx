@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
-import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS, type FolderNode, type FolderRow } from '../lib/fmUtils'
+import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS, type FolderNode } from '../lib/fmUtils'
+import type { FmView, UseFileManager } from '../hooks/useFileManager'
 
 const XmindViewer = lazy(() => import('./XmindViewer'))
 
-// 文件管理页(P8.2,见 docs/file-manager.md):全屏面板,管理应用内全部附件。
-// 左栏:全部/未引用/笔记附件(按笔记本,派生只读)/我的文件夹(虚拟目录,移动改名不影响链接);
-// 右侧:分类筛选+名称搜索+列表(预览/复制链接/重命名/移动/删除),顶部统计与扫描登记/上传。
+// 文件管理页(P8.2,见 docs/file-manager.md):管理应用内全部附件。
+// P11.5 起内联展示;P11.6 起左栏(全部/未引用/笔记附件/我的文件夹)上移为应用侧栏二级菜单
+// (见 FileManagerNav.tsx),本组件只负责右侧:分类筛选+名称搜索+列表(预览/复制链接/重命名/移动/删除),
+// 顶部统计与扫描登记/上传。overview 与文件夹增删改由 useFileManager 共享。
 
 interface Props {
   token: string
   onClose: () => void
+  /** 当前子视图(与 URL 同步,由 Layout 持有) */
+  view: FmView
+  onChangeView: (v: FmView) => void
+  /** 与侧栏二级菜单共享的 overview / 文件夹操作 */
+  fm: UseFileManager
 }
 
 interface FmFile {
@@ -32,13 +39,6 @@ interface FmFile {
   is_private_file: boolean
 }
 
-interface FmOverview {
-  stats: { count: number; size: number }
-  unref_count: number
-  notebooks: { id: number; name: string; color: string; file_count: number }[]
-  folders: (FolderRow & { created_at: string })[]
-}
-
 interface RefItem {
   id: number
   title: string
@@ -47,12 +47,6 @@ interface RefItem {
   updated_at: string
   notebook: string | null
 }
-
-type View =
-  | { kind: 'all' }
-  | { kind: 'unref' }
-  | { kind: 'notebook'; id: number; name: string }
-  | { kind: 'folder'; id: number; name: string }
 
 const CATE_LABEL: Record<string, string> = { image: '图片', doc: '文档', other: '其他' }
 const R2_FREE = 10 * 1024 * 1024 * 1024
@@ -67,14 +61,12 @@ const fmtDateTime = (s: string) => {
 
 let uploadUid = 0
 
-export default function FileManager({ token, onClose }: Props) {
-  const [overview, setOverview] = useState<FmOverview | null>(null)
-  const [view, setView] = useState<View>({ kind: 'all' })
+export default function FileManager({ token, onClose, view, onChangeView, fm }: Props) {
+  const { overview, reloadOverview, notice, flash } = fm
   const [category, setCategory] = useState<'all' | 'image' | 'doc' | 'other'>('all')
   const [q, setQ] = useState('')
   const [qDebounced, setQDebounced] = useState('')
   const [files, setFiles] = useState<FmFile[] | null>(null)
-  const [notice, setNotice] = useState('')
   const [scanBusy, setScanBusy] = useState(false)
   // 上传占位:列表顶部逐个显示上传中的文件行,完成一个消掉一个
   const [uploadingItems, setUploadingItems] = useState<{ uid: number; name: string; size: number }[]>([])
@@ -90,12 +82,6 @@ export default function FileManager({ token, onClose }: Props) {
   const [moveTarget, setMoveTarget] = useState<FmFile | null>(null)
   const [refsDialog, setRefsDialog] = useState<{ file: FmFile; refs: RefItem[] } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ file: FmFile; refs: RefItem[] } | null>(null)
-  const [folderInput, setFolderInput] = useState<{ parent: number | null; parentName?: string } | null>(null)
-  const [folderName, setFolderName] = useState('')
-  const [folderRename, setFolderRename] = useState<FolderRow | null>(null)
-  const [folderRenameVal, setFolderRenameVal] = useState('')
-  const [folderDelete, setFolderDelete] = useState<FolderRow | null>(null)
-  const [folderMove, setFolderMove] = useState<FolderNode | null>(null)
   // 分享对话框:对着一份本地文件快照操作,生成/取消后同步回列表
   const [shareDialog, setShareDialog] = useState<FmFile | null>(null)
   const [sharePreset, setSharePreset] = useState<number | null>(604800)
@@ -114,11 +100,6 @@ export default function FileManager({ token, onClose }: Props) {
     [token]
   )
 
-  const loadOverview = useCallback(async () => {
-    const j = await api('/api/fm/overview').catch(() => null)
-    if (j?.ok) setOverview(j.data)
-  }, [api])
-
   const loadFiles = useCallback(async () => {
     const p = new URLSearchParams({ view: view.kind })
     if (view.kind === 'notebook') p.set('notebook', String(view.id))
@@ -129,8 +110,9 @@ export default function FileManager({ token, onClose }: Props) {
     setFiles(j?.ok ? j.data.files : [])
   }, [api, view, category, qDebounced])
 
-  useEffect(() => { loadOverview() }, [loadOverview])
-  useEffect(() => { setFiles(null); loadFiles() }, [loadFiles])
+  // overview 由 Layout 在进入文件管理时统一加载(侧栏二级菜单与这里共用同一份)
+  // fm.tick:侧栏做完文件夹移动等结构性改动后自增,这里据此重拉文件
+  useEffect(() => { setFiles(null); loadFiles() }, [loadFiles, fm.tick])
   useEffect(() => {
     const t = setTimeout(() => setQDebounced(q.trim()), 300)
     return () => clearTimeout(t)
@@ -139,12 +121,8 @@ export default function FileManager({ token, onClose }: Props) {
   // 注:P11.5 改为内联模块后不再监听 Esc 关闭整个视图——搜索框里按 Esc 会误关工作区。
   // 各子弹窗(重命名/移动/分享等)自身的 Esc 关闭仍在各自处理。
 
-  const refresh = useCallback(() => { loadOverview(); loadFiles() }, [loadOverview, loadFiles])
-
-  const flash = (msg: string) => {
-    setNotice(msg)
-    setTimeout(() => setNotice(''), 3000)
-  }
+  // 刷新:文件列表 + overview(后者驱动侧栏二级菜单的计数与文件夹树)
+  const refresh = useCallback(() => { reloadOverview(); loadFiles() }, [reloadOverview, loadFiles])
 
   // ---- 操作 ----
 
@@ -209,40 +187,7 @@ export default function FileManager({ token, onClose }: Props) {
     refresh()
   }
 
-  const submitFolderCreate = async () => {
-    if (!folderInput || !folderName.trim()) return
-    const j = await api('/api/fm/folders', { method: 'POST', body: JSON.stringify({ name: folderName.trim(), parent_id: folderInput.parent }) })
-    if (!j?.ok) flash(j?.error || '创建失败')
-    setFolderInput(null)
-    setFolderName('')
-    loadOverview()
-  }
-
-  const submitFolderRename = async () => {
-    if (!folderRename || !folderRenameVal.trim()) return
-    const j = await api(`/api/fm/folders/${folderRename.id}`, { method: 'PUT', body: JSON.stringify({ name: folderRenameVal.trim() }) })
-    if (!j?.ok) flash(j?.error || '重命名失败')
-    setFolderRename(null)
-    loadOverview()
-  }
-
-  const submitFolderDelete = async () => {
-    if (!folderDelete) return
-    const j = await api(`/api/fm/folders/${folderDelete.id}`, { method: 'DELETE' })
-    if (!j?.ok) flash(j?.error || '删除失败')
-    else if (view.kind === 'folder' && view.id === folderDelete.id) setView({ kind: 'all' })
-    setFolderDelete(null)
-    loadOverview()
-  }
-
-  const submitFolderMove = async (parentId: number | null) => {
-    if (!folderMove) return
-    const j = await api(`/api/fm/folders/${folderMove.id}`, { method: 'PUT', body: JSON.stringify({ parent_id: parentId }) })
-    if (!j?.ok) flash(j?.error || '移动失败')
-    else if (j.data?.revoked_shares > 0) flash(`已移入私密文件夹,取消了 ${j.data.revoked_shares} 个文件的分享`)
-    setFolderMove(null)
-    refresh()
-  }
+  // 文件夹增删改移已上移到 useFileManager + FileManagerNav(侧栏二级菜单)
 
   // ---- 分享 ----
 
@@ -331,83 +276,12 @@ export default function FileManager({ token, onClose }: Props) {
   // 私密子树(「我的私密文件夹」及其后代):锁图标、禁分享、移入撤销分享的判定都用它
   const privateIds = collectPrivateIds(overview?.folders || [])
 
-  const railItem = (active: boolean, onClick: () => void, content: ReactNode, extra?: ReactNode) => (
-    <button
-      onClick={onClick}
-      className={`w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors group ${
-        active ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-gray-700 hover:bg-gray-100'
-      }`}
-    >
-      {content}
-      {extra}
-    </button>
-  )
-
-  const renderFolder = (node: FolderNode, depth: number): ReactNode => (
-    <div key={node.id}>
-      <div style={{ paddingLeft: depth * 14 }}>
-        {railItem(
-          view.kind === 'folder' && view.id === node.id,
-          () => setView({ kind: 'folder', id: node.id, name: node.name }),
-          <>
-            <span className="shrink-0">{privateIds.has(node.id) ? '🔒' : '📁'}</span>
-            <span
-              className="truncate flex-1"
-              title={privateIds.has(node.id) ? '私密文件夹:其中的文件禁止公开访问与分享' : undefined}
-            >
-              {node.name}
-            </span>
-          </>,
-          <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-            <span
-              role="button"
-              title="新建子目录"
-              onClick={(e) => { e.stopPropagation(); setFolderInput({ parent: node.id, parentName: node.name }); setFolderName('') }}
-              className="p-0.5 rounded hover:bg-gray-200 text-gray-400"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M12 4v16m8-8H4" /></svg>
-            </span>
-            {/* 系统私密根目录不可改名/移动/删除,只留新建子目录 */}
-            {!node.is_private && (
-              <>
-                <span
-                  role="button"
-                  title="重命名"
-                  onClick={(e) => { e.stopPropagation(); setFolderRename(node); setFolderRenameVal(node.name) }}
-                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-                >
-                  ✏️
-                </span>
-                <span
-                  role="button"
-                  title="移动到其他文件夹"
-                  onClick={(e) => { e.stopPropagation(); setFolderMove(node) }}
-                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-                >
-                  ⇄
-                </span>
-                <span
-                  role="button"
-                  title="删除(须为空)"
-                  onClick={(e) => { e.stopPropagation(); setFolderDelete(node) }}
-                  className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-                >
-                  🗑
-                </span>
-              </>
-            )}
-          </span>
-        )}
-      </div>
-      {node.children.map((ch) => renderFolder(ch, depth + 1))}
-    </div>
-  )
-
+  // 标题按 id 从 overview 现取名字(改名后立即跟上;名字不再存进 view)
   const viewTitle =
     view.kind === 'all' ? '全部文件'
     : view.kind === 'unref' ? '未引用'
-    : view.kind === 'notebook' ? `笔记附件 · ${view.name}`
-    : `文件夹 · ${view.name}`
+    : view.kind === 'notebook' ? `笔记附件 · ${overview?.notebooks.find((n) => n.id === view.id)?.name ?? '…'}`
+    : `文件夹 · ${overview?.folders.find((f) => f.id === view.id)?.name ?? '…'}`
 
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
@@ -449,68 +323,7 @@ export default function FileManager({ token, onClose }: Props) {
         </div>
 
         <div className="flex-1 flex overflow-hidden">
-          {/* 左栏 */}
-          <div className="w-52 border-r border-gray-100 bg-gray-50/70 overflow-y-auto p-2 shrink-0 hidden sm:block">
-            {railItem(view.kind === 'all', () => setView({ kind: 'all' }), <><span className="shrink-0">🗂</span><span className="flex-1">全部文件</span></>)}
-            {railItem(
-              view.kind === 'unref',
-              () => setView({ kind: 'unref' }),
-              <><span className="shrink-0">🧹</span><span className="flex-1">未引用</span></>,
-              overview && overview.unref_count > 0 ? <span className="text-xs text-gray-400">{overview.unref_count}</span> : undefined
-            )}
-
-            <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider px-2.5 mt-3 mb-1">笔记附件</p>
-            {(overview?.notebooks || []).map((nb) =>
-              <div key={nb.id}>
-                {railItem(
-                  view.kind === 'notebook' && view.id === nb.id,
-                  () => setView({ kind: 'notebook', id: nb.id, name: nb.name }),
-                  <>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: nb.color }} />
-                    <span className="truncate flex-1">{nb.name}</span>
-                  </>,
-                  <span className="text-xs text-gray-400 shrink-0">{nb.file_count}</span>
-                )}
-              </div>
-            )}
-            {overview && overview.notebooks.length === 0 && (
-              <p className="text-[11px] text-gray-400 px-2.5 py-1">笔记里还没有附件</p>
-            )}
-
-            <div className="flex items-center justify-between px-2.5 mt-3 mb-1">
-              <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">我的文件夹</p>
-              <button
-                onClick={() => { setFolderInput({ parent: null }); setFolderName('') }}
-                className="p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
-                title="新建文件夹"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" d="M12 4v16m8-8H4" /></svg>
-              </button>
-            </div>
-            {folderInput && (
-              <div className="px-2.5 mb-1.5">
-                {folderInput.parentName && <p className="text-[11px] text-gray-400 mb-0.5">在「{folderInput.parentName}」下:</p>}
-                <input
-                  autoFocus
-                  value={folderName}
-                  onChange={(e) => setFolderName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') submitFolderCreate()
-                    if (e.key === 'Escape') setFolderInput(null)
-                  }}
-                  onBlur={() => { if (!folderName.trim()) setFolderInput(null) }}
-                  placeholder="文件夹名称"
-                  className="w-full text-xs border border-emerald-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-              </div>
-            )}
-            {folderTree.map((n) => renderFolder(n, 0))}
-            {overview && folderTree.length === 0 && !folderInput && (
-              <p className="text-[11px] text-gray-400 px-2.5 py-1">手工上传的文件可归入文件夹</p>
-            )}
-          </div>
-
-          {/* 右侧 */}
+          {/* 左栏已上移为侧栏二级菜单(P11.6,见 FileManagerNav.tsx) */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 shrink-0 flex-wrap">
               <span className="text-sm font-medium text-gray-800">{viewTitle}</span>
@@ -732,7 +545,7 @@ export default function FileManager({ token, onClose }: Props) {
                   ...flat(n.children, depth + 1),
                 ])
               })(folderTree, 0)}
-              {folderTree.length === 0 && <p className="px-3 py-3 text-xs text-gray-400">还没有文件夹,先在左栏新建一个</p>}
+              {folderTree.length === 0 && <p className="px-3 py-3 text-xs text-gray-400">还没有文件夹,先在侧栏「我的文件夹」新建一个</p>}
             </div>
           </div>
         </div>
@@ -845,49 +658,6 @@ export default function FileManager({ token, onClose }: Props) {
         )
       })()}
 
-      {/* 移动文件夹(排除自身及其子树;移入私密子树会取消其中文件的分享) */}
-      {folderMove && (() => {
-        const excluded = new Set<number>()
-        const walk = (n: FolderNode) => { excluded.add(n.id); n.children.forEach(walk) }
-        walk(folderMove)
-        return (
-          <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setFolderMove(null)}>
-            <div className="bg-white rounded-2xl shadow-2xl w-80 p-4" onMouseDown={(e) => e.stopPropagation()}>
-              <h3 className="text-sm font-semibold text-gray-900 mb-1">移动文件夹「{folderMove.name}」</h3>
-              <p className="text-[11px] text-gray-400 mb-2">
-                移动不影响任何文件链接。移入 🔒 私密文件夹后,其中所有文件禁止公开,已有分享会被取消。
-              </p>
-              <div className="max-h-60 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
-                <button
-                  onClick={() => submitFolderMove(null)}
-                  disabled={folderMove.parent_id == null}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50 disabled:opacity-40"
-                >
-                  (移到根目录)
-                </button>
-                {(function flat(nodes: FolderNode[], depth: number): ReactNode[] {
-                  return nodes.flatMap((n) => {
-                    if (excluded.has(n.id)) return []
-                    return [
-                      <button
-                        key={n.id}
-                        onClick={() => submitFolderMove(n.id)}
-                        disabled={folderMove.parent_id === n.id}
-                        className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 disabled:opacity-40"
-                        style={{ paddingLeft: 12 + depth * 16 }}
-                      >
-                        {privateIds.has(n.id) ? '🔒' : '📁'} {n.name}
-                      </button>,
-                      ...flat(n.children, depth + 1),
-                    ]
-                  })
-                })(folderTree, 0)}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
-
       {/* 删除文件确认 */}
       {deleteTarget && (
         <ConfirmDialog
@@ -900,36 +670,6 @@ export default function FileManager({ token, onClose }: Props) {
           confirmText={deleteTarget.refs.length > 0 ? '仍要删除' : '删除'}
           onConfirm={submitDelete}
           onCancel={() => setDeleteTarget(null)}
-        />
-      )}
-
-      {/* 文件夹重命名 */}
-      {folderRename && (
-        <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setFolderRename(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-80 p-4" onMouseDown={(e) => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">重命名文件夹</h3>
-            <input
-              autoFocus
-              value={folderRenameVal}
-              onChange={(e) => setFolderRenameVal(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitFolderRename(); if (e.key === 'Escape') setFolderRename(null) }}
-              className="w-full text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-400"
-            />
-            <div className="flex justify-end gap-2 mt-3">
-              <button onClick={() => setFolderRename(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100">取消</button>
-              <button onClick={submitFolderRename} className="px-3 py-1.5 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600">确定</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 删除文件夹确认(空目录) */}
-      {folderDelete && (
-        <ConfirmDialog
-          title={`删除文件夹「${folderDelete.name}」？`}
-          message="仅能删除空文件夹;若其中还有文件或子目录会被拒绝。"
-          onConfirm={submitFolderDelete}
-          onCancel={() => setFolderDelete(null)}
         />
       )}
     </div>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
@@ -15,6 +15,8 @@ interface Props {
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
   filesActive: boolean
+  /** 文件管理二级菜单(P11.6):仅进入文件管理时由 Layout 传入,退出为 null */
+  fileNavSlot?: ReactNode
   /** 博客管理当前子视图(null=未打开),用于高亮 */
   blogView: 'articles' | 'comments' | null
   onOpenBlog: (view: 'articles' | 'comments') => void
@@ -22,7 +24,7 @@ interface Props {
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, filesActive, blogView, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -249,6 +251,8 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             </span>
             <span className="truncate flex-1">文件管理</span>
           </button>
+          {/* 二级菜单(P11.6):全部文件/未引用/笔记附件/我的文件夹,仅进入文件管理时展开 */}
+          {fileNavSlot}
           {/* 网页剪藏(P9):打开 /clip 安装引导页(bookmarklet) */}
           <button
             onClick={() => window.open('/clip', '_blank', 'noopener')}

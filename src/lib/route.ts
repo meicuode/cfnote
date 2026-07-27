@@ -16,10 +16,19 @@ export type RouteView =
 
 export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | 'blog' | 'comments' | null
 
+/** 文件管理子视图(P11.6):侧栏二级菜单选中项;名字不入 URL,渲染时从 overview 现取 */
+export type FmSub =
+  | { kind: 'all' }
+  | { kind: 'unref' }
+  | { kind: 'notebook'; id: number }
+  | { kind: 'folder'; id: number }
+
 export interface MainRoute {
   view: RouteView
   articleId: number | null
   panel: RoutePanel
+  /** 仅在 panel==='files' 时有意义;null = 默认的「全部文件」 */
+  fm: FmSub | null
   /** 来自 ?article=<id> 的兼容深链;需异步拉文章定位其笔记本(见 Layout 初始化) */
   legacyArticleId: number | null
 }
@@ -41,12 +50,24 @@ function decode(seg: string): string {
   }
 }
 
+/** 解析 ?fm= :unref / nb:<id> / folder:<id>;其余(含 all 与非法值)→ null */
+function parseFm(raw: string | null, panel: RoutePanel): FmSub | null {
+  if (panel !== 'files' || !raw) return null
+  if (raw === 'unref') return { kind: 'unref' }
+  const m = /^(nb|folder):(\d+)$/.exec(raw)
+  if (!m) return null
+  const id = posInt(m[2])
+  if (!id) return null
+  return m[1] === 'nb' ? { kind: 'notebook', id } : { kind: 'folder', id }
+}
+
 /** 解析 location.pathname + location.search → 结构化路由 */
 export function parseLocation(pathname: string, search: string): MainRoute {
   const params = new URLSearchParams(search || '')
   const rawPanel = params.get('panel')
   const panel: RoutePanel = (PANELS as readonly string[]).includes(rawPanel || '') ? (rawPanel as RoutePanel) : null
   const legacyArticleId = posInt(params.get('article'))
+  const fm = parseFm(params.get('fm'), panel)
 
   const segs = (pathname || '/').split('/').filter(Boolean).map(decode)
   let view: RouteView = { kind: 'none' }
@@ -69,11 +90,11 @@ export function parseLocation(pathname: string, search: string): MainRoute {
     articleId = posInt(segs[2])
   }
 
-  return { view, articleId, panel, legacyArticleId }
+  return { view, articleId, panel, fm, legacyArticleId }
 }
 
 /** 结构化路由 → location 字符串(pathname + search),供 push/replaceState */
-export function buildLocation(r: { view: RouteView; articleId: number | null; panel: RoutePanel }): string {
+export function buildLocation(r: { view: RouteView; articleId: number | null; panel: RoutePanel; fm?: FmSub | null }): string {
   let base = '/'
   switch (r.view.kind) {
     case 'notebook':
@@ -94,7 +115,11 @@ export function buildLocation(r: { view: RouteView; articleId: number | null; pa
   }
   // 文章 id 仅在 >0 且有基础视图时追加(none 视图不挂文章)
   if (r.view.kind !== 'none' && r.articleId && r.articleId > 0) base += `/${r.articleId}`
-  const search = r.panel ? `?panel=${r.panel}` : ''
+  let search = r.panel ? `?panel=${r.panel}` : ''
+  // 文件管理子视图:仅非默认(all)时才写,保持 URL 干净
+  if (search && r.panel === 'files' && r.fm && r.fm.kind !== 'all') {
+    search += `&fm=${r.fm.kind === 'unref' ? 'unref' : r.fm.kind === 'notebook' ? `nb:${r.fm.id}` : `folder:${r.fm.id}`}`
+  }
   return base + search
 }
 

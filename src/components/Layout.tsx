@@ -13,10 +13,13 @@ import RemindersPanel from './RemindersPanel'
 import { isDue, type ReminderItem } from '../lib/reminders'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import type { Notebook, Article } from '../types'
-import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel } from '../lib/route'
+import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
+import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
 const FileManager = lazy(() => import('./FileManager'))
+// 文件管理二级菜单(P11.6,懒加载):渲染进侧栏「文件管理」之下
+const FileManagerNav = lazy(() => import('./FileManagerNav'))
 // 博客管理页(P11.1,懒加载):管理已公开文章(+ 后续评论审核)
 const BlogManager = lazy(() => import('./BlogManager'))
 
@@ -28,6 +31,8 @@ interface Props {
 
 export default function Layout({ token, username, onLogout }: Props) {
   const { get, post, put, del } = useApi(token, onLogout)
+  // 文件管理共享数据(P11.6):侧栏二级菜单与右侧文件列表同一份 overview / 文件夹操作
+  const fm = useFileManager(token)
   const [notebooks, setNotebooks] = useState<Notebook[]>([])
   const [activeNotebook, setActiveNotebook] = useState<Notebook | null>(null)
   const [articles, setArticles] = useState<Article[]>([])
@@ -38,6 +43,8 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
+  // 文件管理子视图(P11.6):与 URL 的 ?fm= 同步,侧栏二级菜单与右侧列表共用
+  const [fmView, setFmView] = useState<FmView>({ kind: 'all' })
   // 博客管理(P11.4):内联模块,null=不显示;'articles'/'comments' 为两个子视图(对应 ?panel=blog|comments)
   const [blogView, setBlogView] = useState<'articles' | 'comments' | null>(null)
   const [importing, setImporting] = useState(false)
@@ -118,13 +125,20 @@ export default function Layout({ token, username, onLogout }: Props) {
     window.addEventListener('mouseup', onUp)
   }
 
+  // 退出文件管理:子视图一并回到「全部文件」,下次进入不残留上次停在的文件夹
+  const closeFiles = useCallback(() => { setShowFiles(false); setFmView({ kind: 'all' }) }, [])
+
+  // 进入文件管理时加载共享 overview(侧栏二级菜单与右侧列表同一份;不进入则完全不拉)
+  const reloadFmOverview = fm.reloadOverview
+  useEffect(() => { if (showFiles) reloadFmOverview() }, [showFiles, reloadFmOverview])
+
   // 从 AI 对话/搜索打开文章:可携带引用片段用于定位高亮
   const openArticleWithSnippet = (id: number, snippet?: string) => {
     loadArticleDetail(id)
     if (snippet) setHighlight({ text: snippet, ts: Date.now() })
     // 打开文章即回到笔记工作区(否则被博客管理/文件管理内联模块挡住)
     setBlogView(null)
-    setShowFiles(false)
+    closeFiles()
   }
 
   const loadNotebooks = useCallback(async () => {
@@ -205,6 +219,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     if (r.articleId) loadArticleDetail(r.articleId)
     else setActiveArticle(null)
     setShowFiles(r.panel === 'files')
+    setFmView(r.fm ?? { kind: 'all' })
     setShowSettings(r.panel === 'settings')
     setShowStats(r.panel === 'stats')
     setShowLogs(r.panel === 'logs')
@@ -223,8 +238,9 @@ export default function Layout({ token, username, onLogout }: Props) {
       blogView === 'articles' ? 'blog'
       : blogView === 'comments' ? 'comments'
       : showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
-    return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel })
-  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs, blogView])
+    const fm: FmSub | null = showFiles ? fmView : null
+    return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel, fm })
+  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs, blogView, fmView])
 
   // 首次加载完笔记本后:按 URL 恢复视图(兼容 /?article= 深链;裸根路径回退 localStorage)。
   // 全程置 applyingRef,落位到目标 URL 后由「视图→URL」effect 自动释放;2s 兜底防异步失败永久抑制。
@@ -620,13 +636,18 @@ export default function Layout({ token, username, onLogout }: Props) {
             notebooks={notebooks}
             activeNotebook={activeNotebook}
             tags={tags}
-            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); setShowFiles(false) }}
+            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); closeFiles() }}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
             onOpenFiles={() => { setShowFiles(true); setBlogView(null) }}
             filesActive={showFiles}
+            fileNavSlot={showFiles ? (
+              <Suspense fallback={<p className="pl-8 py-1 text-[11px] text-gray-400">加载中…</p>}>
+                <FileManagerNav view={fmView} onChangeView={setFmView} fm={fm} />
+              </Suspense>
+            ) : null}
             blogView={blogView}
-            onOpenBlog={(v) => { setBlogView(v); setShowFiles(false) }}
+            onOpenBlog={(v) => { setBlogView(v); closeFiles() }}
           />
         </div>
 
@@ -648,7 +669,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           /* 文件管理(P11.5):同样内联展示,不再弹窗 */
           <div className="flex-1 overflow-hidden">
             <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
-              <FileManager token={token} onClose={() => setShowFiles(false)} />
+              <FileManager token={token} onClose={closeFiles} view={fmView} onChangeView={setFmView} fm={fm} />
             </Suspense>
           </div>
         ) : (
