@@ -38,7 +38,8 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showSettings, setShowSettings] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
-  const [showBlog, setShowBlog] = useState(false)
+  // 博客管理(P11.4):内联模块,null=不显示;'articles'/'comments' 为两个子视图(对应 ?panel=blog|comments)
+  const [blogView, setBlogView] = useState<'articles' | 'comments' | null>(null)
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('cfnote-sidebar-open') !== '0')
   const toggleSidebar = () =>
@@ -121,6 +122,7 @@ export default function Layout({ token, username, onLogout }: Props) {
   const openArticleWithSnippet = (id: number, snippet?: string) => {
     loadArticleDetail(id)
     if (snippet) setHighlight({ text: snippet, ts: Date.now() })
+    setBlogView(null) // 打开文章即回到笔记工作区(否则被博客管理内联模块挡住)
   }
 
   const loadNotebooks = useCallback(async () => {
@@ -204,7 +206,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     setShowSettings(r.panel === 'settings')
     setShowStats(r.panel === 'stats')
     setShowLogs(r.panel === 'logs')
-    setShowBlog(r.panel === 'blog')
+    setBlogView(r.panel === 'blog' ? 'articles' : r.panel === 'comments' ? 'comments' : null)
   }, [notebooks, loadArticleDetail])
 
   // 由当前 state 反推规范 URL(pathname+search)
@@ -215,9 +217,12 @@ export default function Layout({ token, username, onLogout }: Props) {
       : activeNotebook.id === TRASH_NOTEBOOK.id ? { kind: 'trash' }
       : activeNotebook.id === TAG_VIEW_ID ? { kind: 'tag', name: activeNotebook.name }
       : { kind: 'notebook', id: activeNotebook.id }
-    const panel: RoutePanel = showBlog ? 'blog' : showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
+    const panel: RoutePanel =
+      blogView === 'articles' ? 'blog'
+      : blogView === 'comments' ? 'comments'
+      : showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
     return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel })
-  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs, showBlog])
+  }, [activeNotebook, activeArticle, showFiles, showSettings, showStats, showLogs, blogView])
 
   // 首次加载完笔记本后:按 URL 恢复视图(兼容 /?article= 深链;裸根路径回退 localStorage)。
   // 全程置 applyingRef,落位到目标 URL 后由「视图→URL」effect 自动释放;2s 兜底防异步失败永久抑制。
@@ -613,14 +618,31 @@ export default function Layout({ token, username, onLogout }: Props) {
             notebooks={notebooks}
             activeNotebook={activeNotebook}
             tags={tags}
-            onSelect={setActiveNotebook}
+            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null) }}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
             onOpenFiles={() => setShowFiles(true)}
-            onOpenBlog={() => setShowBlog(true)}
+            blogView={blogView}
+            onOpenBlog={(v) => setBlogView(v)}
           />
         </div>
 
+        {blogView ? (
+          /* 博客管理(P11.4):内联占据侧栏右侧整个工作区,不再弹窗 */
+          <div className="flex-1 overflow-hidden">
+            <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
+              <BlogManager
+                token={token}
+                notebooks={notebooks}
+                tab={blogView}
+                onTabChange={(v) => setBlogView(v)}
+                onClose={() => setBlogView(null)}
+                onOpenArticle={openArticleWithSnippet}
+              />
+            </Suspense>
+          </div>
+        ) : (
+          <>
         <div className="relative border-r border-gray-200 bg-white shrink-0 flex flex-col overflow-hidden" style={{ width: listWidth }}>
           <ArticleList
             articles={articles}
@@ -681,6 +703,8 @@ export default function Layout({ token, username, onLogout }: Props) {
             />
           </div>
         </div>
+          </>
+        )}
       </div>
 
       {showSearch && (
@@ -712,12 +736,6 @@ export default function Layout({ token, username, onLogout }: Props) {
       {showFiles && (
         <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
           <FileManager token={token} onClose={() => setShowFiles(false)} />
-        </Suspense>
-      )}
-
-      {showBlog && (
-        <Suspense fallback={<div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
-          <BlogManager token={token} notebooks={notebooks} onClose={() => setShowBlog(false)} onOpenArticle={openArticleWithSnippet} />
         </Suspense>
       )}
 

@@ -13,12 +13,14 @@ interface Props {
   onCreate: (name: string) => Promise<any>
   onDelete: (id: number) => Promise<any>
   onOpenFiles: () => void
-  onOpenBlog: () => void
+  /** 博客管理当前子视图(null=未打开),用于高亮 */
+  blogView: 'articles' | 'comments' | null
+  onOpenBlog: (view: 'articles' | 'comments') => void
 }
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -200,18 +202,35 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             </span>
             <span className="truncate flex-1">回收站</span>
           </button>
-          {/* 博客管理(P11):管理所有已公开文章 + 评论审核 */}
+          {/* 博客管理(P11):管理所有已公开文章;下挂「评论管理」二级菜单。内联展示于右侧工作区 */}
           <button
-            onClick={onOpenBlog}
-            className="w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-            title="管理已公开的博客文章与评论"
+            onClick={() => onOpenBlog('articles')}
+            className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${
+              blogView === 'articles' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-gray-700 hover:bg-gray-100'
+            }`}
+            title="管理已公开的博客文章"
           >
-            <span className="text-gray-400 shrink-0">
+            <span className={`shrink-0 ${blogView === 'articles' ? 'text-emerald-500' : 'text-gray-400'}`}>
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785A5.969 5.969 0 006 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337z" />
               </svg>
             </span>
             <span className="truncate flex-1">博客管理</span>
+          </button>
+          {/* 二级菜单:评论管理(P11.2 审核入口) */}
+          <button
+            onClick={() => onOpenBlog('comments')}
+            className={`w-full text-left flex items-center gap-2.5 pl-8 pr-2.5 py-1.5 rounded-lg text-[13px] transition-colors ${
+              blogView === 'comments' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
+            }`}
+            title="审核访客评论:通过/拒绝/回复/删除"
+          >
+            <span className={`shrink-0 ${blogView === 'comments' ? 'text-emerald-500' : 'text-gray-400'}`}>
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">评论管理</span>
           </button>
           {/* 文件管理(P8.2):管理应用内全部附件 */}
           <button

@@ -200,7 +200,7 @@ articles.get('/published', async (c) => {
               a.published_at, a.updated_at, a.views, a.tags
          FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
         WHERE ${conds.join(' AND ')}
-        ORDER BY COALESCE(a.published_at, a.updated_at) DESC
+        ORDER BY a.updated_at DESC
         LIMIT 500`
     ).bind(...binds).all()
     return ok(results)

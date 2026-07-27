@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
 import type { Notebook } from '../types'
 
-// 博客管理(P11.1 + P11.2):全屏模块。「已公开文章」tab 管理博客发布;「评论」tab 审核访客评论。
-// 照搬 FileManager 的全屏叠层骨架;评论正文纯文本展示。
+// 博客管理(P11.1 + P11.2;P11.4 改为内联模块):占据侧栏右侧整个工作区,不再是弹窗遮罩。
+// 「已公开文章」按修改时间降序 + 标题搜索;「评论」为侧栏二级菜单进入的同级子视图(由 URL ?panel=blog|comments 驱动)。
+// 评论正文纯文本展示。
 
 interface PublishedArticle {
   id: number
@@ -33,6 +34,10 @@ interface AdminComment {
 interface Props {
   token: string
   notebooks: Notebook[]
+  /** 当前子视图,由 URL(?panel=blog|comments)驱动 */
+  tab: 'articles' | 'comments'
+  onTabChange: (tab: 'articles' | 'comments') => void
+  /** 返回笔记工作区 */
   onClose: () => void
   onOpenArticle: (id: number) => void
 }
@@ -46,9 +51,8 @@ function fmtTime(s: string | null): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-export default function BlogManager({ token, notebooks, onClose, onOpenArticle }: Props) {
+export default function BlogManager({ token, notebooks, tab, onTabChange, onClose, onOpenArticle }: Props) {
   const api = useApi(token)
-  const [tab, setTab] = useState<'articles' | 'comments'>('articles')
   const [pendingCount, setPendingCount] = useState(0)
 
   // ---- 文章 tab ----
@@ -89,11 +93,6 @@ export default function BlogManager({ token, notebooks, onClose, onOpenArticle }
     return () => clearTimeout(t)
   }, [loadArticles, tab])
   useEffect(() => { if (tab === 'comments') loadComments() }, [loadComments, tab])
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [onClose])
 
   const unpublish = async (id: number) => {
     setBusyId(id)
@@ -132,29 +131,27 @@ export default function BlogManager({ token, notebooks, onClose, onOpenArticle }
   }
 
   return (
-    <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center p-3 sm:p-6" onMouseDown={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full h-full max-w-[1000px] flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
-        {/* 顶栏 */}
-        <div className="px-4 pt-4 flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-7 h-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0">📢</span>
-            <span className="font-semibold text-gray-900">博客管理</span>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 shrink-0" title="关闭">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+    <div className="h-full flex flex-col bg-white overflow-hidden">
+      {/* 顶栏 */}
+      <div className="px-4 pt-4 flex items-center justify-between gap-3 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-7 h-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0">📢</span>
+          <span className="font-semibold text-gray-900">博客管理</span>
+          <span className="text-xs text-gray-400 truncate">{tab === 'articles' ? '已公开文章' : '评论审核'}</span>
         </div>
+        <button onClick={onClose} className="text-xs text-gray-400 hover:text-emerald-600 shrink-0 px-2 py-1 rounded-lg hover:bg-gray-100" title="返回笔记工作区">
+          返回笔记
+        </button>
+      </div>
 
-        {/* Tab 切换 */}
-        <div className="px-4 border-b border-gray-100 flex items-center gap-1 shrink-0">
-          <button onClick={() => setTab('articles')} className={tabCls(tab === 'articles')}>已公开文章{items ? ` (${items.length})` : ''}</button>
-          <button onClick={() => setTab('comments')} className={tabCls(tab === 'comments')}>
-            评论
-            {pendingCount > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">{pendingCount > 99 ? '99+' : pendingCount}</span>}
-          </button>
-        </div>
+      {/* 子视图切换(与侧栏二级菜单同源,点击即改 URL) */}
+      <div className="px-4 border-b border-gray-100 flex items-center gap-1 shrink-0">
+        <button onClick={() => onTabChange('articles')} className={tabCls(tab === 'articles')}>已公开文章{tab === 'articles' && items ? ` (${items.length})` : ''}</button>
+        <button onClick={() => onTabChange('comments')} className={tabCls(tab === 'comments')}>
+          评论管理
+          {pendingCount > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">{pendingCount > 99 ? '99+' : pendingCount}</span>}
+        </button>
+      </div>
 
         {tab === 'articles' ? (
           <>
@@ -178,7 +175,7 @@ export default function BlogManager({ token, notebooks, onClose, onOpenArticle }
                         <div className="text-sm font-medium text-gray-800 truncate">{a.title || '无标题'}</div>
                         <div className="text-[11px] text-gray-400 flex items-center gap-2 mt-0.5">
                           <span className="truncate max-w-[140px]">{a.notebook || '—'}</span>
-                          <span>· {fmtTime(a.published_at)}</span>
+                          <span title={`发布于 ${fmtTime(a.published_at)}`}>· 修改 {fmtTime(a.updated_at)}</span>
                           <span>· {a.views} 浏览</span>
                         </div>
                       </div>
@@ -242,7 +239,6 @@ export default function BlogManager({ token, notebooks, onClose, onOpenArticle }
             </div>
           </>
         )}
-      </div>
     </div>
   )
 }

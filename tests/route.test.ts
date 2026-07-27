@@ -58,6 +58,14 @@ describe('parseLocation', () => {
     expect(parseLocation('/nb/5', '?panel=bogus').panel).toBeNull()
   })
 
+  // P11.4:博客管理拆为两个内联子视图,各自可刷新保持
+  it('博客管理两个子视图 blog/comments 往返', () => {
+    expect(parseLocation('/nb/5', '?panel=blog').panel).toBe('blog')
+    expect(parseLocation('/nb/5', '?panel=comments').panel).toBe('comments')
+    expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'blog' })).toBe('/?panel=blog')
+    expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'comments' })).toBe('/?panel=comments')
+  })
+
   it('兼容深链 ?article=7', () => {
     const r = parseLocation('/', '?article=7')
     expect(r.legacyArticleId).toBe(7)

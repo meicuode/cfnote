@@ -60,6 +60,12 @@
 - **Mermaid**:预览 + 博客把 ` ```mermaid ` 代码块渲染为流程图/时序图/甘特图等 SVG。沿用 P10.5 的「渲染后懒加载增强」路子:`src/lib/renderEnhance.ts` 加 `renderMermaid`——扫描 `pre code.language-mermaid`(打 `data-mermaid` 幂等)→ **懒加载 mermaid 整库**(仅当页面含 mermaid 块才拉取,主包不受影响)→ `mermaid.render` 产出 SVG 替换代码块;`highlightCode` 选择器排除 `.language-mermaid` 以免被当普通代码高亮糊掉;跟随明暗主题(`dark`/`default`),`securityLevel:'strict'` 兜底;语法错误保留原始代码块并清理临时节点,绝不崩整页。无需 marked 扩展(mermaid 是标准围栏代码块,marked 原生输出 `language-mermaid`)。CSS `.cfnote-mermaid` 居中 + 过宽横向滚动。ArticleEditor 预览与 BlogPage 详情各自已挂 `enhanceRendered`,自动生效。纯前端,无 schema 改动。
 
 
+**P11.4(2026-07-27)✅**:博客管理改为内联模块 + 评论管理升为二级菜单。
+
+- **内联化**:此前「博客管理」是 `fixed inset-0` 全屏弹窗遮罩(照搬 FileManager),与「文章列表/编辑器」这类常驻工作区体验割裂,且评论审核藏在模块内部的 tab 里、侧栏看不出来。改为**内联占据侧栏右侧整个工作区**(文章列表+编辑器+AI 面板整体让位),侧栏始终可见可切换,顶栏提供「返回笔记」。侧栏「博客管理」下挂**二级菜单「评论管理」**(缩进 + 独立高亮),两者是同级子视图。路由:`RoutePanel` 加 `'comments'`,`?panel=blog`(文章)/`?panel=comments`(评论)各自刷新保持;Layout 的 `showBlog` 布尔换成 `blogView: 'articles'|'comments'|null` 三态,`applyRoute`/`currentTarget` 双向映射。选中任意笔记本/标签、或从搜索/AI/博客管理里打开文章,都会自动退出博客管理回到笔记(否则内联模块会挡住编辑器)。
+- **排序**:`GET /api/articles/published` 的 `ORDER BY` 从 `COALESCE(published_at, updated_at) DESC` 改为 **`updated_at DESC`**(按修改时间降序,最近改动的公开文章置顶),列表行相应显示「修改 时间」(发布时间移到 title 提示)。标题搜索与笔记本过滤保持不变。
+- 纯前端 + 1 处 SQL 排序调整,无 schema 改动;`+1` 路由用例(212 全绿)。
+
 ## 一、附件与「公开」的关系(现状盘点)
 
 附件模型(worker/routes/files.ts):

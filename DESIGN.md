@@ -315,7 +315,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | POST | `/api/articles` | 创建（自动向量化） |
 | GET/PUT/DELETE | `/api/articles/:id` | 详情 / 更新（内容变则重向量化）/ 软删除入回收站 |
 | POST | `/api/articles/import` | URL 导入（Jina Reader） |
-| GET | `/api/articles/private` `/published` `/tags` `/by-tag` `/trash` | 私有 / 已公开(博客管理) / 标签聚合 / 按标签 / 回收站视图 |
+| GET | `/api/articles/private` `/published` `/tags` `/by-tag` `/trash` | 私有 / 已公开(博客管理,按 updated_at 降序) / 标签聚合 / 按标签 / 回收站视图 |
 | POST | `/api/articles/trash/empty`、`/:id/restore`、DELETE `/:id/purge` | 清空/恢复/彻底删除 |
 | GET | `/api/articles/titles?q=`、`/:id/backlinks` | 笔记链接标题搜索 / 反向链接 |
 | GET | `/api/articles/:id/versions[/:vid]` | 版本历史列表（元信息）/ 单版本全文 |
@@ -380,7 +380,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | `/` | 未选笔记本(或回退 localStorage 恢复上次) |
 | `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
 | `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
-| `?panel=files\|settings\|stats\|logs\|blog` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志/博客管理) |
+| `?panel=files\|settings\|stats\|logs\|blog\|comments` | 叠加在基础路径上的主模块面板(文件管理/设置/统计/日志;博客管理的「已公开文章」与「评论管理」两个内联子视图) |
 | `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
 
 - **双向同步机制**:`URL→视图` 在首次笔记本加载后(及 `popstate`)`parseLocation` 套用到 `activeNotebook/activeArticle/面板`;`视图→URL` 以 20ms 去抖把「选笔记本→清空文章」等同步级联并为一次 `pushState`。**防环**靠幂等等值比较(目标 URL 已等于当前则不写)+ `applyingRef` 在套用期间抑制回写(状态落位后自动释放)。
@@ -452,7 +452,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 - `/blog` 免登录整站博客（IT之家风格，亮/暗双主题，热榜，浏览计数 Cache API 去重）；仅 `is_public=1 AND is_private=0 AND deleted_at IS NULL` 的笔记可见。
 - 发布前对全文做敏感信息扫描 + 附件清单目视确认（`sensitiveScan`）。
 - 私密分享：`articles.share_token/share_expires_at` 两列即全部状态（单分享），`/blog/share/<token>` 凭链接可看，不入列表/热榜、不计浏览量，过期 410；设为私有或移入回收站自动撤销。
-- 博客管理（P11.1）：侧栏「博客管理」全屏模块（`?panel=blog`），列出本人全部已公开文章（`GET /api/articles/published`），搜索/按笔记本过滤/预览/打开编辑/取消公开。
+- 博客管理（P11.1，P11.4 改内联）：侧栏「博客管理」**内联占据右侧工作区**（非弹窗，`?panel=blog`），列出本人全部已公开文章（`GET /api/articles/published`，**按 `updated_at` 降序**），搜索/按笔记本过滤/预览/打开编辑/取消公开；其下「评论管理」为二级菜单（`?panel=comments`）。
 - 评论（P11.2）：`comments` 表（`parent_id`/`root_id` 支持 2 层嵌套，`status` pending/approved/rejected，`is_admin` 博主回复，`ip_hash` 限流）；公开 `GET/POST /api/blog/comments`（POST 中间件单独放行，默认待审核、每 IP 每分钟限流、蜜罐、正文纯文本渲染防 XSS），鉴权 `/api/comments/*` 审核；开关与免审核存 `settings.comments_enabled/comments_auto_approve`；私密分享页不显示评论；待审可复用通知渠道推送。管理在「博客管理 → 评论」子 tab。
 
 ## 11. 项目结构
