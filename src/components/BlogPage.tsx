@@ -3,6 +3,7 @@ import { marked } from '../lib/markdown'
 import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
 import { commentAvatar } from '../lib/comments'
+import { slugifyHeading, tocIndent, MIN_TOC_HEADINGS, type TocItem } from '../lib/toc'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -318,6 +319,13 @@ export default function BlogPage() {
   const [showTop, setShowTop] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
 
+  // 章节目录(P11.8):默认收起,点左侧按钮展开。展开状态记在 localStorage——
+  // 习惯看目录的人翻下一篇不用再点一次,不看的人永远不受打扰。
+  const [toc, setToc] = useState<TocItem[]>([])
+  const [tocOpen, setTocOpen] = useState(() => {
+    try { return localStorage.getItem('cfnote-blog-toc') === '1' } catch { return false }
+  })
+
   // 详情渲染后做代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid)。
   // 与编辑器预览同一套路,用 MutationObserver 兜底重跑(各库靠 data-* 标记幂等,不会重复处理):
   // 一次性 effect 在异步 import 期间若遇到 React 重渲染(主题切换/热榜/评论加载)或内容注入,
@@ -336,6 +344,35 @@ export default function BlogPage() {
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
+
+  // 正文渲染后扫 h1~h3:打稳定 id(供 #锚点定位与分享)并生成目录。
+  // 属性写入不会触发上面那个 MutationObserver(它只观察 childList/subtree,不观察 attributes),无循环之虞。
+  useEffect(() => {
+    const root = contentRef.current
+    if (!detail || !root) { setToc([]); return }
+    const used = new Set<string>()
+    const items: TocItem[] = []
+    root.querySelectorAll<HTMLElement>('h1, h2, h3').forEach((el) => {
+      const text = (el.textContent || '').trim()
+      if (!text) return
+      const id = slugifyHeading(text, used)
+      el.id = id
+      el.classList.add('scroll-mt-20') // 让出 sticky 顶栏(h-14)
+      items.push({ id, text, level: Number(el.tagName[1]) })
+    })
+    setToc(items.length >= MIN_TOC_HEADINGS ? items : [])
+  }, [detail])
+
+  // 带 #章节 打开时滚过去(评论锚点 #comment-<id> 由评论区自己处理,两边靠 id 形态区分)
+  useEffect(() => {
+    if (toc.length === 0) return
+    const raw = window.location.hash.slice(1)
+    if (!raw) return
+    let id = raw
+    try { id = decodeURIComponent(raw) } catch { /* 非法转义:按原样匹配 */ }
+    if (!toc.some((t) => t.id === id)) return
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [toc])
 
   // 未手动选过主题时跟随系统实时变化;手动选择后固定
   useEffect(() => {
@@ -414,6 +451,26 @@ export default function BlogPage() {
   const goHome = () => {
     window.history.pushState(null, '', '/blog')
     setPostId(null)
+  }
+
+  // 目录浮层:视口够宽时它落在 1400px 容器外的留白里,不挡正文,可以一直开着;
+  // 窄于这个值就会压到正文上,此时按抽屉处理(点空白关、点章节跳完即关)。
+  const TOC_DOCK_MIN = 1880
+  // 展开/收起是明确的用户意图,写进 localStorage;点章节导致的临时收起不写。
+  const toggleToc = () =>
+    setTocOpen((v) => {
+      try { localStorage.setItem('cfnote-blog-toc', v ? '0' : '1') } catch { /* 隐私模式:不记忆 */ }
+      return !v
+    })
+  const gotoHeading = (id: string) => {
+    const el = document.getElementById(id)
+    if (!el) return
+    // replaceState 而非 push:地址栏变成可复制的 /blog/12#章节,但不往历史里塞一堆条目
+    window.history.replaceState(null, '', `${window.location.pathname}#${encodeURIComponent(id)}`)
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    el.classList.add('cfnote-highlight')
+    setTimeout(() => el.classList.remove('cfnote-highlight'), 2000)
+    if (window.innerWidth < TOC_DOCK_MIN) setTocOpen(false)
   }
 
   return (
@@ -602,6 +659,51 @@ export default function BlogPage() {
           )}
         </aside>
       </div>
+
+      {/* 章节目录(P11.8,详情页且 ≥3 个标题才出现):默认收起,左侧浮层。
+          left 用 max(...) 自适应——视口 ≥1880px 时整个浮层落在 1400px 容器外的留白里,不遮正文;
+          再窄就贴到边并按抽屉处理(见 TOC_DOCK_MIN)。 */}
+      {postId != null && toc.length > 0 && (
+        tocOpen ? (
+          <>
+            {/* 会压到正文的宽度下才给遮罩:点空白即收起 */}
+            <div onClick={toggleToc} className="fixed inset-0 z-20 min-[1880px]:hidden" aria-hidden />
+            <nav className="fixed left-[max(0.75rem,calc((100vw-1400px)/2-15rem))] top-20 z-30 w-56 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-lg bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-semibold text-[var(--blog-muted)] uppercase tracking-wider">本文目录</span>
+                <button onClick={toggleToc} title="收起目录" aria-label="收起目录" className="text-[var(--blog-muted)] hover:text-[#e05252] leading-none px-1">
+                  ✕
+                </button>
+              </div>
+              <ul>
+                {toc.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      onClick={() => gotoHeading(t.id)}
+                      title={t.text}
+                      className="block w-full text-left text-[13px] leading-snug py-1 truncate text-[var(--blog-muted)] hover:text-[#e05252] transition-colors"
+                      style={{ paddingLeft: tocIndent(t, toc) * 12 }}
+                    >
+                      {t.text}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </>
+        ) : (
+          <button
+            onClick={toggleToc}
+            aria-label="展开本文目录"
+            title="本文目录"
+            className="fixed left-[max(0.75rem,calc((100vw-1400px)/2-3.5rem))] top-20 z-30 w-9 h-9 rounded-full bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-lg flex items-center justify-center text-[var(--blog-muted)] opacity-60 hover:opacity-100 hover:bg-[#d43030] hover:border-[#d43030] hover:text-white transition-all"
+          >
+            <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
+            </svg>
+          </button>
+        )
+      )}
 
       {/* 回到顶部(详情页,滚过约一屏后淡入;悬浮转为主题红) */}
       <button
