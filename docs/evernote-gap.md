@@ -77,6 +77,14 @@
 - **子视图进 URL**:`route.ts` 加 `fm` 参数——`?panel=files&fm=unref|nb:<id>|folder:<id>`(默认「全部文件」不写,保持 URL 干净;非法值与非 files 面板一律回落 null),刷新与前进/后退可回到同一个文件夹。视图里**不再存名字**,标题按 id 从 overview 现取,顺带修掉「文件夹改名后标题不更新」。删除当前所在文件夹自动回落「全部文件」;退出文件管理时子视图重置。
 - 纯前端,无 schema 改动;+4 路由用例(216 全绿)。
 
+**P11.7(2026-07-27)✅**:代码高亮补语言 + WordPress 式待审评论 + 评论锚点 + 博客管理内联编辑。
+
+- **高亮补语言**:文章里的 PowerShell 代码块导致控制台 `WARN: Could not find the language 'powershell'`。根因是 `renderEnhance.ts` 用的 `highlight.js/lib/common` **只注册 36 种**语言(xml/bash/c/cpp/csharp/css/markdown/diff/ruby/go/graphql/ini/java/javascript/json/kotlin/less/lua/makefile/perl/objectivec/php/plaintext/python/r/rust/scss/shell/sql/swift/yaml/typescript/vbnet/wasm 等),而包内实际有 192 种,其余约 156 种(dockerfile/nginx/dos/http/scala/dart/elixir/haskell/groovy/matlab/latex/vim/awk/cmake/pgsql/protobuf…)都会报同样警告。**不引入完整 highlight.js**(高亮块会从 54KB gz 涨到 200KB+ gz,拖累博客访客),改为新增 `src/lib/hljsLanguages.ts`:`EXTRA_LANGS` 收录 31 个常用且不在 common 里的语言,值是 `() => import('highlight.js/lib/languages/powershell')` 这类**静态可分析的懒导入**(Vite 才能各切一个小块;模板字符串拼 node_modules 路径不可靠);`resolveLangAlias` 做别名归一(`ps`/`ps1`/`pwsh`→powershell、`docker`→dockerfile、`bat`/`cmd`→dos、`tex`→latex、`proto`→protobuf…)。`highlightCode` 先扫本次代码块用到的语言,对 `hljs.getLanguage()` 为空的按需 `import` + `registerLanguage`(模块级 `Set` 去重,同名只拉一次);**仍未注册的表外冷门语言则移除其 `language-xxx` 类**再交给自动检测——既不报警告也不至于完全无高亮。+4 用例。
+- **待审评论就地显示(参考 WordPress)**:匿名提交后原本只留一行「已提交,待审核」文字,刚写的内容当场消失像丢了。现在服务端 `POST /api/blog/comments` 额外回传 `id`/`parent_id`/`root_id`/`created_at`(仅加字段,无 schema 改动),前端把这条评论**就地渲染进线程**:整行 `opacity-60` 降调 + 「待审核」徽标 + 一行说明,不显示「回复」按钮、不计入评论总数。因为 `GET /comments` 只返回已通过的,待审那条另存 `localStorage`(键 `cfnote-pending-cmt-<articleId>`,类比 WordPress 用 cookie 记住作者),**刷新后仍在**;博主通过后其 id 出现在服务端线程里即自动清掉,超过 7 天未处理(多半被拒)也清掉。合并逻辑抽 `src/lib/pendingComments.ts` 纯函数(`addPending`/`prunePending`/`collectApprovedIds`/`mergePending`,回复挂到对应楼层、父楼被删则降级为顶层不丢失),+8 用例。
+- **评论锚点**:评论行外层加 `id="comment-<id>"` 与 `scroll-mt-24`;线程渲染完成后读 `location.hash`,命中则平滑滚到该楼并套**既有** `.cfnote-highlight`(6s 淡出动画,明暗两套,直接复用)。评论管理的「查看↗」相应改为 `/blog/<article_id>#comment-<id>`;待审评论在博客页尚无锚点,给按钮加 title 说明但不禁用。
+- **博客管理两栏可编辑**:原「已公开文章」是只读列表,想改内容得跳回笔记工作区。改为**常驻两栏**——左列表(搜索 + 笔记本过滤,两行式行:标题 / 笔记本 · 修改时间 · 浏览量,选中 emerald 高亮,悬浮才出「预览↗ / 取消公开」,右缘可拖拽,宽度存 `cfnote-blog-list-w`),右侧点选后 `GET /api/articles/:id` 取全文并**直接复用 `ArticleEditor`**,源码/富文本/预览三模式、标签、附件、公开开关、历史、提醒全部免费获得。保存走同一个 `PUT /api/articles/:id`,但**只就地更新该行的标题/时间、不重排列表**(列表按 `updated_at` 降序,立即重排会让正在编辑的条目从脚下跳走);在编辑器里取消公开/设为私有,或点行上的「取消公开」→ 该行移出列表并清空右栏。
+- 纯前端 + 1 处接口返回值扩充,无 schema 改动;+12 用例(228 全绿)。
+
 ## 一、附件与「公开」的关系(现状盘点)
 
 附件模型(worker/routes/files.ts):

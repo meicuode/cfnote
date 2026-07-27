@@ -1,6 +1,19 @@
-// 渲染后增强(P10.5 代码高亮/公式;P11.3 Mermaid 图表):对 marked 产出的 HTML 做增强处理。
+// 渲染后增强(P10.5 代码高亮/公式;P11.3 Mermaid 图表;P11.7 补充语言):对 marked 产出的 HTML 做增强处理。
 // highlight.js / KaTeX / mermaid 均按需懒加载——无对应内容的页面完全不拉取这些库。
 // 幂等:处理过的节点打标记,MutationObserver 反复触发也不会重复处理或死循环。
+
+import { EXTRA_LANGS, resolveLangAlias } from './hljsLanguages'
+
+// 已按需注册过的补充语言(每个 isolate 只注册一次)
+const registered = new Set<string>()
+
+/** 取代码块上的 language-xxx(mermaid 已在选择器里排除) */
+function langOf(el: HTMLElement): string | null {
+  for (const c of Array.from(el.classList)) {
+    if (c.startsWith('language-')) return c.slice(9)
+  }
+  return null
+}
 
 async function highlightCode(root: HTMLElement) {
   // 排除 mermaid 代码块(交给 renderMermaid;否则会被当普通代码高亮糊掉)
@@ -8,8 +21,35 @@ async function highlightCode(root: HTMLElement) {
   if (blocks.length === 0) return
   try {
     const hljs = (await import('highlight.js/lib/common')).default
+
+    // 先把本批用到、但基础包里没有的语言按需拉起来(common 只含 36 种)
+    const wanted = new Set<string>()
+    blocks.forEach((b) => {
+      const raw = langOf(b)
+      if (!raw || hljs.getLanguage(raw)) return
+      const key = resolveLangAlias(raw)
+      if (key && !registered.has(key)) wanted.add(key)
+    })
+    await Promise.all(
+      Array.from(wanted).map(async (key) => {
+        try {
+          const mod: any = await EXTRA_LANGS[key]()
+          hljs.registerLanguage(key, mod.default ?? mod)
+          registered.add(key)
+        } catch { /* 单个语言拉取失败:该块降级为自动检测 */ }
+      })
+    )
+
     blocks.forEach((b) => {
       b.setAttribute('data-hl', '')
+      // 仍未注册的语言(补充表外的冷门语言):去掉 language-xxx 交给自动检测,
+      // 否则 highlightElement 会打印 "Could not find the language" 警告。
+      const raw = langOf(b)
+      if (raw && !hljs.getLanguage(raw)) {
+        const alias = resolveLangAlias(raw)
+        if (alias && hljs.getLanguage(alias)) b.classList.replace(`language-${raw}`, `language-${alias}`)
+        else b.classList.remove(`language-${raw}`)
+      }
       try { hljs.highlightElement(b) } catch { /* 未知语言等:保持原样 */ }
     })
   } catch { /* 加载失败:代码块保持无高亮 */ }

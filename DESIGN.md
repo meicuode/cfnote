@@ -16,7 +16,7 @@
 | 样式 | Tailwind CSS 4 | 原子化 CSS，含深色映射 |
 | 构建工具 | Vite 6 | 快速构建，前端产物由 Workers Static Assets 直出 |
 | Markdown | marked（渲染）+ turndown（HTML→MD 反向转换） | 标准 Markdown |
-| 代码高亮/公式/图表 | highlight.js + KaTeX（`$…$`/`$$…$$`）+ mermaid（```mermaid）| 渲染后增强，均按需懒加载 |
+| 代码高亮/公式/图表 | highlight.js（`lib/common` 36 种 + `hljsLanguages.ts` 补 31 种按需注册）+ KaTeX（`$…$`/`$$…$$`）+ mermaid（```mermaid）| 渲染后增强，均按需懒加载 |
 | 富文本 | Tiptap（ProseMirror） | 所见即所得编辑，序列化回标准 Markdown |
 | 后端 API | Cloudflare Worker + Hono 路由 | `/api/*` 走 Worker，其余走静态资源（SPA 回退） |
 | 数据库 | Cloudflare D1 | 边缘 SQLite 数据库 |
@@ -348,7 +348,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 |------|------|------|
 | GET | `/api/blog/posts` `/:id` `/hot` | 博客列表 / 详情（计浏览）/ 热榜 |
 | GET | `/api/blog/share/:token` | 私密分享详情（不入列表/不计浏览，过期 410） |
-| GET/POST | `/api/blog/comments` | 某公开文章已通过评论（2 层线程）/ 访客提交（免登录，默认待审核，限流+蜜罐） |
+| GET/POST | `/api/blog/comments` | 某公开文章已通过评论（2 层线程）/ 访客提交（免登录，默认待审核，限流+蜜罐；POST 回传 `{status,id,parent_id,root_id,created_at}` 供前端就地渲染待审那条，P11.7） |
 | GET | `/api/comments` `/counts` | 评论审核列表 / 待审计数（鉴权，经文章所有权） |
 | POST | `/api/comments/:id/approve` `/reject` `/reply` | 通过 / 拒绝 / 博主回复（自动通过） |
 | DELETE | `/api/comments/:id` | 删除评论 |
@@ -454,8 +454,8 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 - `/blog` 免登录整站博客（IT之家风格，亮/暗双主题，热榜，浏览计数 Cache API 去重）；仅 `is_public=1 AND is_private=0 AND deleted_at IS NULL` 的笔记可见。
 - 发布前对全文做敏感信息扫描 + 附件清单目视确认（`sensitiveScan`）。
 - 私密分享：`articles.share_token/share_expires_at` 两列即全部状态（单分享），`/blog/share/<token>` 凭链接可看，不入列表/热榜、不计浏览量，过期 410；设为私有或移入回收站自动撤销。
-- 博客管理（P11.1，P11.4 改内联）：侧栏「博客管理」**内联占据右侧工作区**（非弹窗，`?panel=blog`），列出本人全部已公开文章（`GET /api/articles/published`，**按 `updated_at` 降序**），搜索/按笔记本过滤/预览/打开编辑/取消公开；其下「评论管理」为二级菜单（`?panel=comments`）。
-- 评论（P11.2）：`comments` 表（`parent_id`/`root_id` 支持 2 层嵌套，`status` pending/approved/rejected，`is_admin` 博主回复，`ip_hash` 限流）；公开 `GET/POST /api/blog/comments`（POST 中间件单独放行，默认待审核、每 IP 每分钟限流、蜜罐、正文纯文本渲染防 XSS），鉴权 `/api/comments/*` 审核；开关与免审核存 `settings.comments_enabled/comments_auto_approve`；私密分享页不显示评论；待审可复用通知渠道推送。管理在「博客管理 → 评论」子 tab。
+- 博客管理（P11.1，P11.4 改内联，P11.7 改两栏可编辑）：侧栏「博客管理」**内联占据右侧工作区**（非弹窗，`?panel=blog`）。左侧为已公开文章列表（`GET /api/articles/published`，**按 `updated_at` 降序**，搜索/按笔记本过滤，悬浮出「预览↗ / 取消公开」，右缘可拖拽、宽度存 `cfnote-blog-list-w`），右侧点选后取全文并**复用 `ArticleEditor`** 直接编辑（源码/富文本/预览三模式）；保存走 `PUT /api/articles/:id`，只就地更新该行、**不重排列表**，取消公开/设为私有则移出列表并清空右栏。其下「评论管理」为二级菜单（`?panel=comments`）。
+- 评论（P11.2，P11.7 增待审就地显示与锚点）：`comments` 表（`parent_id`/`root_id` 支持 2 层嵌套，`status` pending/approved/rejected，`is_admin` 博主回复，`ip_hash` 限流）；公开 `GET/POST /api/blog/comments`（POST 中间件单独放行，默认待审核、每 IP 每分钟限流、蜜罐、正文纯文本渲染防 XSS），鉴权 `/api/comments/*` 审核；开关与免审核存 `settings.comments_enabled/comments_auto_approve`；私密分享页不显示评论；待审可复用通知渠道推送。访客提交后其待审评论存 `localStorage`（`cfnote-pending-cmt-<articleId>`）并就地降调显示为「待审核」，通过或超 7 天自动清除（合并逻辑见 `src/lib/pendingComments.ts`）；评论行带 `id="comment-<id>"` 锚点，`/blog/:id#comment-<id>` 可直达并短暂高亮。管理在「博客管理 → 评论管理」二级菜单。
 
 ## 11. 项目结构
 

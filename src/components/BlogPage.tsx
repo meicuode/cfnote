@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { marked } from '../lib/markdown'
 import { enhanceRendered } from '../lib/renderEnhance'
+import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -94,6 +95,8 @@ interface CommentRowData {
   content: string
   is_admin?: number | boolean
   created_at: string
+  /** 本地待审核占位(P11.7):只有提交者自己看得到,浅色 + 徽标 */
+  pending?: boolean
 }
 interface CommentThread extends CommentRowData {
   replies: CommentRowData[]
@@ -106,17 +109,21 @@ function CommentRow({ c, enabled, onReply, parentName }: {
   parentName?: string
 }) {
   return (
-    <div>
+    // id 供「评论管理 → 查看↗」的 #comment-<id> 锚点定位(P11.7);scroll-mt 避开顶栏
+    <div id={`comment-${c.id}`} className={`scroll-mt-24 ${c.pending ? 'opacity-60' : ''}`}>
       <div className="flex items-center gap-2 text-sm">
         <span className="font-medium text-[var(--blog-title)]">{c.author_name}</span>
         {c.is_admin ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#d43030] text-white">博主</span> : null}
+        {c.pending && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--blog-panel)] text-[var(--blog-muted)] border border-[var(--blog-border)]">待审核</span>}
         {parentName && <span className="text-xs text-[var(--blog-muted)]">回复 @{parentName}</span>}
         <span className="text-xs text-[var(--blog-muted)] ml-auto">{fmtFull(c.created_at)}</span>
       </div>
       <div className="text-sm text-[var(--blog-text)] mt-1 whitespace-pre-wrap break-words">{c.content}</div>
-      {enabled && (
+      {c.pending ? (
+        <p className="text-xs text-[var(--blog-muted)] mt-1 italic">你的评论已提交,待博主审核后对其他人可见。</p>
+      ) : enabled ? (
         <button onClick={() => onReply({ id: c.id, name: c.author_name })} className="text-xs text-[var(--blog-muted)] hover:text-[#e05252] mt-1">回复</button>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -137,15 +144,49 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
   const [submitting, setSubmitting] = useState(false)
   const [msg, setMsg] = useState('')
 
+  // 本地待审评论(P11.7):服务端只返回已通过的,自己刚提交的那条存本地以便就地展示
+  const readPending = (): PendingComment[] => {
+    try {
+      const raw = localStorage.getItem(pendingKey(articleId))
+      const v = raw ? JSON.parse(raw) : []
+      return Array.isArray(v) ? v : []
+    } catch { return [] }
+  }
+  const writePending = (list: PendingComment[]) => {
+    try { localStorage.setItem(pendingKey(articleId), JSON.stringify(list)) } catch { /* 隐私模式等:忽略 */ }
+  }
+
   const load = () => {
     fetch(`/api/blog/comments?article_id=${articleId}`)
       .then((r) => r.json() as Promise<any>)
-      .then((j) => setThreads(j.ok && Array.isArray(j.data) ? j.data : []))
+      .then((j) => {
+        const approved: CommentThread[] = j.ok && Array.isArray(j.data) ? j.data : []
+        // 已通过或已过期的本地待审项在此清掉,其余并入线程
+        const kept = prunePending(readPending(), collectApprovedIds(approved as any), Date.now())
+        writePending(kept)
+        setThreads(mergePending(approved as any, kept) as CommentThread[])
+      })
       .catch(() => setThreads([]))
   }
   useEffect(() => { load() }, [articleId])
 
-  const count = threads ? threads.reduce((n, t) => n + 1 + t.replies.length, 0) : 0
+  // 锚点定位(P11.7):线程渲染完后,若 URL 带 #comment-<id> 则滚过去并短暂高亮(复用 index.css 的 .cfnote-highlight)
+  useEffect(() => {
+    if (!threads) return
+    const hash = window.location.hash
+    if (!/^#comment-\d+$/.test(hash)) return
+    const el = document.getElementById(hash.slice(1))
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('cfnote-highlight')
+    const t = setTimeout(() => el.classList.remove('cfnote-highlight'), 6000)
+    return () => clearTimeout(t)
+  }, [threads])
+
+  // 待审项只有自己看得见,不计入公开的评论总数
+  const count = threads
+    ? threads.reduce((n, t) => n + (t.pending ? 0 : 1) + t.replies.filter((r) => !r.pending).length, 0)
+    : 0
 
   const submit = async () => {
     if (submitting) return
@@ -169,9 +210,26 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
       if (j.ok) {
         localStorage.setItem('cfnote-cmt-name', name.trim())
         if (email.trim()) localStorage.setItem('cfnote-cmt-email', email.trim())
+        const submitted = content.trim()
         setContent(''); setReplyTo(null)
         if (j.data?.status === 'approved') { setMsg('评论已发布'); load() }
-        else setMsg('评论已提交,待博主审核后显示')
+        else {
+          // 待审核:把这条就地渲染出来(浅色 + 待审核徽标),并存本地使刷新后仍可见
+          setMsg('评论已提交,待博主审核后对其他人可见')
+          const id = Number(j.data?.id) || -Date.now() // 后端没给 id 时用负数占位,不与真实 id 冲突
+          const item: PendingComment = {
+            id,
+            parent_id: j.data?.parent_id ?? replyTo?.id ?? null,
+            root_id: j.data?.root_id ?? null,
+            author_name: name.trim(),
+            content: submitted,
+            created_at: j.data?.created_at || new Date().toISOString(),
+            saved_at: Date.now(),
+          }
+          const next = addPending(readPending(), item)
+          writePending(next)
+          setThreads((cur) => mergePending((cur || []).filter((t) => !t.pending || t.id !== item.id) as any, [item]) as CommentThread[])
+        }
       } else setMsg(j.error || '提交失败')
     } catch {
       setMsg('提交失败,请稍后重试')

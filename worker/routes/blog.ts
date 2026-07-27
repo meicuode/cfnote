@@ -202,14 +202,16 @@ blog.post('/comments', async (c) => {
     const email = body.author_email ? String(body.author_email).trim() : null
     const content = String(body.content).trim()
     const ipHash = ip ? await sha1hex(ip) : null
-    await c.env.DB.prepare(
+    const ins = await c.env.DB.prepare(
       `INSERT INTO comments (article_id, parent_id, root_id, author_name, author_email, content, status, is_admin, ip_hash)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
     ).bind(articleId, parent_id, root_id, name, email || null, content, status, ipHash).run()
     if (status === 'pending') {
       c.executionCtx.waitUntil(notifyPendingComment(c.env, { articleId, articleTitle: art.title, author: name, content }))
     }
-    return ok({ status })
+    // 回传 id/父子关系/时间:待审时前端据此把这条评论就地渲染为「待审核」占位(P11.7)
+    const id = Number(ins.meta?.last_row_id) || 0
+    return ok({ status, id, parent_id, root_id: root_id ?? (id || null), created_at: new Date().toISOString() })
   } catch (e: any) {
     return err('提交失败: ' + e.message, 500)
   }

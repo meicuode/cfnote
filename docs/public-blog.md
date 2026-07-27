@@ -32,7 +32,9 @@
 ## 决策记录
 
 - 热榜以「时间窗内发布 × 累计浏览量」近似(不建浏览明细表,免费额度友好)。
-- 评论(P11.2):公开文章底部访客评论,昵称必填、邮箱可选(不公开),正文**纯文本渲染**(不解析 markdown/HTML,杜绝 XSS);默认需审核(设置可切免审核),2 层嵌套回复(更深回复归并同楼)+ 博主回复(带标识);轻量防刷(Cache API 每 IP 每分钟 1 条 + 蜜罐隐藏字段 + 长度上限,fork 者零配置);后端 `comments` 表 + 公开 `GET/POST /api/blog/comments`(POST 在中间件单独放行)+ 鉴权 `/api/comments/*` 审核;私密分享页不显示评论;有待审评论时复用通知渠道推送管理员。管理入口在「博客管理 → 评论」子 tab。
+- 评论(P11.2):公开文章底部访客评论,昵称必填、邮箱可选(不公开),正文**纯文本渲染**(不解析 markdown/HTML,杜绝 XSS);默认需审核(设置可切免审核),2 层嵌套回复(更深回复归并同楼)+ 博主回复(带标识);轻量防刷(Cache API 每 IP 每分钟 1 条 + 蜜罐隐藏字段 + 长度上限,fork 者零配置);后端 `comments` 表 + 公开 `GET/POST /api/blog/comments`(POST 在中间件单独放行)+ 鉴权 `/api/comments/*` 审核;私密分享页不显示评论;有待审评论时复用通知渠道推送管理员。管理入口在「博客管理 → 评论管理」二级菜单。
+- 待审评论就地显示(P11.7,参考 WordPress):`GET /api/blog/comments` 只返回已通过的评论,所以访客提交后**自己那条**另存 `localStorage`(键 `cfnote-pending-cmt-<articleId>`,类比 WordPress 用 `comment_author` cookie 记住作者),渲染时并入线程但整行降调 + 「待审核」徽标、无「回复」按钮、不计入总数——避免"提交后内容当场消失像丢了"。POST 因此额外回传 `{id, parent_id, root_id, created_at}`(仅加字段,无 schema 改动)。清理规则:id 出现在服务端已批准线程里(博主已通过)或超过 7 天(多半被拒)即丢弃。合并/清理是 `src/lib/pendingComments.ts` 的纯函数,不碰 localStorage 本身(读写留给组件),便于单测。
+- 评论锚点(P11.7):评论行带 `id="comment-<id>"` + `scroll-mt-24`,`/blog/:id#comment-<id>` 打开后平滑滚到该楼并套既有 `.cfnote-highlight` 动画(与全文搜索定位复用同一套 6s 淡出效果)。评论管理的「查看↗」据此生成链接;待审评论在博客页尚不存在锚点,按钮加 title 说明但不禁用(点开仍能到文章)。
 - 博客页与应用共用 SPA 入口(主包 112KB gzip),BlogPage 增量 3KB;个人博客流量下不单独拆入口。
 - 深色样式:根节点挂 `dark cfnote-blog`,正文复用 `.cfnote-preview` 的集中深色映射,博客专属覆盖(红色链接/引用条)追加在映射之后按顺序生效。
 - Tags 显示的是所属笔记本名(笔记暂无独立标签系统;若要真标签需加表+编辑器打标 UI,列为备选需求)。
