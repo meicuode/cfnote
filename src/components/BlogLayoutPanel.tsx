@@ -3,22 +3,28 @@ import { useApi } from '../hooks/useApi'
 import {
   defaultLayout, parseBlogLayout, serializeBlogLayout, locateWidget, contentWidth, hasSide,
   toggleWidget, updateWidget, updatePageSettings, moveWidget, addWidget, removeWidget,
+  menuHref, addMenuItem, updateMenuItem, removeMenuItem, moveMenuItem,
   SLOTS, SLOT_LABELS, PAGES, PAGE_LABELS, WIDGET_TYPES, WIDGET_LABELS, NARROW_LABELS,
+  MENU_ITEM_TYPES, MENU_TYPE_LABELS, MENU_VALUE_HINTS,
   BLOG_LAYOUT_KEY, MIN_SIDE_WIDTH, MAX_SIDE_WIDTH, CONTENT_WARN_BELOW,
-  type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode,
+  type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode, type MenuItemType,
 } from '../lib/blogLayout'
 
-// 页面布局配置(P12.1 骨架;P12.2 加左栏/拖拽/宽度/窄屏降级/更多模块):
-// 博客管理下的第三个子视图。列表页/详情页各一套,模块摆进「顶部 / 左侧栏 / 右侧栏 / 底部」四个槽位。
-// 存 settings 表的 blog_layout 键(一个 JSON 字符串),复用既有的 GET/PUT /api/settings,无 schema 改动。
+// 页面布局(P12.1 骨架;P12.2 加左栏/拖拽/宽度/窄屏降级/更多模块;P12.3 加导航菜单):
+// 博客管理下的第三个子视图。列表页/详情页各一套,模块摆进「顶部 / 左侧栏 / 右侧栏 / 底部」四个槽位;
+// 另有一页配置博客顶栏菜单。整份配置存 settings 表的 blog_layout 键(一个 JSON 字符串),
+// 复用既有的 GET/PUT /api/settings,无 schema 改动。
 
 interface Props {
   token: string
 }
 
+/** 三个页签:两个页面布局 + 导航菜单 */
+type Tab = PageName | 'menu'
+
 export default function BlogLayoutPanel({ token }: Props) {
   const api = useApi(token)
-  const [page, setPage] = useState<PageName>('list')
+  const [tab, setTab] = useState<Tab>('list')
   const [layout, setLayout] = useState<BlogLayout | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -27,6 +33,8 @@ export default function BlogLayoutPanel({ token }: Props) {
   // 拖拽中的模块 id 与当前悬停的槽位(仅用于高亮)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overSlot, setOverSlot] = useState<SlotName | null>(null)
+  // 菜单页签下仍需要一个「当前页面」用于模块操作的类型收敛;菜单页不显示模块区
+  const page: PageName = tab === 'menu' ? 'list' : tab
 
   const load = useCallback(async () => {
     const res = await api.get<Record<string, string>>('/settings')
@@ -88,6 +96,77 @@ export default function BlogLayoutPanel({ token }: Props) {
   const cur = layout?.[page]
   const width = cur ? contentWidth(cur) : 0
   const tooNarrow = width < CONTENT_WARN_BELOW
+
+  // ---- 导航菜单编辑(P12.3)----
+  const menuEditor = (l: BlogLayout) => (
+    <div className="max-w-3xl space-y-2">
+      <p className="text-[11px] text-gray-400 leading-relaxed">
+        博客顶栏菜单,从上到下即从左到右。窄屏会自动收进汉堡按钮。
+        「单页」指向某篇已公开的笔记(比如写一篇「关于我」公开后挂上来),「标签」指向按该标签筛选后的列表。
+        配置跟着页面布局一起下发,不额外占用请求。
+      </p>
+
+      {l.menu.length === 0 && (
+        <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+          一个菜单项都没有,博客顶栏将只剩 Logo。
+        </p>
+      )}
+
+      <ul className="space-y-1.5">
+        {l.menu.map((m, i) => {
+          const bad = menuHref(m) === null
+          return (
+            <li key={m.id} className={`px-3 py-2 rounded-lg border ${bad ? 'border-amber-300 bg-amber-50/40' : 'border-gray-200 bg-white'}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={m.type}
+                  onChange={(e) => edit((x) => updateMenuItem(x, m.id, { type: e.target.value as MenuItemType }))}
+                  className="text-xs border border-gray-200 rounded px-1.5 py-1 text-gray-600 outline-none focus:border-emerald-400"
+                >
+                  {MENU_ITEM_TYPES.map((t) => (
+                    <option key={t} value={t}>{MENU_TYPE_LABELS[t]}</option>
+                  ))}
+                </select>
+                <input
+                  value={m.label}
+                  onChange={(e) => edit((x) => updateMenuItem(x, m.id, { label: e.target.value }))}
+                  placeholder="显示文字"
+                  className="w-28 text-sm border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+                />
+                {m.type !== 'home' && (
+                  <input
+                    value={m.value}
+                    onChange={(e) => edit((x) => updateMenuItem(x, m.id, { value: e.target.value }))}
+                    placeholder={MENU_VALUE_HINTS[m.type]}
+                    className="flex-1 min-w-[12rem] text-sm border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+                  />
+                )}
+                <button onClick={() => edit((x) => moveMenuItem(x, m.id, -1))} disabled={i === 0} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="上移">↑</button>
+                <button onClick={() => edit((x) => moveMenuItem(x, m.id, 1))} disabled={i === l.menu.length - 1} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="下移">↓</button>
+                <button onClick={() => edit((x) => removeMenuItem(x, m.id))} className="text-xs text-gray-400 hover:text-red-500" title="删除该菜单项">✕</button>
+              </div>
+              {bad && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  {m.type === 'link' ? '链接只支持 http(s):// 或站内 / 开头的路径' : `还没填${MENU_VALUE_HINTS[m.type]}`}——该项不会显示在博客上
+                </p>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+
+      <select
+        value=""
+        onChange={(e) => { if (e.target.value) edit((x) => addMenuItem(x, e.target.value as MenuItemType)) }}
+        className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-500 outline-none focus:border-emerald-400"
+      >
+        <option value="">+ 添加菜单项</option>
+        {MENU_ITEM_TYPES.map((t) => (
+          <option key={t} value={t}>{MENU_TYPE_LABELS[t]}</option>
+        ))}
+      </select>
+    </div>
+  )
 
   const widgetRow = (w: Widget, slot: SlotName, i: number, total: number) => (
     <li
@@ -171,7 +250,20 @@ export default function BlogLayoutPanel({ token }: Props) {
             </label>
           )}
 
-          {w.type === 'tags' && <p className="text-[11px] text-gray-400">自动统计已公开文章的笔记本与标签,取前 30 个,无需配置。</p>}
+          {w.type === 'tags' && <p className="text-[11px] text-gray-400">自动统计全部公开文章的笔记本与标签(取前 30),点击标签会跳到按该标签筛选的列表,无需配置。</p>}
+
+          {w.type === 'search' && (
+            <label className="block">
+              <span className="text-[11px] text-gray-400">输入框提示文字</span>
+              <input
+                value={w.options.placeholder || ''}
+                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, placeholder: e.target.value } }))}
+                placeholder="搜索文章…"
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
+              />
+              <span className="text-[11px] text-gray-400 block mt-1">搜索标题与正文,结果页地址形如 /blog?q=关键词。</span>
+            </label>
+          )}
 
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[11px] text-gray-400">移到槽位</span>
@@ -190,12 +282,15 @@ export default function BlogLayoutPanel({ token }: Props) {
     <div className="flex-1 flex flex-col min-h-0">
       <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2 shrink-0 flex-wrap">
         {PAGES.map((p) => (
-          <button key={p} onClick={() => { setPage(p); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${page === p ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
+          <button key={p} onClick={() => { setTab(p); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === p ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
             {PAGE_LABELS[p]}
           </button>
         ))}
+        <button onClick={() => { setTab('menu'); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === 'menu' ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
+          导航菜单
+        </button>
 
-        {cur && (
+        {cur && tab !== 'menu' && (
           <>
             {/* 正文剩余宽度实时提示:左右同开最容易把正文压得没法看 */}
             <span className={`text-[11px] ml-2 px-2 py-0.5 rounded ${tooNarrow ? 'bg-amber-100 text-amber-700' : 'text-gray-400'}`}>
@@ -224,8 +319,10 @@ export default function BlogLayoutPanel({ token }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
-        {!cur ? (
+        {!cur || !layout ? (
           <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
+        ) : tab === 'menu' ? (
+          menuEditor(layout)
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             {SLOTS.map((s) => {

@@ -17,8 +17,8 @@ export type PageName = 'list' | 'detail'
 export const PAGES: PageName[] = ['list', 'detail']
 export const PAGE_LABELS: Record<PageName, string> = { list: '列表页', detail: '详情页' }
 
-export type WidgetType = 'hot' | 'about' | 'markdown' | 'recent' | 'tags' | 'links'
-export const WIDGET_TYPES: WidgetType[] = ['hot', 'about', 'markdown', 'recent', 'tags', 'links']
+export type WidgetType = 'hot' | 'about' | 'markdown' | 'recent' | 'tags' | 'links' | 'search'
+export const WIDGET_TYPES: WidgetType[] = ['hot', 'about', 'markdown', 'recent', 'tags', 'links', 'search']
 export const WIDGET_LABELS: Record<WidgetType, string> = {
   hot: '热榜(日/周/月)',
   about: '关于本站',
@@ -26,6 +26,7 @@ export const WIDGET_LABELS: Record<WidgetType, string> = {
   recent: '最新文章',
   tags: '标签云',
   links: '友情链接',
+  search: '站内搜索',
 }
 
 export interface Widget {
@@ -61,13 +62,52 @@ export interface PageLayout {
   rightWidth: number
   narrow: NarrowMode
 }
-export type BlogLayout = Record<PageName, PageLayout>
+
+// ---- 导航菜单(P12.3)----
+// 对应 WordPress 的「外观 → 菜单」。跟着 blog_layout 一起存/一起下发,
+// 不另开 settings 键:每多一个键就是博客接口里多一次 D1 查询。
+
+export type MenuItemType = 'home' | 'tag' | 'page' | 'link'
+export const MENU_ITEM_TYPES: MenuItemType[] = ['home', 'tag', 'page', 'link']
+export const MENU_TYPE_LABELS: Record<MenuItemType, string> = {
+  home: '首页',
+  tag: '标签 / 笔记本',
+  page: '单页(某篇公开笔记)',
+  link: '外部链接',
+}
+/** 各类型的「值」填什么:配置页当 placeholder 用 */
+export const MENU_VALUE_HINTS: Record<MenuItemType, string> = {
+  home: '无需填写',
+  tag: '标签名或笔记本名,如「运维」',
+  page: '文章 id,如 12(在博客里打开该文即可从地址栏看到)',
+  link: 'https://example.com 或站内 /clip',
+}
+
+export interface MenuItem {
+  id: string
+  type: MenuItemType
+  /** 显示文字;留空则回落成类型默认名 */
+  label: string
+  /** tag=标签名 / page=文章 id / link=URL;home 不用 */
+  value: string
+}
+
+export interface BlogLayout {
+  list: PageLayout
+  detail: PageLayout
+  menu: MenuItem[]
+}
 
 const ABOUT_DEFAULT_TEXT =
   '这里是我的公开笔记精选,由 CFNote 个人知识库发布:笔记在编辑器中一键公开,经敏感信息检查后即刻上线。'
 
 function emptyPage(): PageLayout {
   return { top: [], left: [], right: [], bottom: [], leftWidth: 280, rightWidth: 380, narrow: 'bottom' }
+}
+
+/** 默认菜单 = 改造前的样子:只有一个「首页」 */
+export function defaultMenu(): MenuItem[] {
+  return [{ id: 'home', type: 'home', label: '首页', value: '' }]
 }
 
 /** 默认布局 = 模块化之前的样子:列表页右栏「热榜 + 关于本站」,详情页右栏只有热榜。不配置则页面零变化。 */
@@ -84,6 +124,7 @@ export function defaultLayout(): BlogLayout {
       ...emptyPage(),
       right: [{ id: 'hot', type: 'hot', title: '', enabled: true, options: {} }],
     },
+    menu: defaultMenu(),
   }
 }
 
@@ -138,6 +179,60 @@ function parsePage(raw: unknown): PageLayout {
   return out
 }
 
+/** 容错解析菜单;单项类型不认识就整条丢弃(与模块同策略) */
+function parseMenu(raw: unknown): MenuItem[] {
+  if (!Array.isArray(raw)) return defaultMenu()
+  const out: MenuItem[] = []
+  let seq = 0
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const type = str(o.type)
+    if (!(MENU_ITEM_TYPES as string[]).includes(type)) continue
+    const t = type as MenuItemType
+    out.push({
+      id: str(o.id) || `${t}-${seq++}`,
+      type: t,
+      label: str(o.label) || MENU_TYPE_LABELS[t],
+      value: str(o.value),
+    })
+  }
+  return out
+}
+
+/**
+ * 菜单项 → 链接。返回 null 表示这条配置不可用(前端直接跳过不渲染)。
+ * 外链只放行 http(s) 与站内 / 开头的路径,与友情链接同一把尺子(挡 javascript: 一类)。
+ */
+export function menuHref(item: MenuItem): string | null {
+  switch (item.type) {
+    case 'home':
+      return '/blog'
+    case 'tag':
+      return item.value.trim() ? `/blog?tag=${encodeURIComponent(item.value.trim())}` : null
+    case 'page': {
+      const n = Number(item.value)
+      return Number.isInteger(n) && n > 0 ? `/blog/${n}` : null
+    }
+    case 'link': {
+      const url = item.value.trim()
+      return url && /^(https?:\/\/|\/)/i.test(url) ? url : null
+    }
+    default:
+      return null
+  }
+}
+
+/** 能渲染出来的菜单项(配置不完整的直接不显示,而不是给个死链) */
+export function usableMenu(menu: MenuItem[]): { item: MenuItem; href: string }[] {
+  const out: { item: MenuItem; href: string }[] = []
+  for (const item of menu || []) {
+    const href = menuHref(item)
+    if (href) out.push({ item, href })
+  }
+  return out
+}
+
 /**
  * settings 里的字符串 → 布局。空值/坏 JSON/结构不对一律回落默认——
  * 布局是展示层配置,任何情况下都不该让博客页打不开。
@@ -152,12 +247,13 @@ export function parseBlogLayout(raw: string | null | undefined): BlogLayout {
   }
   if (!data || typeof data !== 'object') return defaultLayout()
   const o = data as Record<string, unknown>
-  // 两个页面都没有可识别内容时视为坏配置,回落默认(而不是给出一个空白页面)
-  if (o.list === undefined && o.detail === undefined) return defaultLayout()
+  // 三部分都没有可识别内容时视为坏配置,回落默认(而不是给出一个空白页面)
+  if (o.list === undefined && o.detail === undefined && o.menu === undefined) return defaultLayout()
   const def = defaultLayout()
   return {
     list: o.list === undefined ? def.list : parsePage(o.list),
     detail: o.detail === undefined ? def.detail : parsePage(o.detail),
+    menu: o.menu === undefined ? def.menu : parseMenu(o.menu),
   }
 }
 
@@ -173,6 +269,27 @@ export function enabledWidgets(page: PageLayout, slot: SlotName): Widget[] {
 /** 侧栏是否占位(该侧有启用的模块才占) */
 export function hasSide(page: PageLayout, slot: 'left' | 'right'): boolean {
   return enabledWidgets(page, slot).length > 0
+}
+
+/**
+ * 该页面是否启用了某类模块。worker 据此决定随响应下发哪几份数据
+ * (热榜/最新文章/标签云),没用到的一行都不查——「一个页面一次请求」的前提。
+ */
+export function pageUsesWidget(page: PageLayout, type: WidgetType): boolean {
+  return SLOTS.some((s) => page[s].some((w) => w.enabled && w.type === type))
+}
+
+/** 该页面所有启用模块里,某个数值选项的最大值(如「最新文章」放了两个,取条数大的那个) */
+export function maxWidgetOption(page: PageLayout, type: WidgetType, key: string, fallback: number): number {
+  let out = 0
+  for (const s of SLOTS) {
+    for (const w of page[s]) {
+      if (!w.enabled || w.type !== type) continue
+      const n = Number(w.options[key])
+      if (Number.isFinite(n)) out = Math.max(out, n)
+    }
+  }
+  return out > 0 ? out : fallback
 }
 
 /**
@@ -206,7 +323,8 @@ export function parseLinks(text: string | undefined): { name: string; url: strin
 // ---- 配置页用的不可变操作(都返回新对象,不改入参) ----
 
 function mapPage(layout: BlogLayout, page: PageName, fn: (p: PageLayout) => PageLayout): BlogLayout {
-  return { ...layout, [page]: fn(layout[page]) }
+  // 写成分支而不是 { ...layout, [page]: ... }:计算属性名会把类型擦成索引签名,接口化后过不了 tsc
+  return page === 'list' ? { ...layout, list: fn(layout.list) } : { ...layout, detail: fn(layout.detail) }
 }
 
 /** 只改模块数组、保留宽度等页面级设置 */
@@ -288,6 +406,8 @@ function newWidget(id: string, type: WidgetType): Widget {
       return { ...base, title: '标签' }
     case 'links':
       return { ...base, title: '友情链接', options: { items: 'Cloudflare|https://www.cloudflare.com' } }
+    case 'search':
+      return { ...base, title: '', options: { placeholder: '搜索文章…' } }
     default:
       return base
   }
@@ -306,4 +426,39 @@ export function addWidget(layout: BlogLayout, page: PageName, slot: SlotName, ty
 /** 删除模块 */
 export function removeWidget(layout: BlogLayout, page: PageName, id: string): BlogLayout {
   return mapPage(layout, page, (p) => withSlots(p, (_s, list) => list.filter((w) => w.id !== id)))
+}
+
+// ---- 导航菜单的不可变操作(P12.3)----
+
+function newMenuItem(id: string, type: MenuItemType): MenuItem {
+  return { id, type, label: MENU_TYPE_LABELS[type], value: '' }
+}
+
+/** 追加一个菜单项;id 用「类型-序号」保证唯一 */
+export function addMenuItem(layout: BlogLayout, type: MenuItemType): BlogLayout {
+  const used = new Set(layout.menu.map((m) => m.id))
+  let n = 1
+  let id: string = type
+  while (used.has(id)) id = `${type}-${++n}`
+  return { ...layout, menu: [...layout.menu, newMenuItem(id, type)] }
+}
+
+export function updateMenuItem(layout: BlogLayout, id: string, patch: Partial<MenuItem>): BlogLayout {
+  return { ...layout, menu: layout.menu.map((m) => (m.id === id ? { ...m, ...patch, id: m.id } : m)) }
+}
+
+export function removeMenuItem(layout: BlogLayout, id: string): BlogLayout {
+  return { ...layout, menu: layout.menu.filter((m) => m.id !== id) }
+}
+
+/** 菜单项换序;越界原样返回 */
+export function moveMenuItem(layout: BlogLayout, id: string, delta: number): BlogLayout {
+  const i = layout.menu.findIndex((m) => m.id === id)
+  if (i < 0) return layout
+  const to = i + delta
+  if (to < 0 || to >= layout.menu.length) return layout
+  const menu = [...layout.menu]
+  const [item] = menu.splice(i, 1)
+  menu.splice(to, 0, item)
+  return { ...layout, menu }
 }

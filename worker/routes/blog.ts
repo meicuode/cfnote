@@ -1,9 +1,12 @@
 import { Hono } from 'hono'
-import { ok, err, getSettingValue } from '../utils'
+import { ok, err, getSettingValue, getSettingValues } from '../utils'
 import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
 import { parseTags } from '../../src/types'
 import { validateCommentInput, resolveThreadParent, buildThread, isHoneypotTripped, type FlatComment } from '../../src/lib/comments'
-import { parseBlogLayout, BLOG_LAYOUT_KEY } from '../../src/lib/blogLayout'
+import { parseBlogLayout, pageUsesWidget, maxWidgetOption, BLOG_LAYOUT_KEY, type PageLayout } from '../../src/lib/blogLayout'
+import {
+  clampLimit, clampOffset, tagLikePattern, textLikePattern, buildTagCloud, MAX_QUERY_LEN,
+} from '../../src/lib/blogQuery'
 import { notifyPendingComment } from './notify'
 import type { AppEnv } from '../types'
 
@@ -11,27 +14,106 @@ import type { AppEnv } from '../types'
 // 只暴露 is_public=1 且非私有的文章;私有/未公开的任何字段都不可达。
 export const blog = new Hono<AppEnv>()
 
+// 只读列表的公共 WHERE(所有公开查询共用同一把尺子,避免哪天漏掉一个条件把私有文章漏出去)
+const PUBLIC_WHERE = 'a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL'
+
 // 页面布局(P12.1):跟着 posts / posts/:id 一起下发,不单开端点——
 // 布局决定页面骨架,晚到会导致首屏模块位置跳动。坏配置在 parseBlogLayout 里回落默认。
 async function readLayout(env: AppEnv['Bindings']) {
   return parseBlogLayout(await getSettingValue(env, BLOG_LAYOUT_KEY, ''))
 }
 
-// GET /api/blog/posts - 公开文章列表(标题/摘要/缩略图/笔记本 tag/发布时间)+ 列表页布局
+// ---- 按布局装配数据(P12.3)----
+// 侧栏模块要的数据随页面响应一起下发,该页没启用的模块一行都不查。
+// 目标是「一个页面一次 Worker 请求」:免费额度里请求数(10 万/天)比 D1 行读(500 万/天)紧张得多,
+// 所以宁可多几次只读几行的小查询,也不要多一次 HTTP 往返。
+
+const HOT_WINDOWS: Record<string, string> = { day: '-1 day', week: '-7 day', month: '-30 day' }
+
+async function hotList(env: AppEnv['Bindings'], win: string) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, a.title, a.views FROM articles a
+      WHERE ${PUBLIC_WHERE} AND COALESCE(a.published_at, a.updated_at) >= datetime('now', ?)
+      ORDER BY a.views DESC, COALESCE(a.published_at, a.updated_at) DESC LIMIT 12`
+  ).bind(win).all()
+  return results || []
+}
+
+/** 三档热榜一次下发:切日/周/月 tab 就不必再打一次请求(总共 36 行,可忽略) */
+async function fetchHot(env: AppEnv['Bindings']) {
+  const [day, week, month] = await Promise.all([
+    hotList(env, HOT_WINDOWS.day),
+    hotList(env, HOT_WINDOWS.week),
+    hotList(env, HOT_WINDOWS.month),
+  ])
+  return { day, week, month }
+}
+
+/** 最新文章模块:全站最新,与列表页当前的筛选无关(否则筛着标签看「最新」会自相矛盾) */
+async function fetchRecent(env: AppEnv['Bindings'], limit: number) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, a.title FROM articles a
+      WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
+  ).bind(Math.max(1, Math.min(20, limit))).all()
+  return results || []
+}
+
+/** 标签云:只取两列(不带正文),几百行也很便宜;聚合逻辑在 blogQuery 里可单测 */
+async function fetchTagCloud(env: AppEnv['Bindings']) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.tags, n.name as tag FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+      WHERE ${PUBLIC_WHERE} LIMIT 1000`
+  ).all<{ tags: string | null; tag: string | null }>()
+  return buildTagCloud((results || []).map((r) => ({ tag: r.tag, tags: parseTags(r.tags) })))
+}
+
+/** 该页布局用得上的那几份数据(并发取);没启用的模块对应字段直接不出现在响应里 */
+async function widgetData(env: AppEnv['Bindings'], page: PageLayout) {
+  const [hot, recent, tagCloud] = await Promise.all([
+    pageUsesWidget(page, 'hot') ? fetchHot(env) : Promise.resolve(null),
+    pageUsesWidget(page, 'recent') ? fetchRecent(env, maxWidgetOption(page, 'recent', 'count', 8)) : Promise.resolve(null),
+    pageUsesWidget(page, 'tags') ? fetchTagCloud(env) : Promise.resolve(null),
+  ])
+  const out: Record<string, unknown> = {}
+  if (hot) out.hot = hot
+  if (recent) out.recent = recent
+  if (tagCloud) out.tag_cloud = tagCloud
+  return out
+}
+
+// GET /api/blog/posts - 公开文章列表(分页 + 标签/关键词筛选)+ 列表页布局 + 该页模块数据
+// 分页用「加载更多」:多取一行判断 has_more,不做 COUNT(*)(多一次全表扫描只为了显示总数不值)
 blog.get('/posts', async (c) => {
   try {
+    const limit = clampLimit(c.req.query('limit'))
+    const offset = clampOffset(c.req.query('offset'))
+    const tag = (c.req.query('tag') || '').trim().slice(0, MAX_QUERY_LEN)
+    const q = (c.req.query('q') || '').trim().slice(0, MAX_QUERY_LEN)
+    const cond: string[] = [PUBLIC_WHERE]
+    const args: unknown[] = []
+    if (tag) {
+      // 笔记本名与文章标签同等对待(博客上「Tags:」本就是混着显示的)
+      cond.push("(n.name = ? OR a.tags LIKE ? ESCAPE '\\')")
+      args.push(tag, tagLikePattern(tag))
+    }
+    if (q) {
+      cond.push("(a.title LIKE ? ESCAPE '\\' OR a.content LIKE ? ESCAPE '\\')")
+      args.push(textLikePattern(q), textLikePattern(q))
+    }
     const [{ results }, layout] = await Promise.all([
       c.env.DB.prepare(
         `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
                 a.published_at, a.updated_at, a.views, a.tags, n.name as tag
          FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-         WHERE a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL
-         ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 100`
-      ).all<any>(),
+         WHERE ${cond.join(' AND ')}
+         ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ? OFFSET ?`
+      ).bind(...args, limit + 1, offset).all<any>(),
       readLayout(c.env),
     ])
+    const rows = results || []
+    const hasMore = rows.length > limit
     return ok({
-      posts: (results || []).map((r) => ({
+      posts: rows.slice(0, limit).map((r) => ({
         id: r.id,
         title: r.title,
         tag: r.tag || '未分类',
@@ -41,7 +123,9 @@ blog.get('/posts', async (c) => {
         published_at: r.published_at || r.updated_at,
         views: r.views || 0,
       })),
+      has_more: hasMore,
       layout,
+      ...(await widgetData(c.env, layout.list)),
     })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
@@ -83,23 +167,36 @@ async function commentRateLimited(ip: string): Promise<boolean> {
 }
 
 // GET /api/blog/posts/:id - 公开文章详情(浏览计数:去重后 +1,waitUntil 不阻塞响应)
+// 详情页要的一切(布局 + 侧栏模块数据 + 评论开关)都在这一次响应里,前端不再另拉列表与热榜。
 blog.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
   try {
-    const a = await c.env.DB.prepare(
-      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, n.name as tag
-       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE a.id = ? AND a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL`
-    ).bind(id).first<any>()
+    const [a, settings] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, n.name as tag
+         FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+         WHERE a.id = ? AND ${PUBLIC_WHERE}`
+      ).bind(id).first<any>(),
+      getSettingValues(c.env, [BLOG_LAYOUT_KEY, 'comments_enabled']),
+    ])
     if (!a) return err('文章不存在或未公开', 404)
+    const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
     const counted = await shouldCountView(id, c.req.header('cf-connecting-ip') || '')
     if (counted) {
       c.executionCtx.waitUntil(
         c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
       )
     }
-    const commentsEnabled = (await getSettingValue(c.env, 'comments_enabled', '1')) !== '0'
-    return ok({ ...a, tag: a.tag || '未分类', tags: parseTags(a.tags), comments_enabled: commentsEnabled, layout: await readLayout(c.env), published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
+    return ok({
+      ...a,
+      tag: a.tag || '未分类',
+      tags: parseTags(a.tags),
+      comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
+      layout,
+      ...(await widgetData(c.env, layout.detail)),
+      published_at: a.published_at || a.updated_at,
+      views: (a.views || 0) + (counted ? 1 : 0),
+    })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }
@@ -120,12 +217,14 @@ blog.get('/share/:token', async (c) => {
     if (a.share_expires_at && Date.parse(a.share_expires_at) <= Date.now()) {
       return err('分享链接已过期', 410)
     }
+    const layout = await readLayout(c.env)
     return ok({
       ...a,
       shared: true,
       tag: a.tag || '未分类',
       tags: parseTags(a.tags),
-      layout: await readLayout(c.env),
+      layout,
+      ...(await widgetData(c.env, layout.detail)),
       published_at: a.published_at || a.updated_at,
       views: a.views || 0,
     })
@@ -134,18 +233,12 @@ blog.get('/share/:token', async (c) => {
   }
 })
 
-// GET /api/blog/hot?range=day|week|month - 热榜(时间窗内发布的文章按浏览量排序)
+// GET /api/blog/hot?range=day|week|month - 热榜(时间窗内发布的文章按浏览量排序)。
+// 博客页已改为随页面响应拿三档热榜(切 tab 零请求),此端点保留供直接调用。
 blog.get('/hot', async (c) => {
   const range = c.req.query('range') || 'day'
-  const windows: Record<string, string> = { day: '-1 day', week: '-7 day', month: '-30 day' }
-  const win = windows[range] || windows.day
   try {
-    const { results } = await c.env.DB.prepare(
-      `SELECT id, title, views FROM articles
-       WHERE is_public = 1 AND is_private = 0 AND COALESCE(published_at, updated_at) >= datetime('now', ?)
-       ORDER BY views DESC, COALESCE(published_at, updated_at) DESC LIMIT 12`
-    ).bind(win).all()
-    return ok(results)
+    return ok(await hotList(c.env, HOT_WINDOWS[range] || HOT_WINDOWS.day))
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }

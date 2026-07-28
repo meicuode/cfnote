@@ -31,6 +31,18 @@ export async function getSettingValue(env: Env, key: string, defaultValue: strin
   return row?.value ?? defaultValue
 }
 
+/** 一次取多个设置项:公开博客接口一个页面要读好几个键,分开查就是好几趟 D1 往返 */
+export async function getSettingValues(env: Env, keys: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (keys.length === 0) return out
+  const holes = keys.map(() => '?').join(',')
+  const { results } = await env.DB.prepare(
+    `SELECT key, value FROM settings WHERE key IN (${holes})`
+  ).bind(...keys).all<{ key: string; value: string }>()
+  for (const r of results || []) out.set(r.key, r.value)
+  return out
+}
+
 export async function getApiKey(env: Env, keyName: string): Promise<string | undefined> {
   const fromSettings = await getSettingValue(env, keyName, '')
   return fromSettings || (env as any)[keyName.toUpperCase()] || undefined

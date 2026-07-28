@@ -15,6 +15,15 @@ import {
   locateWidget,
   addWidget,
   removeWidget,
+  defaultMenu,
+  menuHref,
+  usableMenu,
+  addMenuItem,
+  updateMenuItem,
+  removeMenuItem,
+  moveMenuItem,
+  pageUsesWidget,
+  maxWidgetOption,
   BLOG_LAYOUT_KEY,
   MIN_SIDE_WIDTH,
   MAX_SIDE_WIDTH,
@@ -213,5 +222,110 @@ describe('布局编辑操作(不可变,P12.1)', () => {
     const l = removeWidget(defaultLayout(), 'list', 'hot')
     expect(l.list.right.map((w) => w.id)).toEqual(['about'])
     expect(l.detail.right.map((w) => w.id)).toEqual(['hot']) // 另一个页面不受影响
+  })
+})
+
+describe('按布局装配数据(P12.3):worker 据此决定下发哪几份', () => {
+  it('pageUsesWidget 只认启用的模块', () => {
+    const def = defaultLayout()
+    expect(pageUsesWidget(def.list, 'hot')).toBe(true)
+    expect(pageUsesWidget(def.list, 'recent')).toBe(false)
+    expect(pageUsesWidget(def.detail, 'about')).toBe(false)
+    // 停用后不再需要下发对应数据
+    expect(pageUsesWidget(toggleWidget(def, 'list', 'hot').list, 'hot')).toBe(false)
+  })
+
+  it('pageUsesWidget 跨四个槽位都算', () => {
+    const l = addWidget(defaultLayout(), 'detail', 'bottom', 'tags')
+    expect(pageUsesWidget(l.detail, 'tags')).toBe(true)
+  })
+
+  it('maxWidgetOption 取同类模块里最大的条数(放了两个「最新文章」就按大的拉)', () => {
+    let l = addWidget(defaultLayout(), 'list', 'left', 'recent')
+    l = updateWidget(l, 'list', 'recent', { options: { count: '5' } })
+    expect(maxWidgetOption(l.list, 'recent', 'count', 8)).toBe(5)
+    l = addWidget(l, 'list', 'bottom', 'recent')
+    l = updateWidget(l, 'list', 'recent-2', { options: { count: '12' } })
+    expect(maxWidgetOption(l.list, 'recent', 'count', 8)).toBe(12)
+    // 一个都没有时用兜底值
+    expect(maxWidgetOption(defaultLayout().list, 'recent', 'count', 8)).toBe(8)
+  })
+})
+
+describe('导航菜单(P12.3)', () => {
+  it('默认只有一个「首页」,等于改造前的顶栏', () => {
+    expect(defaultMenu()).toEqual([{ id: 'home', type: 'home', label: '首页', value: '' }])
+    expect(defaultLayout().menu).toEqual(defaultMenu())
+  })
+
+  it('menuHref:各类型的链接形态', () => {
+    expect(menuHref({ id: 'a', type: 'home', label: '首页', value: '' })).toBe('/blog')
+    expect(menuHref({ id: 'b', type: 'tag', label: '运维', value: '运维' })).toBe('/blog?tag=%E8%BF%90%E7%BB%B4')
+    expect(menuHref({ id: 'c', type: 'page', label: '关于', value: '12' })).toBe('/blog/12')
+    expect(menuHref({ id: 'd', type: 'link', label: 'CF', value: 'https://a.com' })).toBe('https://a.com')
+    expect(menuHref({ id: 'e', type: 'link', label: '站内', value: '/clip' })).toBe('/clip')
+  })
+
+  it('menuHref:配置不完整或不安全的返回 null(不渲染成死链)', () => {
+    expect(menuHref({ id: 'a', type: 'tag', label: 'x', value: '  ' })).toBeNull()
+    expect(menuHref({ id: 'b', type: 'page', label: 'x', value: '不是数字' })).toBeNull()
+    expect(menuHref({ id: 'c', type: 'page', label: 'x', value: '0' })).toBeNull()
+    expect(menuHref({ id: 'd', type: 'link', label: 'x', value: 'javascript:alert(1)' })).toBeNull()
+    expect(menuHref({ id: 'e', type: 'link', label: 'x', value: '' })).toBeNull()
+  })
+
+  it('usableMenu 过滤掉不可用项', () => {
+    const menu = [
+      { id: 'a', type: 'home' as const, label: '首页', value: '' },
+      { id: 'b', type: 'tag' as const, label: '空标签', value: '' },
+      { id: 'c', type: 'link' as const, label: '坏链', value: 'javascript:x' },
+      { id: 'd', type: 'page' as const, label: '关于', value: '7' },
+    ]
+    expect(usableMenu(menu).map((x) => x.href)).toEqual(['/blog', '/blog/7'])
+  })
+
+  it('解析容错:不是数组、类型不认识、缺字段都不会炸', () => {
+    // 坏成非数组 → 回落默认菜单(顶栏不该因为配置坏了就没有导航);显式空数组才是「我就要没有菜单」
+    expect(parseBlogLayout(JSON.stringify({ list: {}, menu: 'oops' })).menu).toEqual(defaultMenu())
+    expect(parseBlogLayout(JSON.stringify({ list: {}, menu: [] })).menu).toEqual([])
+    const l = parseBlogLayout(JSON.stringify({
+      list: {},
+      menu: [{ type: '不存在' }, { type: 'tag', value: '运维' }, null, { type: 'home' }],
+    }))
+    expect(l.menu.map((m) => m.type)).toEqual(['tag', 'home'])
+    expect(l.menu[0].label).toBe('标签 / 笔记本') // 没写 label 就回落类型默认名
+    expect(l.menu[0].id).toBeTruthy()
+  })
+
+  it('只配了菜单时,两个页面布局仍是默认值(不会变成空白页)', () => {
+    const l = parseBlogLayout(JSON.stringify({ menu: [{ type: 'home', label: '首页' }] }))
+    expect(l.list.right.map((w) => w.type)).toEqual(['hot', 'about'])
+    expect(l.detail.right.map((w) => w.type)).toEqual(['hot'])
+  })
+
+  it('增删改排序都是不可变操作', () => {
+    const base = defaultLayout()
+    let l = addMenuItem(base, 'tag')
+    expect(l.menu.map((m) => m.id)).toEqual(['home', 'tag'])
+    expect(base.menu).toHaveLength(1) // 入参没被改
+
+    l = updateMenuItem(l, 'tag', { label: '运维', value: '运维', id: '篡改' } as any)
+    expect(l.menu[1]).toMatchObject({ id: 'tag', label: '运维', value: '运维' })
+
+    l = addMenuItem(l, 'tag')
+    expect(l.menu.map((m) => m.id)).toEqual(['home', 'tag', 'tag-2'])
+
+    l = moveMenuItem(l, 'tag-2', -2)
+    expect(l.menu.map((m) => m.id)).toEqual(['tag-2', 'home', 'tag'])
+    expect(moveMenuItem(l, 'tag-2', -1)).toEqual(l) // 越界原样返回
+    expect(moveMenuItem(l, '不存在', 1)).toEqual(l)
+
+    l = removeMenuItem(l, 'home')
+    expect(l.menu.map((m) => m.id)).toEqual(['tag-2', 'tag'])
+  })
+
+  it('菜单跟着布局一起往返序列化', () => {
+    const l = updateMenuItem(addMenuItem(defaultLayout(), 'link'), 'link', { label: 'CF', value: 'https://a.com' })
+    expect(parseBlogLayout(serializeBlogLayout(l))).toEqual(l)
   })
 })
