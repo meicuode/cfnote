@@ -4,6 +4,7 @@ import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
 import { parseTags } from '../../src/types'
 import { validateCommentInput, resolveThreadParent, buildThread, isHoneypotTripped, type FlatComment } from '../../src/lib/comments'
 import { parseBlogLayout, pageUsesWidget, maxWidgetOption, firstWidgetOption, BLOG_LAYOUT_KEY, type PageLayout } from '../../src/lib/blogLayout'
+import { parseBlogSkin, BLOG_SKIN_KEY } from '../../src/lib/blogSkin'
 import {
   clampLimit, clampOffset, tagLikePattern, textLikePattern, buildTagCloud, scoreRelated, MAX_QUERY_LEN,
 } from '../../src/lib/blogQuery'
@@ -17,10 +18,12 @@ export const blog = new Hono<AppEnv>()
 // 只读列表的公共 WHERE(所有公开查询共用同一把尺子,避免哪天漏掉一个条件把私有文章漏出去)
 const PUBLIC_WHERE = 'a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL'
 
-// 页面布局(P12.1):跟着 posts / posts/:id 一起下发,不单开端点——
-// 布局决定页面骨架,晚到会导致首屏模块位置跳动。坏配置在 parseBlogLayout 里回落默认。
-async function readLayout(env: AppEnv['Bindings']) {
-  return parseBlogLayout(await getSettingValue(env, BLOG_LAYOUT_KEY, ''))
+// 页面布局与皮肤(P12.1 / P12.5):跟着 posts / posts/:id 一起下发,不单开端点——
+// 布局决定页面骨架、皮肤决定配色,晚到都会导致首屏跳动/闪色。坏配置在各自的 parse 里回落默认。
+// 两个键一次 IN 查询取回,不多一趟 D1 往返。
+async function readAppearance(env: AppEnv['Bindings']) {
+  const s = await getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY])
+  return { layout: parseBlogLayout(s.get(BLOG_LAYOUT_KEY) || ''), skin: parseBlogSkin(s.get(BLOG_SKIN_KEY) || '') }
 }
 
 // ---- 按布局装配数据(P12.3)----
@@ -203,7 +206,7 @@ blog.get('/posts', async (c) => {
       cond.push("(a.title LIKE ? ESCAPE '\\' OR a.content LIKE ? ESCAPE '\\')")
       args.push(textLikePattern(q), textLikePattern(q))
     }
-    const [{ results }, layout] = await Promise.all([
+    const [{ results }, appearance] = await Promise.all([
       c.env.DB.prepare(
         `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
                 a.published_at, a.updated_at, a.views, a.tags, n.name as tag
@@ -211,8 +214,9 @@ blog.get('/posts', async (c) => {
          WHERE ${cond.join(' AND ')}
          ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ? OFFSET ?`
       ).bind(...args, limit + 1, offset).all<any>(),
-      readLayout(c.env),
+      readAppearance(c.env),
     ])
+    const { layout, skin } = appearance
     const rows = results || []
     const hasMore = rows.length > limit
     return ok({
@@ -228,6 +232,7 @@ blog.get('/posts', async (c) => {
       })),
       has_more: hasMore,
       layout,
+      skin,
       ...(await widgetData(c.env, layout.list)),
     })
   } catch (e: any) {
@@ -282,10 +287,11 @@ blog.get('/posts/:id', async (c) => {
          FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
          WHERE a.id = ? AND ${PUBLIC_WHERE}`
       ).bind(id).first<any>(),
-      getSettingValues(c.env, [BLOG_LAYOUT_KEY, 'comments_enabled']),
+      getSettingValues(c.env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, 'comments_enabled']),
     ])
     if (!a) return err('文章不存在或未公开', 404)
     const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
+    const skin = parseBlogSkin(settings.get(BLOG_SKIN_KEY) || '')
     const counted = !preview && (await shouldCountView(id, c.req.header('cf-connecting-ip') || ''))
     if (counted) {
       c.executionCtx.waitUntil(
@@ -302,6 +308,7 @@ blog.get('/posts/:id', async (c) => {
       tags,
       comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
       layout,
+      skin,
       ...(await widgetData(c.env, layout.detail, seed)),
       published_at: a.published_at || a.updated_at,
       views: (a.views || 0) + (counted ? 1 : 0),
@@ -326,13 +333,14 @@ blog.get('/share/:token', async (c) => {
     if (a.share_expires_at && Date.parse(a.share_expires_at) <= Date.now()) {
       return err('分享链接已过期', 410)
     }
-    const layout = await readLayout(c.env)
+    const { layout, skin } = await readAppearance(c.env)
     return ok({
       ...a,
       shared: true,
       tag: a.tag || '未分类',
       tags: parseTags(a.tags),
       layout,
+      skin,
       ...(await widgetData(c.env, layout.detail)),
       published_at: a.published_at || a.updated_at,
       views: a.views || 0,

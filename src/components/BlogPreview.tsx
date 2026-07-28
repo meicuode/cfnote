@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { serializeBlogLayout, type BlogLayout, type PageName } from '../lib/blogLayout'
+import { serializeBlogSkin, type BlogSkin } from '../lib/blogSkin'
 
 // 博客布局的实时预览(P12.4):右侧这块就是**真的博客页**,以 /blog?preview=1 装进 iframe。
 //
@@ -15,14 +16,15 @@ const WIDE = 1400
 const NARROW = 1000
 
 interface Props {
-  /** 当前(可能尚未保存)的布局,改动即时下发给 iframe */
+  /** 当前(可能尚未保存)的布局与皮肤,改动即时下发给 iframe */
   layout: BlogLayout
+  skin: BlogSkin
   page: PageName
   /** 预览里点了某个模块 → 左侧面板选中它 */
   onSelect: (widgetId: string) => void
 }
 
-export default function BlogPreview({ layout, page, onSelect }: Props) {
+export default function BlogPreview({ layout, skin, page, onSelect }: Props) {
   const [narrow, setNarrow] = useState(false)
   // undefined = 还没查;null = 没有公开文章(详情页无从预览)
   const [sampleId, setSampleId] = useState<number | null | undefined>(undefined)
@@ -59,10 +61,10 @@ export default function BlogPreview({ layout, page, onSelect }: Props) {
 
   const postLayout = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage(
-      { type: 'cfnote-preview-layout', layout: serializeBlogLayout(layout) },
+      { type: 'cfnote-preview-layout', layout: serializeBlogLayout(layout), skin: serializeBlogSkin(skin) },
       window.location.origin
     )
-  }, [layout])
+  }, [layout, skin])
 
   // iframe 说「我好了」再下发;之后每次布局变化即时下发(不重载,所以不产生请求)
   useEffect(() => {

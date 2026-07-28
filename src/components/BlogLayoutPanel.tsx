@@ -11,6 +11,12 @@ import {
   BLOG_LAYOUT_KEY, MIN_SIDE_WIDTH, MAX_SIDE_WIDTH, CONTENT_WARN_BELOW,
   type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode, type MenuItemType, type WidgetType,
 } from '../lib/blogLayout'
+import {
+  defaultSkin, parseBlogSkin, serializeBlogSkin, applyPreset, matchPreset, hoverColor, normalizeHex,
+  SKIN_PRESETS, FONT_LABELS, LIST_STYLE_LABELS, BLOG_SKIN_KEY,
+  MIN_RADIUS, MAX_RADIUS, MIN_FONT_SIZE, MAX_FONT_SIZE, MIN_WIDTH, MAX_WIDTH, MAX_CSS_LEN,
+  type BlogSkin, type FontKey, type ListStyle,
+} from '../lib/blogSkin'
 
 // 页面布局(P12.1 骨架;P12.2 左栏/拖拽/宽度/窄屏降级;P12.3 导航菜单;P12.4 真预览 + 顶部/底部模块):
 // 博客管理下的第三个子视图。左边摆模块(四个槽位竖排),右边是**真的博客页** iframe 实时预览
@@ -21,13 +27,14 @@ interface Props {
   token: string
 }
 
-/** 三个页签:两个页面布局 + 导航菜单 */
-type Tab = PageName | 'menu'
+/** 四个页签:两个页面布局 + 导航菜单 + 主题外观 */
+type Tab = PageName | 'menu' | 'skin'
 
 export default function BlogLayoutPanel({ token }: Props) {
   const api = useApi(token)
   const [tab, setTab] = useState<Tab>('list')
   const [layout, setLayout] = useState<BlogLayout | null>(null)
+  const [skin, setSkin] = useState<BlogSkin>(defaultSkin)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
@@ -35,12 +42,14 @@ export default function BlogLayoutPanel({ token }: Props) {
   // 拖拽中的模块 id 与当前悬停的槽位(仅用于高亮)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overSlot, setOverSlot] = useState<SlotName | null>(null)
-  // 菜单页签下仍需要一个「当前页面」用于模块操作的类型收敛;菜单页不显示模块区
-  const page: PageName = tab === 'menu' ? 'list' : tab
+  // 菜单/主题页签下仍需要一个「当前页面」用于模块操作的类型收敛与预览
+  const page: PageName = tab === 'menu' || tab === 'skin' ? 'list' : tab
 
   const load = useCallback(async () => {
     const res = await api.get<Record<string, string>>('/settings')
-    setLayout(parseBlogLayout(res.ok && res.data ? res.data[BLOG_LAYOUT_KEY] : ''))
+    const s = res.ok && res.data ? res.data : {}
+    setLayout(parseBlogLayout(s[BLOG_LAYOUT_KEY]))
+    setSkin(parseBlogSkin(s[BLOG_SKIN_KEY]))
     setDirty(false)
   }, [api])
   useEffect(() => { load() }, [load])
@@ -49,11 +58,19 @@ export default function BlogLayoutPanel({ token }: Props) {
     setLayout((cur) => (cur ? fn(cur) : cur))
     setDirty(true)
   }
+  const editSkin = (fn: (s: BlogSkin) => BlogSkin) => {
+    setSkin((cur) => fn(cur))
+    setDirty(true)
+  }
 
   const save = async () => {
     if (!layout) return
     setSaving(true)
-    const res = await api.put('/settings', { [BLOG_LAYOUT_KEY]: serializeBlogLayout(layout) })
+    // 布局与皮肤一次 PUT 写两个键(设置接口本就接受多键)
+    const res = await api.put('/settings', {
+      [BLOG_LAYOUT_KEY]: serializeBlogLayout(layout),
+      [BLOG_SKIN_KEY]: serializeBlogSkin(skin),
+    })
     setSaving(false)
     setNotice(res.ok ? '已保存,刷新博客页即可看到' : '保存失败')
     if (res.ok) setDirty(false)
@@ -61,9 +78,11 @@ export default function BlogLayoutPanel({ token }: Props) {
   }
 
   const reset = () => {
-    setLayout(defaultLayout())
+    // 只恢复当前页签管的那部分,免得改主题时把布局也一并清了
+    if (tab === 'skin') setSkin(defaultSkin())
+    else setLayout(defaultLayout())
     setDirty(true)
-    setNotice('已恢复默认(还需点保存)')
+    setNotice(`已恢复${tab === 'skin' ? '默认主题' : '默认布局'}(还需点保存)`)
     setTimeout(() => setNotice(''), 3000)
   }
 
@@ -96,7 +115,7 @@ export default function BlogLayoutPanel({ token }: Props) {
   }
 
   const cur = layout?.[page]
-  const width = cur ? contentWidth(cur) : 0
+  const width = cur ? contentWidth(cur, skin.width) : 0
   const tooNarrow = width < CONTENT_WARN_BELOW
 
   // 预览里点了某个模块 → 展开它的编辑区并滚到可见处
@@ -241,7 +260,135 @@ export default function BlogLayoutPanel({ token }: Props) {
     }
   }
 
-  // ---- 导航菜单编辑(P12.3)----
+  // ---- 主题外观(P12.5)----
+  const colorRow = (label: string, value: string, onChange: (v: string) => void, extra?: React.ReactNode) => (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-gray-500 w-20 shrink-0">{label}</span>
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-8 h-8 rounded border border-gray-200 bg-white cursor-pointer shrink-0"
+        aria-label={label}
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(normalizeHex(e.target.value, value))}
+        className="w-24 text-sm font-mono border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+      />
+      {extra}
+    </div>
+  )
+  const sliderRow = (label: string, value: number, min: number, max: number, unit: string, onChange: (v: number) => void) => (
+    <label className="flex items-center gap-2">
+      <span className="text-xs text-gray-500 w-20 shrink-0">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="flex-1 min-w-0 max-w-[16rem] accent-emerald-500"
+      />
+      <span className="text-xs text-gray-400 tabular-nums w-14">{value}{unit}</span>
+    </label>
+  )
+
+  const skinEditor = (s: BlogSkin) => {
+    const active = matchPreset(s)
+    return (
+      <div className="max-w-3xl space-y-5">
+        <div>
+          <p className="text-xs font-medium text-gray-600 mb-1.5">预设</p>
+          <div className="flex flex-wrap gap-2">
+            {SKIN_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => editSkin((x) => applyPreset(x, p.id))}
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
+                  active === p.id ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 hover:border-emerald-300'
+                }`}
+              >
+                <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: p.accent }} />
+                <span className="w-3.5 h-3.5 rounded-full shrink-0 border border-gray-200" style={{ background: p.chrome }} />
+                {p.name}
+              </button>
+            ))}
+            {active === 'custom' && <span className="text-[11px] text-gray-400 self-center">当前为自定义配色</span>}
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1.5">
+            预设只改主色与顶栏色——中性色(卡片/边框/正文灰)是成对调过的明暗值,单独改容易配出读不了的组合;要精细控制用下面的「额外 CSS」。
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-gray-600">配色</p>
+          {colorRow('主色', s.accent, (v) => editSkin((x) => ({ ...x, accent: v, preset: 'custom' })))}
+          {colorRow(
+            '悬浮色',
+            s.accentHover || hoverColor(s),
+            (v) => editSkin((x) => ({ ...x, accentHover: v, preset: 'custom' })),
+            <label className="flex items-center gap-1 text-[11px] text-gray-500">
+              <input
+                type="checkbox"
+                checked={s.accentHover === ''}
+                onChange={(e) => editSkin((x) => ({ ...x, accentHover: e.target.checked ? '' : hoverColor(x) }))}
+                className="accent-emerald-500"
+              />
+              跟随主色自动提亮
+            </label>
+          )}
+          {colorRow('顶栏/页脚', s.chrome, (v) => editSkin((x) => ({ ...x, chrome: v, preset: 'custom' })))}
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-gray-600">排版</p>
+          {sliderRow('圆角', s.radius, MIN_RADIUS, MAX_RADIUS, 'px', (v) => editSkin((x) => ({ ...x, radius: v })))}
+          {sliderRow('正文字号', s.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, 'px', (v) => editSkin((x) => ({ ...x, fontSize: v })))}
+          {sliderRow('容器宽度', s.width, MIN_WIDTH, MAX_WIDTH, 'px', (v) => editSkin((x) => ({ ...x, width: v })))}
+          <p className={`text-[11px] ml-[5.5rem] ${tooNarrow ? 'text-amber-600' : 'text-gray-400'}`}>
+            按列表页当前侧栏计算,正文宽约 {width}px{tooNarrow ? ' · 偏窄,代码块和表格会难看' : ''}
+          </p>
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 w-20 shrink-0">字体</span>
+            <select
+              value={s.font}
+              onChange={(e) => editSkin((x) => ({ ...x, font: e.target.value as FontKey }))}
+              className="text-sm border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+            >
+              {(Object.keys(FONT_LABELS) as FontKey[]).map((f) => (<option key={f} value={f}>{FONT_LABELS[f]}</option>))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 w-20 shrink-0">列表样式</span>
+            <select
+              value={s.listStyle}
+              onChange={(e) => editSkin((x) => ({ ...x, listStyle: e.target.value as ListStyle }))}
+              className="text-sm border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+            >
+              {(Object.keys(LIST_STYLE_LABELS) as ListStyle[]).map((v) => (<option key={v} value={v}>{LIST_STYLE_LABELS[v]}</option>))}
+            </select>
+          </label>
+          <p className="text-[11px] text-gray-400 ml-[5.5rem]">纯文字列表不出缩略图,除了观感,也省掉每篇一次的图片请求。</p>
+        </div>
+
+        <div>
+          <p className="text-xs font-medium text-gray-600 mb-1">额外 CSS</p>
+          <textarea
+            value={s.css}
+            onChange={(e) => editSkin((x) => ({ ...x, css: e.target.value.slice(0, MAX_CSS_LEN) }))}
+            rows={8}
+            spellCheck={false}
+            placeholder={'/* 只作用于博客页。可用选择器如: */\n.cfnote-blog .cfnote-preview h2 { border-left: 4px solid var(--blog-accent); padding-left: .5rem; }\n.dark.cfnote-blog { --blog-bg: #1a1a1a; }'}
+            className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 outline-none focus:border-emerald-400 resize-y font-mono"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">
+            {s.css.length}/{MAX_CSS_LEN} 字符 · 注入在博客页内,不影响笔记本界面。中性色不满意时改 <code className="font-mono">--blog-bg</code> / <code className="font-mono">--blog-card</code> 一类变量即可。
+          </p>
+        </div>
+      </div>
+    )
+  }
   const menuEditor = (l: BlogLayout) => (
     <div className="max-w-3xl space-y-2">
       <p className="text-[11px] text-gray-400 leading-relaxed">
@@ -384,8 +531,11 @@ export default function BlogLayoutPanel({ token }: Props) {
         <button onClick={() => { setTab('menu'); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === 'menu' ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
           导航菜单
         </button>
+        <button onClick={() => { setTab('skin'); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === 'skin' ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
+          主题外观
+        </button>
 
-        {cur && tab !== 'menu' && (
+        {cur && tab !== 'menu' && tab !== 'skin' && (
           <>
             {/* 正文剩余宽度实时提示:左右同开最容易把正文压得没法看 */}
             <span className={`text-[11px] ml-2 px-2 py-0.5 rounded ${tooNarrow ? 'bg-amber-100 text-amber-700' : 'text-gray-400'}`}>
@@ -419,6 +569,8 @@ export default function BlogLayoutPanel({ token }: Props) {
             <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
           ) : tab === 'menu' ? (
             menuEditor(layout)
+          ) : tab === 'skin' ? (
+            skinEditor(skin)
           ) : (
             <div className="space-y-3">
               {SLOTS.map((s) => {
@@ -487,10 +639,11 @@ export default function BlogLayoutPanel({ token }: Props) {
           )}
         </div>
 
-        {/* 右侧是真的博客页(iframe);管理端窗口太窄时收起,左边照常能配 */}
+        {/* 右侧是真的博客页(iframe);管理端窗口太窄时收起,左边照常能配。
+            菜单页签不显示预览:菜单在顶栏,缩放后基本看不清,不如把编辑区放宽 */}
         {tab !== 'menu' && layout && (
           <div className="hidden lg:flex flex-1 min-w-0">
-            <BlogPreview layout={layout} page={page} onSelect={selectWidget} />
+            <BlogPreview layout={layout} skin={skin} page={page} onSelect={selectWidget} />
           </div>
         )}
       </div>

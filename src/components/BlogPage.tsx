@@ -13,6 +13,7 @@ import {
   parseBlogFilter, blogListUrl, blogListQuery, filterKey, isFiltered, PAGE_SIZE,
   type BlogFilter,
 } from '../lib/blogQuery'
+import { defaultSkin, parseBlogSkin, skinVars, type BlogSkin } from '../lib/blogSkin'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -345,7 +346,7 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
       </div>
 
       {enabled ? (
-        <div className="mt-4 bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg p-4">
+        <div className="mt-4 bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-[var(--blog-radius)] p-4">
           {replyTo && (
             <div className="text-xs text-[var(--blog-muted)] mb-2">
               回复 @{replyTo.name}
@@ -438,7 +439,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
 
   return (
     <div
-      className={`relative overflow-hidden rounded-lg bg-[var(--blog-panel)] ${h}`}
+      className={`relative overflow-hidden rounded-[var(--blog-radius)] bg-[var(--blog-panel)] ${h}`}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
@@ -507,7 +508,7 @@ function BannerWidget({ w, onGo }: { w: Widget; onGo: (url: string) => void }) {
 
   return (
     <div
-      className={`relative overflow-hidden rounded-lg px-6 text-center ${BANNER_PAD[o.height] || BANNER_PAD.md} ${
+      className={`relative overflow-hidden rounded-[var(--blog-radius)] px-6 text-center ${BANNER_PAD[o.height] || BANNER_PAD.md} ${
         bg.kind === 'none' ? 'bg-gradient-to-r from-[var(--blog-accent)] to-[var(--blog-accent-hover)]' : ''
       }`}
       style={
@@ -612,6 +613,8 @@ export default function BlogPage() {
   const [hotRange, setHotRange] = useState<'day' | 'week' | 'month'>('day')
   // 页面布局(P12.1):随 posts / posts/:id 一起下发,先用默认值渲染(默认即改造前的样子,不会闪)
   const [layout, setLayout] = useState<BlogLayout>(defaultLayout)
+  // 皮肤(P12.5):配色与排版,同样随响应下发。默认值逐项等于改造前的取值
+  const [skin, setSkin] = useState<BlogSkin>(defaultSkin)
   const [menuOpen, setMenuOpen] = useState(false)
   const [theme, setTheme] = useState<BlogTheme>(initialBlogTheme)
   const [themeManual, setThemeManual] = useState(() => storedBlogTheme() != null)
@@ -665,7 +668,10 @@ export default function BlogPage() {
     const onMsg = (e: MessageEvent) => {
       if (e.origin !== window.location.origin) return
       const d = e.data as any
-      if (d && d.type === 'cfnote-preview-layout' && typeof d.layout === 'string') setLayout(parseBlogLayout(d.layout))
+      if (d && d.type === 'cfnote-preview-layout') {
+        if (typeof d.layout === 'string') setLayout(parseBlogLayout(d.layout))
+        if (typeof d.skin === 'string') setSkin(parseBlogSkin(d.skin))
+      }
     }
     window.addEventListener('message', onMsg)
     postToParent({ type: 'cfnote-preview-ready' })
@@ -718,6 +724,7 @@ export default function BlogPage() {
   const applyPayload = (data: any) => {
     if (!data) return
     if (data.layout) setLayout(parseBlogLayout(JSON.stringify(data.layout)))
+    if (data.skin) setSkin(parseBlogSkin(JSON.stringify(data.skin)))
     setSide((cur) => ({
       hot: data.hot ?? cur.hot,
       recent: data.recent ?? cur.recent,
@@ -814,7 +821,7 @@ export default function BlogPage() {
   // ---- 模块渲染(P12.1)----
   // 每个模块是一张卡片;标题为空则不出标题栏(热榜自带 tab 头,故默认无标题)。
   const widgetCard = (w: Widget, body: React.ReactNode, pad = true) => (
-    <div key={w.id} className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg overflow-hidden">
+    <div key={w.id} className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-[var(--blog-radius)] overflow-hidden">
       {w.title && (
         <h3 className="text-[15px] font-bold text-[var(--blog-title)] border-b border-[var(--blog-border)] px-5 py-2.5">{w.title}</h3>
       )}
@@ -1041,10 +1048,18 @@ export default function BlogPage() {
     }`
 
   return (
-    <div className={`${theme === 'dark' ? 'dark ' : ''}cfnote-blog min-h-screen bg-[var(--blog-bg)] flex flex-col`}>
+    <div
+      className={`${theme === 'dark' ? 'dark ' : ''}cfnote-blog min-h-screen bg-[var(--blog-bg)] flex flex-col`}
+      style={skinVars(skin) as React.CSSProperties}
+    >
+      {/* 额外 CSS(P12.5):博主自己写的,与自定义 Markdown 模块同等信任。
+          用 React 塞进 <style> 的文本节点,不经 HTML 解析器,故不存在闭合标签逃逸;
+          sanitizeCss 另做了一道 `</style` 过滤与长度上限。 */}
+      {skin.css && <style>{skin.css}</style>}
+
       {/* 顶栏(两种主题下都保持黑色 chrome;文字用固定色值,避开应用深色映射对 gray 类的重排) */}
       <nav className="bg-[var(--blog-chrome)] sticky top-0 z-20">
-        <div className="max-w-[1400px] mx-auto px-5 h-14 flex items-center">
+        <div className="max-w-[var(--blog-max)] mx-auto px-5 h-14 flex items-center">
           <button onClick={goHome} className="flex items-center gap-2 mr-4 sm:mr-8 shrink-0">
             <span className="w-8 h-8 rounded bg-[var(--blog-accent)] text-white font-black flex items-center justify-center text-sm tracking-tight">CF</span>
             <span className="text-white font-bold text-xl">
@@ -1138,7 +1153,7 @@ export default function BlogPage() {
         )}
       </nav>
 
-      <div className="max-w-[1400px] w-full mx-auto px-5 py-5 flex-1">
+      <div className="max-w-[var(--blog-max)] w-full mx-auto px-5 py-5 flex-1">
         {/* 顶部槽位(全宽);无模块则整块不占位。窄屏侧栏若配置为「并到顶部」也落在这里 */}
         {(slot('top').length > 0 || narrowAt('top')) && (
           <div className="space-y-5 mb-5">
@@ -1198,51 +1213,71 @@ export default function BlogPage() {
                 </div>
               ) : (
                 <>
-                  {posts.map((p) => (
-                    <article
-                      key={p.id}
-                      onClick={() => openPost(p.id)}
-                      className="flex gap-5 py-6 border-b border-[var(--blog-border)] cursor-pointer group"
-                    >
-                      {p.thumb ? (
-                        <img
-                          src={p.thumb}
-                          alt=""
-                          loading="lazy"
-                          className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] object-cover rounded-md bg-black/30 shrink-0"
-                        />
-                      ) : (
-                        <div className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] rounded-md shrink-0 bg-gradient-to-br from-[var(--blog-thumb1)] to-[var(--blog-thumb2)] flex flex-col items-center justify-center gap-1">
-                          <span className="text-2xl">📝</span>
-                          <span className="text-xs text-gray-500 hidden sm:block">CFNote</span>
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0 flex flex-col py-0.5">
-                        <h2 className="text-base sm:text-[19px] font-bold leading-snug text-[var(--blog-title)] group-hover:text-[var(--blog-accent-hover)] transition-colors line-clamp-2">
+                  {posts.map((p) =>
+                    skin.listStyle === 'text' ? (
+                      // 纯文字列表:不出缩略图,一行一篇。除了观感,也实实在在省掉每篇一次的图片请求
+                      <article
+                        key={p.id}
+                        onClick={() => openPost(p.id)}
+                        className="flex items-center gap-3 py-3.5 border-b border-[var(--blog-border)] cursor-pointer group"
+                      >
+                        <h2 className="flex-1 min-w-0 truncate text-[15px] sm:text-[17px] font-medium text-[var(--blog-title)] group-hover:text-[var(--blog-accent-hover)] transition-colors">
                           {p.title}
                         </h2>
-                        {p.excerpt && <p className="text-sm text-[#999] mt-2.5 leading-relaxed line-clamp-2 hidden sm:block">{p.excerpt}</p>}
-                        <div className="mt-auto pt-3 flex items-center text-sm min-w-0">
-                          {/* 标签可点(P12.3):点了按标签筛列表。父级 article 有 onClick,故必须挡住冒泡 */}
-                          <span className="text-[#8f8f8f] truncate">
-                            Tags：
-                            {[p.tag, ...(p.tags || [])].filter(Boolean).map((t, i) => (
-                              <span key={`${t}-${i}`}>
-                                {i > 0 && '、'}
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); openTag(t) }}
-                                  className="hover:text-[var(--blog-accent-hover)] hover:underline transition-colors"
-                                >
-                                  {t}
-                                </button>
-                              </span>
-                            ))}
-                          </span>
-                          <span className="ml-auto pl-3 text-[var(--blog-accent-hover)] shrink-0">{fmtTime(p.published_at)}</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openTag(p.tag) }}
+                          className="hidden sm:block shrink-0 text-xs text-[#8f8f8f] hover:text-[var(--blog-accent-hover)] hover:underline max-w-[8rem] truncate"
+                        >
+                          {p.tag}
+                        </button>
+                        <span className="shrink-0 text-xs text-[var(--blog-accent-hover)] tabular-nums">{fmtTime(p.published_at)}</span>
+                      </article>
+                    ) : (
+                      <article
+                        key={p.id}
+                        onClick={() => openPost(p.id)}
+                        className="flex gap-5 py-6 border-b border-[var(--blog-border)] cursor-pointer group"
+                      >
+                        {p.thumb ? (
+                          <img
+                            src={p.thumb}
+                            alt=""
+                            loading="lazy"
+                            className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] object-cover rounded-md bg-black/30 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-[130px] h-[80px] sm:w-[215px] sm:h-[125px] rounded-md shrink-0 bg-gradient-to-br from-[var(--blog-thumb1)] to-[var(--blog-thumb2)] flex flex-col items-center justify-center gap-1">
+                            <span className="text-2xl">📝</span>
+                            <span className="text-xs text-gray-500 hidden sm:block">CFNote</span>
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0 flex flex-col py-0.5">
+                          <h2 className="text-base sm:text-[19px] font-bold leading-snug text-[var(--blog-title)] group-hover:text-[var(--blog-accent-hover)] transition-colors line-clamp-2">
+                            {p.title}
+                          </h2>
+                          {p.excerpt && <p className="text-sm text-[#999] mt-2.5 leading-relaxed line-clamp-2 hidden sm:block">{p.excerpt}</p>}
+                          <div className="mt-auto pt-3 flex items-center text-sm min-w-0">
+                            {/* 标签可点(P12.3):点了按标签筛列表。父级 article 有 onClick,故必须挡住冒泡 */}
+                            <span className="text-[#8f8f8f] truncate">
+                              Tags：
+                              {[p.tag, ...(p.tags || [])].filter(Boolean).map((t, i) => (
+                                <span key={`${t}-${i}`}>
+                                  {i > 0 && '、'}
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); openTag(t) }}
+                                    className="hover:text-[var(--blog-accent-hover)] hover:underline transition-colors"
+                                  >
+                                    {t}
+                                  </button>
+                                </span>
+                              ))}
+                            </span>
+                            <span className="ml-auto pl-3 text-[var(--blog-accent-hover)] shrink-0">{fmtTime(p.published_at)}</span>
+                          </div>
                         </div>
-                      </div>
-                    </article>
-                  ))}
+                      </article>
+                    )
+                  )}
 
                   {/* 加载更多(P12.3):不做无限滚动——读者永远够不到页脚,且返回列表时位置难还原 */}
                   {hasMore ? (
@@ -1346,15 +1381,15 @@ export default function BlogPage() {
       </div>
 
       {/* 章节目录(P11.8,详情页且 ≥3 个标题才出现):默认收起,左侧浮层。
-          left 用 max(...) 自适应——视口 ≥1880px 时整个浮层落在 1400px 容器外的留白里,不遮正文;
-          再窄就贴到边并按抽屉处理(见 TOC_DOCK_MIN)。 */}
+          left 用 max(...) 自适应——视口比容器宽出 30rem 时整个浮层落在容器外的留白里,不遮正文;
+          再窄就贴到边并按抽屉处理(见 TOC_DOCK_MIN)。容器宽度可在皮肤里配,故走 --blog-max。 */}
       {postId != null && toc.length > 0 && (
         tocOpen ? (
           <>
             {/* 会压到正文的宽度下才给遮罩:点空白即收起。top-14 让开 sticky 顶栏(同为 z-20,
                 inset-0 会盖住它导致目录开着时顶栏点不动) */}
             <div onClick={toggleToc} className="fixed inset-x-0 bottom-0 top-14 z-20 min-[1880px]:hidden" aria-hidden />
-            <nav className="fixed left-[max(0.75rem,calc((100vw-1400px)/2-15rem))] top-20 z-30 w-56 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-lg bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-xl p-3">
+            <nav className="fixed left-[max(0.75rem,calc((100vw-var(--blog-max))/2-15rem))] top-20 z-30 w-56 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-[var(--blog-radius)] bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-xl p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[11px] font-semibold text-[var(--blog-muted)] uppercase tracking-wider">本文目录</span>
                 <button onClick={toggleToc} title="收起目录" aria-label="收起目录" className="text-[var(--blog-muted)] hover:text-[var(--blog-accent-hover)] leading-none px-1">
@@ -1382,7 +1417,7 @@ export default function BlogPage() {
             onClick={toggleToc}
             aria-label="展开本文目录"
             title="本文目录"
-            className="fixed left-[max(0.75rem,calc((100vw-1400px)/2-3.5rem))] top-20 z-30 w-9 h-9 rounded-full bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-lg flex items-center justify-center text-[var(--blog-muted)] opacity-60 hover:opacity-100 hover:bg-[var(--blog-accent)] hover:border-[var(--blog-accent)] hover:text-white transition-all"
+            className="fixed left-[max(0.75rem,calc((100vw-var(--blog-max))/2-3.5rem))] top-20 z-30 w-9 h-9 rounded-full bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-lg flex items-center justify-center text-[var(--blog-muted)] opacity-60 hover:opacity-100 hover:bg-[var(--blog-accent)] hover:border-[var(--blog-accent)] hover:text-white transition-all"
           >
             <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />

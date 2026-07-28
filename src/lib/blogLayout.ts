@@ -354,9 +354,10 @@ export function firstWidgetOption(page: PageLayout, type: WidgetType, key: strin
 /**
  * 宽屏(≥1280px 且容器满宽)下正文的实际可用宽度。
  * 配置页据此实时提示,低于 CONTENT_WARN_BELOW 时警告——左右同开最容易踩这个坑。
+ * containerMax 可传皮肤里配的容器宽度(P12.5 起可调),不传则用默认的 1400。
  */
-export function contentWidth(page: PageLayout): number {
-  let w = CONTAINER_MAX - CONTAINER_PAD
+export function contentWidth(page: PageLayout, containerMax = CONTAINER_MAX): number {
+  let w = containerMax - CONTAINER_PAD
   if (hasSide(page, 'left')) w -= page.leftWidth + COL_GAP
   if (hasSide(page, 'right')) w -= page.rightWidth + COL_GAP
   return Math.max(0, w)

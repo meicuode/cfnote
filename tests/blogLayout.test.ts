@@ -143,6 +143,13 @@ describe('侧栏宽度与窄屏降级(P12.2)', () => {
     expect(contentWidth(empty.list)).toBe(1360)
   })
 
+  it('contentWidth 可传皮肤里配的容器宽度(P12.5)', () => {
+    const def = defaultLayout()
+    expect(contentWidth(def.list, 1200)).toBe(1200 - 40 - 380 - 28) // 752
+    expect(contentWidth(def.list, 1600)).toBe(1600 - 40 - 380 - 28) // 1152
+    expect(contentWidth(def.list)).toBe(contentWidth(def.list, 1400)) // 不传 = 默认 1400
+  })
+
   it('updatePageSettings 夹取宽度且不动模块', () => {
     const l = updatePageSettings(defaultLayout(), 'list', { leftWidth: 9999, narrow: 'top' })
     expect(l.list.leftWidth).toBe(MAX_SIDE_WIDTH)

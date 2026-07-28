@@ -372,6 +372,10 @@
   --blog-accent-soft: rgb(212 48 48 / 0.06);
   --blog-chrome: #0d0d0d;
   --blog-chrome-text: #c9c9c9;
+  /* 排版三项由皮肤内联覆盖(P12.5);这里的值 = 改造前的取值,也是无配置时的兜底 */
+  --blog-radius: 0.5rem;
+  --blog-fs: 16px;
+  --blog-max: 1400px;
   --blog-bg: #f5f6f7;
   --blog-card: #ffffff;
   --blog-panel: #ececee;
@@ -397,7 +401,9 @@
   --blog-thumb2: #2a2a2a;
   --blog-rank: #4a4a4a;
 }
-.cfnote-blog .cfnote-preview { font-size: 16px; line-height: 1.9; }
+/* 字体与正文字号可在皮肤里配(P12.5);--blog-font 未设时不写 font-family,沿用应用默认 */
+.cfnote-blog { font-family: var(--blog-font, inherit); }
+.cfnote-blog .cfnote-preview { font-size: var(--blog-fs, 16px); line-height: 1.9; }
 .cfnote-blog .cfnote-preview a { color: var(--blog-accent); }
 .cfnote-blog .cfnote-preview blockquote {
   background: var(--blog-accent-soft);
