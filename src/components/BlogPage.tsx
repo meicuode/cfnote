@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from '../lib/markdown'
 import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
@@ -326,15 +326,36 @@ export default function BlogPage() {
     try { return localStorage.getItem('cfnote-blog-toc') === '1' } catch { return false }
   })
 
-  // 详情渲染后做代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid)。
-  // 与编辑器预览同一套路,用 MutationObserver 兜底重跑(各库靠 data-* 标记幂等,不会重复处理):
-  // 一次性 effect 在异步 import 期间若遇到 React 重渲染(主题切换/热榜/评论加载)或内容注入,
-  // 捕获到的旧节点可能被换掉导致高亮丢失;观察者在 DOM 落定后再增强,确保稳定生效。
+  // 正文 HTML 必须 useMemo:React 对 dangerouslySetInnerHTML 是**按引用**比较 prop 的,
+  // 每次渲染新建 { __html } 对象会让它认定「变了」→ 整段 innerHTML 重新解析插入,
+  // 于是任何一次重渲染(主题切换、热榜/评论到达、滚动、开合目录)都会把正文节点整体换掉,
+  // 我们打在标题上的 id 随之丢失(P11.8 目录点了不跳的根因),高亮也会被抹掉。
+  const contentHtml = useMemo(() => renderMd(detail?.content || ''), [detail])
+
+  // 详情渲染后:代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid),并扫 h1~h3 打稳定 id 生成目录。
+  // 两件事都要在「DOM 落定后」做且必须可重跑——mermaid 会异步把 pre 换成 SVG——所以共用一个
+  // MutationObserver:各库靠 data-* 标记幂等,扫标题时 id 相同则不重复写,列表不变则不 setState,不会循环。
+  // (属性写入本就不触发这个只观察 childList/subtree 的观察者。)
   useEffect(() => {
     const root = contentRef.current
-    if (!detail || !root) return
-    enhanceRendered(root)
-    const mo = new MutationObserver(() => enhanceRendered(root))
+    if (!detail || !root) { setToc([]); return }
+    const scanHeadings = () => {
+      const used = new Set<string>()
+      const items: TocItem[] = []
+      root.querySelectorAll<HTMLElement>('h1, h2, h3').forEach((el) => {
+        const text = (el.textContent || '').trim()
+        if (!text) return
+        const id = slugifyHeading(text, used)
+        if (el.id !== id) el.id = id
+        el.classList.add('scroll-mt-20') // 让出 sticky 顶栏(h-14)
+        items.push({ id, text, level: Number(el.tagName[1]) })
+      })
+      const next = items.length >= MIN_TOC_HEADINGS ? items : []
+      setToc((cur) => (cur.length === next.length && cur.every((t, i) => t.id === next[i].id) ? cur : next))
+    }
+    const run = () => { enhanceRendered(root); scanHeadings() }
+    run()
+    const mo = new MutationObserver(run)
     mo.observe(root, { childList: true, subtree: true })
     return () => mo.disconnect()
   }, [detail])
@@ -344,24 +365,6 @@ export default function BlogPage() {
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
-
-  // 正文渲染后扫 h1~h3:打稳定 id(供 #锚点定位与分享)并生成目录。
-  // 属性写入不会触发上面那个 MutationObserver(它只观察 childList/subtree,不观察 attributes),无循环之虞。
-  useEffect(() => {
-    const root = contentRef.current
-    if (!detail || !root) { setToc([]); return }
-    const used = new Set<string>()
-    const items: TocItem[] = []
-    root.querySelectorAll<HTMLElement>('h1, h2, h3').forEach((el) => {
-      const text = (el.textContent || '').trim()
-      if (!text) return
-      const id = slugifyHeading(text, used)
-      el.id = id
-      el.classList.add('scroll-mt-20') // 让出 sticky 顶栏(h-14)
-      items.push({ id, text, level: Number(el.tagName[1]) })
-    })
-    setToc(items.length >= MIN_TOC_HEADINGS ? items : [])
-  }, [detail])
 
   // 带 #章节 打开时滚过去(评论锚点 #comment-<id> 由评论区自己处理,两边靠 id 形态区分)
   useEffect(() => {
@@ -600,7 +603,7 @@ export default function BlogPage() {
               <div
                 ref={contentRef}
                 className="cfnote-preview prose prose-sm max-w-none mt-6"
-                dangerouslySetInnerHTML={renderMd(detail.content)}
+                dangerouslySetInnerHTML={contentHtml}
               />
               <p className="text-center text-gray-600 text-sm mt-12">· 完 ·</p>
 
@@ -666,8 +669,9 @@ export default function BlogPage() {
       {postId != null && toc.length > 0 && (
         tocOpen ? (
           <>
-            {/* 会压到正文的宽度下才给遮罩:点空白即收起 */}
-            <div onClick={toggleToc} className="fixed inset-0 z-20 min-[1880px]:hidden" aria-hidden />
+            {/* 会压到正文的宽度下才给遮罩:点空白即收起。top-14 让开 sticky 顶栏(同为 z-20,
+                inset-0 会盖住它导致目录开着时顶栏点不动) */}
+            <div onClick={toggleToc} className="fixed inset-x-0 bottom-0 top-14 z-20 min-[1880px]:hidden" aria-hidden />
             <nav className="fixed left-[max(0.75rem,calc((100vw-1400px)/2-15rem))] top-20 z-30 w-56 max-h-[calc(100vh-7rem)] overflow-y-auto rounded-lg bg-[var(--blog-card)] border border-[var(--blog-border)] shadow-xl p-3">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-[11px] font-semibold text-[var(--blog-muted)] uppercase tracking-wider">本文目录</span>

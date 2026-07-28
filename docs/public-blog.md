@@ -38,6 +38,7 @@
 - 头像占位(P11.7):**不接 Gravatar**——需把访客邮箱哈希发给第三方,而公开评论接口本就不返回邮箱(邮箱只在管理端可见),国内访问 gravatar 也不稳。改为 `commentAvatar(name)`:昵称首字(按码点切分,兼容 emoji 昵称;空昵称回退 `?`)+ 按昵称哈希从 12 色中性调色板取色,同一昵称永远同色。零请求、明暗主题通用;博主固定用主题色(博客页 `#d43030`,管理端 emerald)。
 - 章节目录(P11.8):详情页左侧浮层,**默认收起**、点按钮展开,状态记 `localStorage['cfnote-blog-toc']`。位置不占布局——右栏(热榜)是 `hidden xl:block` 只有 ≥1280px 才在,目录挂那儿等于窄屏读者全看不到;正文容器又是 `max-w-[1400px] mx-auto`,容器内左侧并无空位(看到的留白是容器外的)。故用 `left-[max(0.75rem,calc((100vw-1400px)/2-15rem))]`:视口 ≥1880px 时整个浮层落在留白里不遮正文、可以一直开着,再窄就贴边并按抽屉处理(遮罩点击关闭、点章节跳完即关,这种临时收起不写 localStorage)。**≥3 个标题才出现**(`MIN_TOC_HEADINGS`)——短文挂目录纯属噪音。正文渲染后扫 h1~h3 打稳定 id(`slugifyHeading`,中文原样保留所以 `/blog/12#部署步骤` 可读,重名自动 `-2`),点章节走 `replaceState` 更新地址栏(可复制分享到某一节)但不往历史里塞条目,并复用 `.cfnote-highlight` 短暂高亮。写 id 是属性变更,不会触发详情页那个只观察 `childList/subtree` 的 MutationObserver,无循环。
 - 博客页与应用共用 SPA 入口(主包 112KB gzip),BlogPage 增量 3KB;个人博客流量下不单独拆入口。
+- 正文 HTML 必须 `useMemo`(P11.8.1 血的教训):React 对 `dangerouslySetInnerHTML` 是**按引用**比较 prop 的,每次渲染新建 `{ __html }` 就会重设整段 innerHTML——任何一次重渲染(主题切换、热榜/评论到达、滚动、开合目录)都把正文节点整体换掉。表现是打在标题上的锚点 id 消失(目录点了不跳)、代码高亮时有时无。缓存住引用后正文节点全程稳定;`enhanceRendered` 的 MutationObserver 仍保留(mermaid 会异步替换 `pre`),但不再是遮丑用的。
 - 深色样式:根节点挂 `dark cfnote-blog`,正文复用 `.cfnote-preview` 的集中深色映射,博客专属覆盖(红色链接/引用条)追加在映射之后按顺序生效。
 - Tags 显示的是所属笔记本名(笔记暂无独立标签系统;若要真标签需加表+编辑器打标 UI,列为备选需求)。
 - 浏览计数存 D1 `articles.views` 而非 Cloudflare 统计产品:Workers Analytics Engine 数据只保留 90 天且查询要走账号级 SQL API(需另存 API Token、每次页面渲染多一跳 HTTP),Web Analytics 免费版只有仪表盘无逐页 API——都无法在页面上展示"累计浏览 N"。D1 免费档每天 10 万行写入,个人博客量级下每次详情 1 行写入毫无压力,再配 Cache API 去重进一步省写。

@@ -92,6 +92,14 @@
 - **可分享的章节锚点**:正文渲染后扫 h1~h3,用 `slugifyHeading` 生成稳定 id(中文原样保留,`/blog/12#部署步骤` 可读;英文转小写、空白转 `-`、标点丢弃;重名自动 `-2`/`-3`)。点目录走 `replaceState` 更新地址栏——可直接复制分享到某一节,但不往历史里塞一堆条目;跳转后复用既有 `.cfnote-highlight` 短暂高亮,与评论锚点同一套观感。带 `#章节` 打开页面时自动滚过去;与 P11.7 的 `#comment-<id>` 靠 id 形态区分,互不干扰。写 id 属于属性变更,不会触发详情页那个只观察 `childList/subtree` 的 MutationObserver,无循环。纯逻辑抽 `src/lib/toc.ts`(+8 用例)。
 - 纯前端,无 schema 与接口改动;240 用例全绿。
 
+**P11.8.1(2026-07-28)✅**:修目录点了不跳(顺带修掉正文被反复重建的老问题)。
+
+- **根因**:`BlogPage` 的正文是 `dangerouslySetInnerHTML={renderMd(detail.content)}`,每次渲染都新建一个 `{ __html }` 对象;而 React 对这个 prop 是**按引用**比较的(`nextProp !== lastProp` 就重设),于是**任何一次重渲染**(主题切换、热榜/评论数据到达、滚动切换「回到顶部」、开合目录)都会把整段正文 HTML 重新解析、节点整体换掉。P11.8 打在 `h1~h3` 上的 id 就是这样被抹掉的——目录面板的数据还在(存在 state 里),但 `document.getElementById` 拿不到元素,`gotoHeading` 直接 return,所以点了毫无反应、地址栏也不变。
+- 这同时是 P10.5/P11.x「博客页高亮时有时无」的**真正原因**:当初用 MutationObserver 兜底重跑增强,治的是症状(节点被换掉后重新增强),没治因。
+- **改法**:正文 HTML 改用 `useMemo` 按 `detail` 缓存,引用稳定 → React 不再重设 innerHTML,正文节点在整个阅读过程中保持同一份。顺带把「扫标题打 id」并进原来那个 MutationObserver(mermaid 会异步把 `pre` 换成 SVG,标题扫描本就需要可重跑):id 相同则不重写、列表未变则不 `setState`,不会循环。副作用是每次重渲染不再重新解析整篇文章的 HTML,长文滚动明显更省。
+- 顺手修:目录展开时的遮罩是 `fixed inset-0 z-20`,与 `sticky top-0 z-20` 的顶栏同级且在 DOM 里更靠后,会盖住顶栏导致主题切换/「进入笔记本」点不动;改为 `top-14` 让开顶栏。
+- 纯前端,无 schema 与接口改动;240 用例全绿。
+
 ## 一、附件与「公开」的关系(现状盘点)
 
 附件模型(worker/routes/files.ts):
