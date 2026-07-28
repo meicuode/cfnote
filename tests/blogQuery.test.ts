@@ -11,6 +11,10 @@ import {
   tagLikePattern,
   textLikePattern,
   buildTagCloud,
+  relatedScore,
+  scoreRelated,
+  RELATED_NOTEBOOK_SCORE,
+  RELATED_TAG_SCORE,
   PAGE_SIZE,
   MAX_PAGE_SIZE,
   MAX_QUERY_LEN,
@@ -117,5 +121,50 @@ describe('buildTagCloud(标签云聚合,P12.3)', () => {
 
   it('空输入返回空数组', () => {
     expect(buildTagCloud([])).toEqual([])
+  })
+})
+
+describe('scoreRelated(相关文章打分,P12.4)', () => {
+  const seed = { id: 1, notebook_id: 10, tags: ['nginx', 'docker'] }
+
+  it('同笔记本 +2,每个共同标签 +3', () => {
+    expect(relatedScore(seed, { id: 2, notebook_id: 10, tags: [] })).toBe(RELATED_NOTEBOOK_SCORE)
+    expect(relatedScore(seed, { id: 3, notebook_id: 99, tags: ['nginx'] })).toBe(RELATED_TAG_SCORE)
+    expect(relatedScore(seed, { id: 4, notebook_id: 10, tags: ['nginx', 'docker'] })).toBe(
+      RELATED_NOTEBOOK_SCORE + RELATED_TAG_SCORE * 2
+    )
+    expect(relatedScore(seed, { id: 5, notebook_id: 99, tags: ['无关'] })).toBe(0)
+  })
+
+  it('标签比笔记本更能说明主题相近:双标签命中排在同笔记本之前', () => {
+    const out = scoreRelated(seed, [
+      { id: 2, notebook_id: 10, tags: [] },
+      { id: 3, notebook_id: 99, tags: ['nginx', 'docker'] },
+    ], 5)
+    expect(out.map((x) => x.id)).toEqual([3, 2])
+  })
+
+  it('排除自身与零分候选,取前 n 篇', () => {
+    const out = scoreRelated(seed, [
+      { id: 1, notebook_id: 10, tags: ['nginx'] }, // 自己
+      { id: 2, notebook_id: 10, tags: [] },
+      { id: 3, notebook_id: 99, tags: ['毫不相干'] }, // 零分
+      { id: 4, notebook_id: 10, tags: ['docker'] },
+    ], 1)
+    expect(out.map((x) => x.id)).toEqual([4])
+  })
+
+  it('同分保持候选集原顺序(SQL 已按发布时间倒序,即新的在前)', () => {
+    const out = scoreRelated(seed, [
+      { id: 7, notebook_id: 10, tags: [] },
+      { id: 8, notebook_id: 10, tags: [] },
+      { id: 9, notebook_id: 10, tags: [] },
+    ], 3)
+    expect(out.map((x) => x.id)).toEqual([7, 8, 9])
+  })
+
+  it('没有笔记本也没有标签时谁都不相关', () => {
+    expect(scoreRelated({ id: 1, notebook_id: null, tags: [] }, [{ id: 2, notebook_id: 3, tags: ['x'] }], 5)).toEqual([])
+    expect(scoreRelated(seed, [], 5)).toEqual([])
   })
 })

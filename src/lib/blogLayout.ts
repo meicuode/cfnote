@@ -17,8 +17,14 @@ export type PageName = 'list' | 'detail'
 export const PAGES: PageName[] = ['list', 'detail']
 export const PAGE_LABELS: Record<PageName, string> = { list: '列表页', detail: '详情页' }
 
-export type WidgetType = 'hot' | 'about' | 'markdown' | 'recent' | 'tags' | 'links' | 'search'
-export const WIDGET_TYPES: WidgetType[] = ['hot', 'about', 'markdown', 'recent', 'tags', 'links', 'search']
+export type WidgetType =
+  | 'hot' | 'about' | 'markdown' | 'recent' | 'tags' | 'links' | 'search'
+  // P12.4 顶部/底部向的模块(对标 WordPress 主题的 header/footer 组件)
+  | 'slider' | 'banner' | 'prevnext' | 'related' | 'postgrid'
+export const WIDGET_TYPES: WidgetType[] = [
+  'hot', 'about', 'markdown', 'recent', 'tags', 'links', 'search',
+  'slider', 'banner', 'prevnext', 'related', 'postgrid',
+]
 export const WIDGET_LABELS: Record<WidgetType, string> = {
   hot: '热榜(日/周/月)',
   about: '关于本站',
@@ -27,6 +33,46 @@ export const WIDGET_LABELS: Record<WidgetType, string> = {
   tags: '标签云',
   links: '友情链接',
   search: '站内搜索',
+  slider: '幻灯片 / 焦点图',
+  banner: '站点横幅',
+  prevnext: '上一篇 / 下一篇',
+  related: '相关文章',
+  postgrid: '文章宫格',
+}
+
+/**
+ * 各模块「适合放哪个槽位」。不做硬性禁止(宽度都是自适应的,硬禁反而让人困惑,
+ * WordPress 也只是给主题划出小工具区而已),只在添加菜单里分「常用 / 其他」两组。
+ */
+export const WIDGET_SLOT_HINT: Record<WidgetType, SlotName[]> = {
+  hot: ['left', 'right'],
+  about: ['left', 'right'],
+  markdown: ['top', 'left', 'right', 'bottom'],
+  recent: ['left', 'right'],
+  tags: ['left', 'right'],
+  links: ['left', 'right'],
+  search: ['top', 'left', 'right'],
+  slider: ['top'],
+  banner: ['top'],
+  prevnext: ['bottom'],
+  related: ['bottom'],
+  postgrid: ['top', 'bottom'],
+}
+
+/** 只有详情页才有「当前文章」,这两个模块在列表页无从谈起 */
+export const DETAIL_ONLY_WIDGETS: WidgetType[] = ['prevnext', 'related']
+
+export function widgetWorksOn(type: WidgetType, page: PageName): boolean {
+  return page === 'detail' || !DETAIL_ONLY_WIDGETS.includes(type)
+}
+
+/** 添加菜单分组:该槽位常用的排前面 */
+export function widgetChoices(slot: SlotName, page: PageName): { common: WidgetType[]; others: WidgetType[] } {
+  const usable = WIDGET_TYPES.filter((t) => widgetWorksOn(t, page))
+  return {
+    common: usable.filter((t) => WIDGET_SLOT_HINT[t].includes(slot)),
+    others: usable.filter((t) => !WIDGET_SLOT_HINT[t].includes(slot)),
+  }
 }
 
 export interface Widget {
@@ -293,6 +339,19 @@ export function maxWidgetOption(page: PageLayout, type: WidgetType, key: string,
 }
 
 /**
+ * 该页面第一个启用的该类模块的某个文本选项(如幻灯片的取数来源)。
+ * 同一页放两个来源不同的幻灯片属于极端用法,按第一个取——多查一份数据不值当。
+ */
+export function firstWidgetOption(page: PageLayout, type: WidgetType, key: string, fallback: string): string {
+  for (const s of SLOTS) {
+    for (const w of page[s]) {
+      if (w.enabled && w.type === type && w.options[key]) return w.options[key]
+    }
+  }
+  return fallback
+}
+
+/**
  * 宽屏(≥1280px 且容器满宽)下正文的实际可用宽度。
  * 配置页据此实时提示,低于 CONTENT_WARN_BELOW 时警告——左右同开最容易踩这个坑。
  */
@@ -318,6 +377,16 @@ export function parseLinks(text: string | undefined): { name: string; url: strin
     out.push({ name, url })
   }
   return out
+}
+
+/** 站点横幅的背景配置:图片 URL / 纯色 / 未配置。只放行安全形态,挡掉 `url(javascript:…)` 一类 */
+export function parseBannerBg(bg: string | undefined): { kind: 'image' | 'color' | 'none'; value: string } {
+  const v = (bg || '').trim()
+  if (!v) return { kind: 'none', value: '' }
+  if (/^(https?:\/\/|\/)[^\s"')]*$/i.test(v)) return { kind: 'image', value: v }
+  // 颜色只认 #hex 与 rgb()/rgba()/hsl()/hsla(),其余(含任意 CSS 函数)一律回落成默认背景
+  if (/^#[0-9a-f]{3,8}$/i.test(v) || /^(rgb|hsl)a?\([\d\s.,%/-]+\)$/i.test(v)) return { kind: 'color', value: v }
+  return { kind: 'none', value: '' }
 }
 
 // ---- 配置页用的不可变操作(都返回新对象,不改入参) ----
@@ -408,6 +477,23 @@ function newWidget(id: string, type: WidgetType): Widget {
       return { ...base, title: '友情链接', options: { items: 'Cloudflare|https://www.cloudflare.com' } }
     case 'search':
       return { ...base, title: '', options: { placeholder: '搜索文章…' } }
+    case 'slider':
+      // 默认 5 张、自动播放 5 秒。首图 eager 其余 lazy,且只渲染当前 ±1 张——
+      // 幻灯片是这批模块里唯一有真实带宽成本的,默认值要保守。
+      return { ...base, title: '', options: { source: 'recent', count: '5', auto: '1', interval: '5', height: 'md' } }
+    case 'banner':
+      // 「可关闭 + 小高度」就是公告条,故不再单列一个公告条模块
+      return {
+        ...base,
+        title: '',
+        options: { heading: '欢迎来到我的博客', subtitle: '这里是我的公开笔记精选。', bg: '', btnText: '', btnUrl: '', height: 'md', dismissible: '0' },
+      }
+    case 'prevnext':
+      return { ...base, title: '' }
+    case 'related':
+      return { ...base, title: '相关文章', options: { count: '4' } }
+    case 'postgrid':
+      return { ...base, title: '推荐阅读', options: { source: 'recent', count: '6', cols: '3' } }
     default:
       return base
   }

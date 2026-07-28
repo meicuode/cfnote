@@ -24,6 +24,11 @@ import {
   moveMenuItem,
   pageUsesWidget,
   maxWidgetOption,
+  firstWidgetOption,
+  parseBannerBg,
+  widgetChoices,
+  widgetWorksOn,
+  DETAIL_ONLY_WIDGETS,
   BLOG_LAYOUT_KEY,
   MIN_SIDE_WIDTH,
   MAX_SIDE_WIDTH,
@@ -252,8 +257,7 @@ describe('按布局装配数据(P12.3):worker 据此决定下发哪几份', () =
   })
 })
 
-describe('导航菜单(P12.3)', () => {
-  it('默认只有一个「首页」,等于改造前的顶栏', () => {
+describe('导航菜单(P12.3)', () => {  it('默认只有一个「首页」,等于改造前的顶栏', () => {
     expect(defaultMenu()).toEqual([{ id: 'home', type: 'home', label: '首页', value: '' }])
     expect(defaultLayout().menu).toEqual(defaultMenu())
   })
@@ -327,5 +331,69 @@ describe('导航菜单(P12.3)', () => {
   it('菜单跟着布局一起往返序列化', () => {
     const l = updateMenuItem(addMenuItem(defaultLayout(), 'link'), 'link', { label: 'CF', value: 'https://a.com' })
     expect(parseBlogLayout(serializeBlogLayout(l))).toEqual(l)
+  })
+})
+
+describe('顶部/底部模块(P12.4)', () => {
+  it('五个新类型能解析、能往返,旧配置不受影响', () => {
+    let l = defaultLayout()
+    for (const t of ['slider', 'banner', 'postgrid'] as const) l = addWidget(l, 'list', 'top', t)
+    l = addWidget(l, 'detail', 'bottom', 'prevnext')
+    l = addWidget(l, 'detail', 'bottom', 'related')
+    expect(parseBlogLayout(serializeBlogLayout(l))).toEqual(l)
+    expect(l.list.top.map((w) => w.type)).toEqual(['slider', 'banner', 'postgrid'])
+  })
+
+  it('新模块自带合理的初始配置(幻灯片默认 5 张、自动播放)', () => {
+    const l = addWidget(defaultLayout(), 'list', 'top', 'slider')
+    expect(l.list.top[0].options).toMatchObject({ source: 'recent', count: '5', auto: '1', height: 'md' })
+    const b = addWidget(defaultLayout(), 'list', 'top', 'banner')
+    expect(b.list.top[0].options.dismissible).toBe('0') // 默认不可关闭;勾上 + 矮高度就是公告条
+  })
+
+  it('「上一篇/下一篇」「相关文章」只在详情页成立', () => {
+    expect(DETAIL_ONLY_WIDGETS).toEqual(['prevnext', 'related'])
+    expect(widgetWorksOn('prevnext', 'list')).toBe(false)
+    expect(widgetWorksOn('prevnext', 'detail')).toBe(true)
+    expect(widgetWorksOn('slider', 'list')).toBe(true)
+  })
+
+  it('添加菜单按槽位分「常用 / 其他」,且列表页不列详情页专用的', () => {
+    const top = widgetChoices('top', 'list')
+    expect(top.common).toContain('slider')
+    expect(top.common).toContain('banner')
+    expect(top.common).not.toContain('hot') // 热榜是侧栏货色
+    expect([...top.common, ...top.others]).not.toContain('related')
+
+    const bottom = widgetChoices('bottom', 'detail')
+    expect(bottom.common).toEqual(expect.arrayContaining(['prevnext', 'related', 'postgrid']))
+
+    // 两组加起来 = 该页可用的全部类型,不重不漏
+    const all = [...bottom.common, ...bottom.others]
+    expect(new Set(all).size).toBe(all.length)
+    expect(all).toHaveLength(12)
+  })
+
+  it('firstWidgetOption 取第一个启用实例的取数来源', () => {
+    let l = addWidget(defaultLayout(), 'list', 'top', 'slider')
+    expect(firstWidgetOption(l.list, 'slider', 'source', 'recent')).toBe('recent')
+    l = updateWidget(l, 'list', 'slider', { options: { source: 'hot' } })
+    expect(firstWidgetOption(l.list, 'slider', 'source', 'recent')).toBe('hot')
+    // 停用的不算
+    l = toggleWidget(l, 'list', 'slider')
+    expect(firstWidgetOption(l.list, 'slider', 'source', 'recent')).toBe('recent')
+  })
+
+  it('parseBannerBg:只放行图片 URL 与规范颜色,其余回落默认渐变', () => {
+    expect(parseBannerBg('https://a.com/x.jpg')).toEqual({ kind: 'image', value: 'https://a.com/x.jpg' })
+    expect(parseBannerBg('/api/files/u1/abc/x.png')).toEqual({ kind: 'image', value: '/api/files/u1/abc/x.png' })
+    expect(parseBannerBg('#1f6feb')).toEqual({ kind: 'color', value: '#1f6feb' })
+    expect(parseBannerBg('rgba(0, 0, 0, .5)')).toEqual({ kind: 'color', value: 'rgba(0, 0, 0, .5)' })
+    expect(parseBannerBg('')).toEqual({ kind: 'none', value: '' })
+    expect(parseBannerBg(undefined)).toEqual({ kind: 'none', value: '' })
+    // 挡掉能拉外部资源或塞进任意 CSS 的写法
+    expect(parseBannerBg('url(javascript:alert(1))').kind).toBe('none')
+    expect(parseBannerBg('red; background-image: url(http://evil/x)').kind).toBe('none')
+    expect(parseBannerBg('image-set("http://evil/x")').kind).toBe('none')
   })
 })

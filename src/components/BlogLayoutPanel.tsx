@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
+import BlogPreview from './BlogPreview'
 import {
   defaultLayout, parseBlogLayout, serializeBlogLayout, locateWidget, contentWidth, hasSide,
   toggleWidget, updateWidget, updatePageSettings, moveWidget, addWidget, removeWidget,
   menuHref, addMenuItem, updateMenuItem, removeMenuItem, moveMenuItem,
-  SLOTS, SLOT_LABELS, PAGES, PAGE_LABELS, WIDGET_TYPES, WIDGET_LABELS, NARROW_LABELS,
+  widgetChoices, widgetWorksOn,
+  SLOTS, SLOT_LABELS, PAGES, PAGE_LABELS, WIDGET_LABELS, NARROW_LABELS,
   MENU_ITEM_TYPES, MENU_TYPE_LABELS, MENU_VALUE_HINTS,
   BLOG_LAYOUT_KEY, MIN_SIDE_WIDTH, MAX_SIDE_WIDTH, CONTENT_WARN_BELOW,
-  type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode, type MenuItemType,
+  type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode, type MenuItemType, type WidgetType,
 } from '../lib/blogLayout'
 
-// 页面布局(P12.1 骨架;P12.2 加左栏/拖拽/宽度/窄屏降级/更多模块;P12.3 加导航菜单):
-// 博客管理下的第三个子视图。列表页/详情页各一套,模块摆进「顶部 / 左侧栏 / 右侧栏 / 底部」四个槽位;
-// 另有一页配置博客顶栏菜单。整份配置存 settings 表的 blog_layout 键(一个 JSON 字符串),
+// 页面布局(P12.1 骨架;P12.2 左栏/拖拽/宽度/窄屏降级;P12.3 导航菜单;P12.4 真预览 + 顶部/底部模块):
+// 博客管理下的第三个子视图。左边摆模块(四个槽位竖排),右边是**真的博客页** iframe 实时预览
+// (见 BlogPreview.tsx:为什么不画仿真示意图)。整份配置存 settings 表的 blog_layout 键,
 // 复用既有的 GET/PUT /api/settings,无 schema 改动。
 
 interface Props {
@@ -97,6 +99,148 @@ export default function BlogLayoutPanel({ token }: Props) {
   const width = cur ? contentWidth(cur) : 0
   const tooNarrow = width < CONTENT_WARN_BELOW
 
+  // 预览里点了某个模块 → 展开它的编辑区并滚到可见处
+  const selectWidget = useCallback((id: string) => {
+    setEditing(id)
+    setTimeout(() => document.getElementById(`wrow-${id}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 0)
+  }, [])
+
+  // ---- 模块选项的通用控件(都直接写回 layout,预览随之即时刷新)----
+  const setOpt = (w: Widget, key: string, v: string) =>
+    edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, [key]: v } }))
+
+  const optLabel = (text: string, node: React.ReactNode) => (
+    <label className="block">
+      <span className="text-[11px] text-gray-400">{text}</span>
+      {node}
+    </label>
+  )
+  const optText = (w: Widget, key: string, label: string, placeholder = '') =>
+    optLabel(label, (
+      <input
+        value={w.options[key] || ''}
+        onChange={(e) => setOpt(w, key, e.target.value)}
+        placeholder={placeholder}
+        className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
+      />
+    ))
+  const optSelect = (w: Widget, key: string, label: string, opts: [string, string][], def: string) =>
+    optLabel(label, (
+      <select
+        value={w.options[key] || def}
+        onChange={(e) => setOpt(w, key, e.target.value)}
+        className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
+      >
+        {opts.map(([v, t]) => (<option key={v} value={v}>{t}</option>))}
+      </select>
+    ))
+  const optNumber = (w: Widget, key: string, label: string, min: number, max: number, def: string) =>
+    optLabel(label, (
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={w.options[key] || def}
+        onChange={(e) => setOpt(w, key, e.target.value)}
+        className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 block"
+      />
+    ))
+  const optCheck = (w: Widget, key: string, label: string, def: string) => (
+    <label className="flex items-center gap-1.5 text-[11px] text-gray-500">
+      <input
+        type="checkbox"
+        checked={(w.options[key] ?? def) === '1'}
+        onChange={(e) => setOpt(w, key, e.target.checked ? '1' : '0')}
+        className="accent-emerald-500"
+      />
+      {label}
+    </label>
+  )
+
+  /** 每种模块自己的表单 */
+  const widgetOptions = (w: Widget) => {
+    switch (w.type) {
+      case 'about':
+      case 'markdown':
+        return optLabel(
+          w.type === 'markdown' ? '正文(支持 Markdown:标题/列表/链接/图片/代码块)' : '正文(纯文本,换行保留)',
+          <textarea
+            value={w.options.text || ''}
+            onChange={(e) => setOpt(w, 'text', e.target.value)}
+            rows={5}
+            className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
+          />
+        )
+      case 'recent':
+        return optNumber(w, 'count', '显示条数(1–20)', 1, 20, '8')
+      case 'links':
+        return optLabel(
+          '一行一条,格式「名称|链接」(仅支持 http(s) 与站内 / 开头的路径)',
+          <textarea
+            value={w.options.items || ''}
+            onChange={(e) => setOpt(w, 'items', e.target.value)}
+            rows={4}
+            placeholder={'Cloudflare|https://www.cloudflare.com\n我的另一个站|https://example.com'}
+            className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
+          />
+        )
+      case 'tags':
+        return <p className="text-[11px] text-gray-400">自动统计全部公开文章的笔记本与标签(取前 30),点击跳到按该标签筛选的列表,无需配置。</p>
+      case 'search':
+        return (
+          <>
+            {optText(w, 'placeholder', '输入框提示文字', '搜索文章…')}
+            <p className="text-[11px] text-gray-400">搜索标题与正文,结果页地址形如 /blog?q=关键词。</p>
+          </>
+        )
+      case 'slider':
+        return (
+          <>
+            {optSelect(w, 'source', '取数来源', [['recent', '最新发布'], ['hot', '浏览量最高'], ['tag', '某个标签']], 'recent')}
+            {(w.options.source || 'recent') === 'tag' && optText(w, 'tag', '标签名或笔记本名', '运维')}
+            {optNumber(w, 'count', '张数(1–8)', 1, 8, '5')}
+            {optSelect(w, 'height', '高度', [['sm', '矮'], ['md', '中'], ['lg', '高']], 'md')}
+            {optCheck(w, 'auto', '自动播放', '1')}
+            {(w.options.auto ?? '1') === '1' && optNumber(w, 'interval', '间隔(秒,2–30)', 2, 30, '5')}
+            <p className="text-[11px] text-gray-400">只渲染当前及左右各一张,其余不会提前下载;首图优先加载。</p>
+          </>
+        )
+      case 'banner':
+        return (
+          <>
+            {optText(w, 'heading', '大标题', '欢迎来到我的博客')}
+            {optText(w, 'subtitle', '副标题', '这里是我的公开笔记精选。')}
+            {optText(w, 'bg', '背景(图片 URL 或颜色如 #1f6feb;留空用主题色渐变)')}
+            {optText(w, 'btnText', '按钮文字(留空则不显示按钮)')}
+            {optText(w, 'btnUrl', '按钮链接(http(s):// 或站内 /)')}
+            {optSelect(w, 'height', '高度', [['sm', '矮(当公告条用)'], ['md', '中'], ['lg', '高']], 'md')}
+            {optCheck(w, 'dismissible', '访客可关闭(记在浏览器里;改了文案会重新出现)', '0')}
+          </>
+        )
+      case 'related':
+        return (
+          <>
+            {optNumber(w, 'count', '篇数(1–8)', 1, 8, '4')}
+            {optSelect(w, 'cols', '每行列数', [['2', '2 列'], ['3', '3 列'], ['4', '4 列']], '4')}
+            <p className="text-[11px] text-gray-400">按「同笔记本 +2 分、每个共同标签 +3 分」排序取前几篇。</p>
+          </>
+        )
+      case 'postgrid':
+        return (
+          <>
+            {optSelect(w, 'source', '取数来源', [['recent', '最新发布'], ['hot', '浏览量最高'], ['tag', '某个标签']], 'recent')}
+            {(w.options.source || 'recent') === 'tag' && optText(w, 'tag', '标签名或笔记本名', '运维')}
+            {optNumber(w, 'count', '篇数(1–12)', 1, 12, '6')}
+            {optSelect(w, 'cols', '每行列数', [['2', '2 列'], ['3', '3 列'], ['4', '4 列']], '3')}
+          </>
+        )
+      case 'prevnext':
+        return <p className="text-[11px] text-gray-400">按发布时间取相邻两篇,「上一篇」是更新的那篇(与列表顺序一致),无需配置。</p>
+      default:
+        return null
+    }
+  }
+
   // ---- 导航菜单编辑(P12.3)----
   const menuEditor = (l: BlogLayout) => (
     <div className="max-w-3xl space-y-2">
@@ -171,6 +315,7 @@ export default function BlogLayoutPanel({ token }: Props) {
   const widgetRow = (w: Widget, slot: SlotName, i: number, total: number) => (
     <li
       key={w.id}
+      id={`wrow-${w.id}`}
       draggable
       onDragStart={(e) => { setDragId(w.id); e.dataTransfer.effectAllowed = 'move' }}
       onDragEnd={() => { setDragId(null); setOverSlot(null) }}
@@ -178,7 +323,7 @@ export default function BlogLayoutPanel({ token }: Props) {
       onDrop={(e) => { e.preventDefault(); e.stopPropagation(); drop(slot, i) }}
       className={`px-3 py-2 rounded-lg border cursor-move transition-opacity ${
         dragId === w.id ? 'opacity-40' : ''
-      } ${w.enabled ? 'border-gray-200 bg-white' : 'border-dashed border-gray-200 bg-gray-50'}`}
+      } ${editing === w.id ? 'border-emerald-400 ring-1 ring-emerald-200' : w.enabled ? 'border-gray-200 bg-white' : 'border-dashed border-gray-200 bg-gray-50'}`}
     >
       <div className="flex items-center gap-2">
         <span className="text-gray-300 shrink-0 select-none" title="拖动排序或换槽位">⠿</span>
@@ -197,73 +342,23 @@ export default function BlogLayoutPanel({ token }: Props) {
         <button onClick={() => edit((l) => removeWidget(l, page, w.id))} className="text-xs text-gray-400 hover:text-red-500" title="删除该模块">✕</button>
       </div>
 
+      {/* 配置从别处搬过来/换过页面时可能出现「这个模块在本页没意义」 */}
+      {!widgetWorksOn(w.type, page) && (
+        <p className="text-[11px] text-amber-600 mt-1">该模块要有「当前文章」才成立,只在详情页显示。</p>
+      )}
+
       {editing === w.id && (
         <div className="mt-2 space-y-2 border-t border-gray-100 pt-2">
-          <label className="block">
-            <span className="text-[11px] text-gray-400">标题(留空则不显示标题栏)</span>
+          {optLabel('标题(留空则不显示标题栏)', (
             <input
               value={w.title}
               onChange={(e) => edit((l) => updateWidget(l, page, w.id, { title: e.target.value }))}
               placeholder={w.type === 'hot' ? '热榜自带日/周/月切换,通常留空' : ''}
               className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
             />
-          </label>
+          ))}
 
-          {(w.type === 'about' || w.type === 'markdown') && (
-            <label className="block">
-              <span className="text-[11px] text-gray-400">
-                {w.type === 'markdown' ? '正文(支持 Markdown:标题/列表/链接/图片/代码块)' : '正文(纯文本,换行保留)'}
-              </span>
-              <textarea
-                value={w.options.text || ''}
-                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, text: e.target.value } }))}
-                rows={5}
-                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
-              />
-            </label>
-          )}
-
-          {w.type === 'recent' && (
-            <label className="block">
-              <span className="text-[11px] text-gray-400">显示条数(1–20)</span>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={w.options.count || '8'}
-                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, count: e.target.value } }))}
-                className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 block"
-              />
-            </label>
-          )}
-
-          {w.type === 'links' && (
-            <label className="block">
-              <span className="text-[11px] text-gray-400">一行一条,格式「名称|链接」(仅支持 http(s) 与站内 / 开头的路径)</span>
-              <textarea
-                value={w.options.items || ''}
-                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, items: e.target.value } }))}
-                rows={4}
-                placeholder={'Cloudflare|https://www.cloudflare.com\n我的另一个站|https://example.com'}
-                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
-              />
-            </label>
-          )}
-
-          {w.type === 'tags' && <p className="text-[11px] text-gray-400">自动统计全部公开文章的笔记本与标签(取前 30),点击标签会跳到按该标签筛选的列表,无需配置。</p>}
-
-          {w.type === 'search' && (
-            <label className="block">
-              <span className="text-[11px] text-gray-400">输入框提示文字</span>
-              <input
-                value={w.options.placeholder || ''}
-                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, placeholder: e.target.value } }))}
-                placeholder="搜索文章…"
-                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
-              />
-              <span className="text-[11px] text-gray-400 block mt-1">搜索标题与正文,结果页地址形如 /blog?q=关键词。</span>
-            </label>
-          )}
+          {widgetOptions(w)}
 
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[11px] text-gray-400">移到槽位</span>
@@ -318,66 +413,84 @@ export default function BlogLayoutPanel({ token }: Props) {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3">
-        {!cur || !layout ? (
-          <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
-        ) : tab === 'menu' ? (
-          menuEditor(layout)
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {SLOTS.map((s) => {
-              const side = s === 'left' || s === 'right'
-              return (
-                <div
-                  key={s}
-                  onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverSlot(s) } }}
-                  onDragLeave={() => setOverSlot((cs) => (cs === s ? null : cs))}
-                  onDrop={(e) => { e.preventDefault(); drop(s, null) }}
-                  className={`border rounded-lg p-2 flex flex-col min-h-[180px] transition-colors ${
-                    overSlot === s ? 'border-emerald-400 bg-emerald-50/40' : 'border-gray-100'
-                  }`}
-                >
-                  <div className="flex items-center justify-between px-1 pb-2">
-                    <span className="text-xs font-medium text-gray-600">
-                      {SLOT_LABELS[s]}
-                      <span className="text-[11px] text-gray-400 ml-1">{side ? '(窄屏按上面的设置降级)' : '(全宽)'}</span>
-                    </span>
-                    <select
-                      value=""
-                      onChange={(e) => { if (e.target.value) edit((l) => addWidget(l, page, s, e.target.value as any)) }}
-                      className="text-[11px] border border-gray-200 rounded px-1 py-0.5 text-gray-500 outline-none focus:border-emerald-400"
-                    >
-                      <option value="">+ 添加</option>
-                      {WIDGET_TYPES.map((t) => (<option key={t} value={t}>{WIDGET_LABELS[t]}</option>))}
-                    </select>
+      <div className="flex-1 flex min-h-0">
+        <div className={`overflow-y-auto p-3 ${tab === 'menu' ? 'flex-1' : 'w-full lg:w-[27rem] lg:shrink-0'}`}>
+          {!cur || !layout ? (
+            <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
+          ) : tab === 'menu' ? (
+            menuEditor(layout)
+          ) : (
+            <div className="space-y-3">
+              {SLOTS.map((s) => {
+                const side = s === 'left' || s === 'right'
+                const choices = widgetChoices(s, page)
+                return (
+                  <div
+                    key={s}
+                    onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverSlot(s) } }}
+                    onDragLeave={() => setOverSlot((cs) => (cs === s ? null : cs))}
+                    onDrop={(e) => { e.preventDefault(); drop(s, null) }}
+                    className={`border rounded-lg p-2 flex flex-col min-h-[92px] transition-colors ${
+                      overSlot === s ? 'border-emerald-400 bg-emerald-50/40' : 'border-gray-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between px-1 pb-2">
+                      <span className="text-xs font-medium text-gray-600">
+                        {SLOT_LABELS[s]}
+                        <span className="text-[11px] text-gray-400 ml-1">{side ? '(窄屏按上面的设置降级)' : '(全宽)'}</span>
+                      </span>
+                      <select
+                        value=""
+                        onChange={(e) => { if (e.target.value) edit((l) => addWidget(l, page, s, e.target.value as WidgetType)) }}
+                        className="text-[11px] border border-gray-200 rounded px-1 py-0.5 text-gray-500 outline-none focus:border-emerald-400"
+                      >
+                        <option value="">+ 添加</option>
+                        {/* 按槽位分「常用 / 其他」两组:不硬性禁止乱放(宽度都是自适应的),只给个次序 */}
+                        <optgroup label="本槽位常用">
+                          {choices.common.map((t) => (<option key={t} value={t}>{WIDGET_LABELS[t]}</option>))}
+                        </optgroup>
+                        {choices.others.length > 0 && (
+                          <optgroup label="其他">
+                            {choices.others.map((t) => (<option key={t} value={t}>{WIDGET_LABELS[t]}</option>))}
+                          </optgroup>
+                        )}
+                      </select>
+                    </div>
+
+                    {/* 侧栏宽度:只有该侧真的有启用模块时才影响正文,故未启用时给出说明 */}
+                    {side && (
+                      <label className="px-1 pb-2 flex items-center gap-2 text-[11px] text-gray-400">
+                        <span className="shrink-0">宽度</span>
+                        <input
+                          type="range"
+                          min={MIN_SIDE_WIDTH}
+                          max={MAX_SIDE_WIDTH}
+                          step={10}
+                          value={s === 'left' ? cur.leftWidth : cur.rightWidth}
+                          onChange={(e) => edit((l) => updatePageSettings(l, page, s === 'left' ? { leftWidth: Number(e.target.value) } : { rightWidth: Number(e.target.value) }))}
+                          className="flex-1 min-w-0 accent-emerald-500"
+                        />
+                        <span className="shrink-0 tabular-nums w-10 text-right">{s === 'left' ? cur.leftWidth : cur.rightWidth}</span>
+                        {!hasSide(cur, s) && <span className="shrink-0 text-gray-300">未启用</span>}
+                      </label>
+                    )}
+
+                    {cur[s].length === 0 ? (
+                      <div className="flex-1 flex items-center justify-center text-[11px] text-gray-300 py-2">拖模块到这里</div>
+                    ) : (
+                      <ul className="space-y-1.5">{cur[s].map((w, i) => widgetRow(w, s, i, cur[s].length))}</ul>
+                    )}
                   </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
-                  {/* 侧栏宽度:只有该侧真的有启用模块时才影响正文,故未启用时给出说明 */}
-                  {side && (
-                    <label className="px-1 pb-2 flex items-center gap-2 text-[11px] text-gray-400">
-                      <span className="shrink-0">宽度</span>
-                      <input
-                        type="range"
-                        min={MIN_SIDE_WIDTH}
-                        max={MAX_SIDE_WIDTH}
-                        step={10}
-                        value={s === 'left' ? cur.leftWidth : cur.rightWidth}
-                        onChange={(e) => edit((l) => updatePageSettings(l, page, s === 'left' ? { leftWidth: Number(e.target.value) } : { rightWidth: Number(e.target.value) }))}
-                        className="flex-1 min-w-0 accent-emerald-500"
-                      />
-                      <span className="shrink-0 tabular-nums w-10 text-right">{s === 'left' ? cur.leftWidth : cur.rightWidth}</span>
-                      {!hasSide(cur, s) && <span className="shrink-0 text-gray-300">未启用</span>}
-                    </label>
-                  )}
-
-                  {cur[s].length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center text-[11px] text-gray-300">拖模块到这里</div>
-                  ) : (
-                    <ul className="space-y-1.5">{cur[s].map((w, i) => widgetRow(w, s, i, cur[s].length))}</ul>
-                  )}
-                </div>
-              )
-            })}
+        {/* 右侧是真的博客页(iframe);管理端窗口太窄时收起,左边照常能配 */}
+        {tab !== 'menu' && layout && (
+          <div className="hidden lg:flex flex-1 min-w-0">
+            <BlogPreview layout={layout} page={page} onSelect={selectWidget} />
           </div>
         )}
       </div>

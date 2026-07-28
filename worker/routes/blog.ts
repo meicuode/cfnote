@@ -3,9 +3,9 @@ import { ok, err, getSettingValue, getSettingValues } from '../utils'
 import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
 import { parseTags } from '../../src/types'
 import { validateCommentInput, resolveThreadParent, buildThread, isHoneypotTripped, type FlatComment } from '../../src/lib/comments'
-import { parseBlogLayout, pageUsesWidget, maxWidgetOption, BLOG_LAYOUT_KEY, type PageLayout } from '../../src/lib/blogLayout'
+import { parseBlogLayout, pageUsesWidget, maxWidgetOption, firstWidgetOption, BLOG_LAYOUT_KEY, type PageLayout } from '../../src/lib/blogLayout'
 import {
-  clampLimit, clampOffset, tagLikePattern, textLikePattern, buildTagCloud, MAX_QUERY_LEN,
+  clampLimit, clampOffset, tagLikePattern, textLikePattern, buildTagCloud, scoreRelated, MAX_QUERY_LEN,
 } from '../../src/lib/blogQuery'
 import { notifyPendingComment } from './notify'
 import type { AppEnv } from '../types'
@@ -67,17 +67,120 @@ async function fetchTagCloud(env: AppEnv['Bindings']) {
   return buildTagCloud((results || []).map((r) => ({ tag: r.tag, tags: parseTags(r.tags) })))
 }
 
+// ---- 卡片型数据(P12.4:幻灯片 / 文章宫格 / 相关文章 / 上下篇)----
+// 这几个模块都要缩略图,故读正文前 2000 字符抽首图;但每次只读 3–12 行,比列表页轻得多。
+
+const CARD_COLS =
+  'a.id, a.title, SUBSTR(a.content, 1, 2000) as head, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id, n.name as tag'
+
+function toCard(r: any) {
+  return {
+    id: r.id,
+    title: r.title,
+    thumb: mdFirstImage(r.head || ''),
+    excerpt: mdExcerpt(r.head || '', 60),
+    tag: r.tag || '未分类',
+    tags: parseTags(r.tags),
+    notebook_id: r.notebook_id ?? null,
+    published_at: r.published_at || r.updated_at,
+    views: r.views || 0,
+  }
+}
+
+const clampCount = (v: unknown, def: number, max: number) => {
+  const n = Math.floor(Number(v))
+  return Number.isFinite(n) && n > 0 ? Math.min(max, n) : def
+}
+
+/** 幻灯片/宫格的取数:最新 / 最热 / 某标签 */
+async function fetchCards(env: AppEnv['Bindings'], source: string, tag: string, limit: number) {
+  const cond = [PUBLIC_WHERE]
+  const args: unknown[] = []
+  if (source === 'tag' && tag) {
+    cond.push("(n.name = ? OR a.tags LIKE ? ESCAPE '\\')")
+    args.push(tag, tagLikePattern(tag))
+  }
+  const order = source === 'hot' ? 'a.views DESC, COALESCE(a.published_at, a.updated_at) DESC' : 'COALESCE(a.published_at, a.updated_at) DESC'
+  const { results } = await env.DB.prepare(
+    `SELECT ${CARD_COLS} FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+      WHERE ${cond.join(' AND ')} ORDER BY ${order} LIMIT ?`
+  ).bind(...args, limit).all<any>()
+  return (results || []).map(toCard)
+}
+
+/** 相关文章:候选集 = 同笔记本或有共同标签,打分排序在 blogQuery.scoreRelated(可单测) */
+async function fetchRelated(env: AppEnv['Bindings'], seed: { id: number; notebook_id: number | null; tags: string[] }, limit: number) {
+  const or: string[] = []
+  const args: unknown[] = [seed.id]
+  if (seed.notebook_id != null) { or.push('a.notebook_id = ?'); args.push(seed.notebook_id) }
+  for (const t of seed.tags.slice(0, 5)) { or.push("a.tags LIKE ? ESCAPE '\\'"); args.push(tagLikePattern(t)) }
+  if (or.length === 0) return []
+  const { results } = await env.DB.prepare(
+    `SELECT ${CARD_COLS} FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+      WHERE ${PUBLIC_WHERE} AND a.id != ? AND (${or.join(' OR ')})
+      ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 20`
+  ).bind(...args).all<any>()
+  return scoreRelated(seed, (results || []).map(toCard), limit)
+}
+
+/** 上一篇(更新)/ 下一篇(更早):与列表顺序一致,各一条 LIMIT 1 */
+async function fetchNeighbors(env: AppEnv['Bindings'], id: number, sortKey: string) {
+  const one = async (cmp: '>' | '<', dir: 'ASC' | 'DESC') => {
+    const r = await env.DB.prepare(
+      `SELECT ${CARD_COLS} FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+        WHERE ${PUBLIC_WHERE} AND a.id != ? AND COALESCE(a.published_at, a.updated_at) ${cmp} ?
+        ORDER BY COALESCE(a.published_at, a.updated_at) ${dir} LIMIT 1`
+    ).bind(id, sortKey).first<any>()
+    return r ? toCard(r) : null
+  }
+  const [prev, next] = await Promise.all([one('>', 'ASC'), one('<', 'DESC')])
+  return { prev, next }
+}
+
+/** 当前文章:详情页的 prevnext / related 要用 */
+interface ArticleSeed {
+  id: number
+  notebook_id: number | null
+  tags: string[]
+  sortKey: string
+}
+
 /** 该页布局用得上的那几份数据(并发取);没启用的模块对应字段直接不出现在响应里 */
-async function widgetData(env: AppEnv['Bindings'], page: PageLayout) {
-  const [hot, recent, tagCloud] = await Promise.all([
-    pageUsesWidget(page, 'hot') ? fetchHot(env) : Promise.resolve(null),
-    pageUsesWidget(page, 'recent') ? fetchRecent(env, maxWidgetOption(page, 'recent', 'count', 8)) : Promise.resolve(null),
-    pageUsesWidget(page, 'tags') ? fetchTagCloud(env) : Promise.resolve(null),
+async function widgetData(env: AppEnv['Bindings'], page: PageLayout, article?: ArticleSeed) {
+  const uses = (t: Parameters<typeof pageUsesWidget>[1]) => pageUsesWidget(page, t)
+  const [hot, recent, tagCloud, slider, grid, related, neighbors] = await Promise.all([
+    uses('hot') ? fetchHot(env) : Promise.resolve(null),
+    uses('recent') ? fetchRecent(env, maxWidgetOption(page, 'recent', 'count', 8)) : Promise.resolve(null),
+    uses('tags') ? fetchTagCloud(env) : Promise.resolve(null),
+    uses('slider')
+      ? fetchCards(
+          env,
+          firstWidgetOption(page, 'slider', 'source', 'recent'),
+          firstWidgetOption(page, 'slider', 'tag', ''),
+          clampCount(maxWidgetOption(page, 'slider', 'count', 5), 5, 8)
+        )
+      : Promise.resolve(null),
+    uses('postgrid')
+      ? fetchCards(
+          env,
+          firstWidgetOption(page, 'postgrid', 'source', 'recent'),
+          firstWidgetOption(page, 'postgrid', 'tag', ''),
+          clampCount(maxWidgetOption(page, 'postgrid', 'count', 6), 6, 12)
+        )
+      : Promise.resolve(null),
+    uses('related') && article
+      ? fetchRelated(env, article, clampCount(maxWidgetOption(page, 'related', 'count', 4), 4, 8))
+      : Promise.resolve(null),
+    uses('prevnext') && article ? fetchNeighbors(env, article.id, article.sortKey) : Promise.resolve(null),
   ])
   const out: Record<string, unknown> = {}
   if (hot) out.hot = hot
   if (recent) out.recent = recent
   if (tagCloud) out.tag_cloud = tagCloud
+  if (slider) out.slider = slider
+  if (grid) out.grid = grid
+  if (related) out.related = related
+  if (neighbors) out.neighbors = neighbors
   return out
 }
 
@@ -168,12 +271,14 @@ async function commentRateLimited(ip: string): Promise<boolean> {
 
 // GET /api/blog/posts/:id - 公开文章详情(浏览计数:去重后 +1,waitUntil 不阻塞响应)
 // 详情页要的一切(布局 + 侧栏模块数据 + 评论开关)都在这一次响应里,前端不再另拉列表与热榜。
+// ?preview=1:布局配置页的 iframe 预览用,不计浏览量——否则调一次布局就给自己刷一次量。
 blog.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
+  const preview = c.req.query('preview') === '1'
   try {
     const [a, settings] = await Promise.all([
       c.env.DB.prepare(
-        `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, n.name as tag
+        `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id, n.name as tag
          FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
          WHERE a.id = ? AND ${PUBLIC_WHERE}`
       ).bind(id).first<any>(),
@@ -181,19 +286,23 @@ blog.get('/posts/:id', async (c) => {
     ])
     if (!a) return err('文章不存在或未公开', 404)
     const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
-    const counted = await shouldCountView(id, c.req.header('cf-connecting-ip') || '')
+    const counted = !preview && (await shouldCountView(id, c.req.header('cf-connecting-ip') || ''))
     if (counted) {
       c.executionCtx.waitUntil(
         c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
       )
     }
+    // notebook_id 只用于「相关文章」打分,不进公开响应
+    const { notebook_id, ...pub } = a
+    const tags = parseTags(a.tags)
+    const seed = { id: a.id, notebook_id: notebook_id ?? null, tags, sortKey: a.published_at || a.updated_at }
     return ok({
-      ...a,
+      ...pub,
       tag: a.tag || '未分类',
-      tags: parseTags(a.tags),
+      tags,
       comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
       layout,
-      ...(await widgetData(c.env, layout.detail)),
+      ...(await widgetData(c.env, layout.detail, seed)),
       published_at: a.published_at || a.updated_at,
       views: (a.views || 0) + (counted ? 1 : 0),
     })

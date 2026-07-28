@@ -362,9 +362,16 @@
 
 /* ==== 公开博客(IT之家风格,亮/暗双主题;根元素带 cfnote-blog,深色再加 dark)====
    放在深色映射之后:同特异性规则按顺序覆盖(如链接色 emerald → 红)。
-   顶栏与页脚固定黑色 chrome(IT之家日间模式同为深色顶栏),内容区颜色走 --blog-* 变量。 */
+   顶栏与页脚是 --blog-chrome(IT之家日间模式同为深色顶栏),内容区颜色走其余 --blog-* 变量。
+   主色单列为 --blog-accent / --blog-accent-hover(P12.4):此前 #d43030/#e05252 硬编码在 BlogPage 里
+   三十多处,配色主题无从下手;收进变量后换肤只是改这几行。 */
 .cfnote-blog {
   color-scheme: light;
+  --blog-accent: #d43030;
+  --blog-accent-hover: #e05252;
+  --blog-accent-soft: rgb(212 48 48 / 0.06);
+  --blog-chrome: #0d0d0d;
+  --blog-chrome-text: #c9c9c9;
   --blog-bg: #f5f6f7;
   --blog-card: #ffffff;
   --blog-panel: #ececee;
@@ -378,6 +385,7 @@
 }
 .dark.cfnote-blog {
   color-scheme: dark;
+  --blog-accent-soft: rgb(212 48 48 / 0.07);
   --blog-bg: #262626;
   --blog-card: #2f2f2f;
   --blog-panel: #0d0d0d;
@@ -390,10 +398,10 @@
   --blog-rank: #4a4a4a;
 }
 .cfnote-blog .cfnote-preview { font-size: 16px; line-height: 1.9; }
-.cfnote-blog .cfnote-preview a { color: #d43030; }
+.cfnote-blog .cfnote-preview a { color: var(--blog-accent); }
 .cfnote-blog .cfnote-preview blockquote {
-  background: rgb(212 48 48 / 0.06);
-  border-left-color: #d43030;
+  background: var(--blog-accent-soft);
+  border-left-color: var(--blog-accent);
 }
 .dark.cfnote-blog .cfnote-preview { color: #c9c9c9; }
 .dark.cfnote-blog .cfnote-preview h1,
@@ -401,8 +409,8 @@
 .dark.cfnote-blog .cfnote-preview h3,
 .dark.cfnote-blog .cfnote-preview h4 { color: #f0f0f0; }
 .dark.cfnote-blog .cfnote-preview strong { color: #f0f0f0; }
-.dark.cfnote-blog .cfnote-preview a { color: #e05252; }
+.dark.cfnote-blog .cfnote-preview a { color: var(--blog-accent-hover); }
 .dark.cfnote-blog .cfnote-preview blockquote {
-  background: rgb(212 48 48 / 0.07);
+  background: var(--blog-accent-soft);
   color: #c9c9c9;
 }
