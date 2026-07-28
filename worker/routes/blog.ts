@@ -71,11 +71,6 @@ async function commentRateLimited(ip: string): Promise<boolean> {
   }
 }
 
-async function sha1hex(s: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s))
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 // GET /api/blog/posts/:id - 公开文章详情(浏览计数:去重后 +1,waitUntil 不阻塞响应)
 blog.get('/posts/:id', async (c) => {
   const id = c.req.param('id')
@@ -201,11 +196,13 @@ blog.post('/comments', async (c) => {
     const name = String(body.author_name).trim()
     const email = body.author_email ? String(body.author_email).trim() : null
     const content = String(body.content).trim()
-    const ipHash = ip ? await sha1hex(ip) : null
+    // 明文 IP 与 UA(P11.9):仅管理端可见(公开 GET 从不返回),用于识别刷评论/垃圾评论来源。
+    // 原先只存无盐 SHA-1——IPv4 空间仅 43 亿,彩虹表几秒即可还原,那点保护是自我安慰,故不再写。
+    const ua = (c.req.header('user-agent') || '').slice(0, 300) // 截断:避免超长 UA 撑大行
     const ins = await c.env.DB.prepare(
-      `INSERT INTO comments (article_id, parent_id, root_id, author_name, author_email, content, status, is_admin, ip_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).bind(articleId, parent_id, root_id, name, email || null, content, status, ipHash).run()
+      `INSERT INTO comments (article_id, parent_id, root_id, author_name, author_email, content, status, is_admin, ip, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).bind(articleId, parent_id, root_id, name, email || null, content, status, ip || null, ua || null).run()
     if (status === 'pending') {
       c.executionCtx.waitUntil(notifyPendingComment(c.env, { articleId, articleTitle: art.title, author: name, content }))
     }

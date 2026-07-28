@@ -87,9 +87,17 @@ const COMMENTS_TABLE = `CREATE TABLE IF NOT EXISTS comments (
   status TEXT NOT NULL DEFAULT 'pending',
   is_admin INTEGER DEFAULT 0,
   ip_hash TEXT,
+  ip TEXT,
+  user_agent TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
 )`
+
+// P11.9 评论来源:明文 IP 与 User-Agent(仅管理端可见)。旧库在评论表建出之后再补列。
+const COMMENT_COLUMNS: Record<string, string> = {
+  ip: 'ALTER TABLE comments ADD COLUMN ip TEXT',
+  user_agent: 'ALTER TABLE comments ADD COLUMN user_agent TEXT',
+}
 
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
@@ -127,4 +135,10 @@ async function doEnsure(env: Env): Promise<void> {
   await env.DB.prepare(COMMENTS_TABLE).run()
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id, status, created_at)').run()
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status, created_at)').run()
+  // P11.9 旧库补 ip/user_agent(全新库已由上方 CREATE 带出);必须在评论表建出之后
+  const { results: cmtCols } = await env.DB.prepare('PRAGMA table_info(comments)').all<{ name: string }>()
+  const cmtHave = new Set((cmtCols || []).map((r) => r.name))
+  for (const [col, sql] of Object.entries(COMMENT_COLUMNS)) {
+    if (!cmtHave.has(col)) await env.DB.prepare(sql).run()
+  }
 }

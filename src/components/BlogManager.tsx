@@ -31,6 +31,9 @@ interface AdminComment {
   is_admin: number | boolean
   created_at: string
   article_title: string
+  /** 来源(P11.9,仅管理端可见):明文 IP 与原始 UA;老评论为空 */
+  ip: string | null
+  user_agent: string | null
 }
 
 interface Props {
@@ -325,6 +328,13 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                       <div className="text-[11px] text-gray-400 mt-1 truncate">
                         于《{cm.article_title || '无标题'}》{cm.author_email ? ` · ${cm.author_email}` : ''}
                       </div>
+                      {/* 来源(P11.9):博主自己看,不对外;老评论没有这两列则整行不显示 */}
+                      {(cm.ip || cm.user_agent) && (
+                        <div className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2 min-w-0">
+                          {cm.ip && <span className="font-mono shrink-0" title="提交时的来源 IP">{cm.ip}</span>}
+                          {cm.user_agent && <span className="truncate" title={cm.user_agent}>{cm.user_agent}</span>}
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-2">
                         {cm.status !== 'approved' && <button onClick={() => setStatus(cm.id, 'approve')} disabled={cBusy === cm.id} className="text-xs text-emerald-600 hover:underline disabled:opacity-50">通过</button>}
                         {cm.status !== 'rejected' && <button onClick={() => setStatus(cm.id, 'reject')} disabled={cBusy === cm.id} className="text-xs text-gray-500 hover:underline disabled:opacity-50">{cm.status === 'approved' ? '下架' : '拒绝'}</button>}

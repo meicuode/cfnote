@@ -18,7 +18,7 @@ comments.get('/', async (c) => {
     if (Number.isInteger(articleId) && articleId > 0) { conds.push('cm.article_id = ?'); binds.push(articleId) }
     const { results } = await c.env.DB.prepare(
       `SELECT cm.id, cm.article_id, cm.parent_id, cm.root_id, cm.author_name, cm.author_email,
-              cm.content, cm.status, cm.is_admin, cm.created_at, a.title AS article_title
+              cm.content, cm.status, cm.is_admin, cm.created_at, cm.ip, cm.user_agent, a.title AS article_title
          FROM comments cm JOIN articles a ON a.id = cm.article_id
         WHERE ${conds.join(' AND ')}
         ORDER BY cm.created_at DESC LIMIT 300`

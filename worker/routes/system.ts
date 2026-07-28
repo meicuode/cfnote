@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS comments (
   status TEXT NOT NULL DEFAULT 'pending',
   is_admin INTEGER DEFAULT 0,
   ip_hash TEXT,
+  ip TEXT,
+  user_agent TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE
 );
