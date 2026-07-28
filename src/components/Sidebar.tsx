@@ -18,8 +18,8 @@ interface Props {
   /** 文件管理二级菜单(P11.6):仅进入文件管理时由 Layout 传入,退出为 null */
   fileNavSlot?: ReactNode
   /** 博客管理当前子视图(null=未打开),用于高亮 */
-  blogView: 'articles' | 'comments' | null
-  onOpenBlog: (view: 'articles' | 'comments') => void
+  blogView: 'articles' | 'comments' | 'layout' | null
+  onOpenBlog: (view: 'articles' | 'comments' | 'layout') => void
 }
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
@@ -235,6 +235,21 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
               </svg>
             </span>
             <span className="truncate flex-1">评论管理</span>
+          </button>
+          {/* 二级菜单:页面布局(P12.1 模块化槽位配置) */}
+          <button
+            onClick={() => onOpenBlog('layout')}
+            className={`w-full text-left flex items-center gap-2.5 pl-8 pr-2.5 py-1.5 rounded-lg text-[13px] transition-colors ${
+              blogView === 'layout' ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
+            }`}
+            title="配置博客列表页/详情页的模块与位置"
+          >
+            <span className={`shrink-0 ${blogView === 'layout' ? 'text-emerald-500' : 'text-gray-400'}`}>
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 5h16M4 5v14M4 19h16M20 5v14M14 9v6M14 9H4m10 0h6m-6 6H4m10 0h6" />
+              </svg>
+            </span>
+            <span className="truncate flex-1">页面布局</span>
           </button>
           {/* 文件管理(P8.2):管理应用内全部附件;P11.5 起内联展示于右侧工作区 */}
           <button

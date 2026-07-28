@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
 import ArticleEditor from './ArticleEditor'
+import BlogLayoutPanel from './BlogLayoutPanel'
 import { commentAvatar } from '../lib/comments'
 import type { Notebook, Article } from '../types'
 
@@ -39,9 +40,9 @@ interface AdminComment {
 interface Props {
   token: string
   notebooks: Notebook[]
-  /** 当前子视图,由 URL(?panel=blog|comments)驱动 */
-  tab: 'articles' | 'comments'
-  onTabChange: (tab: 'articles' | 'comments') => void
+  /** 当前子视图,由 URL(?panel=blog|comments|layout)驱动 */
+  tab: 'articles' | 'comments' | 'layout'
+  onTabChange: (tab: 'articles' | 'comments' | 'layout') => void
   /** 返回笔记工作区 */
   onClose: () => void
   onOpenArticle: (id: number) => void
@@ -200,7 +201,7 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
         <div className="flex items-center gap-2 min-w-0">
           <span className="w-7 h-7 rounded-lg bg-emerald-500 text-white flex items-center justify-center shrink-0">📢</span>
           <span className="font-semibold text-gray-900">博客管理</span>
-          <span className="text-xs text-gray-400 truncate">{tab === 'articles' ? '已公开文章' : '评论审核'}</span>
+          <span className="text-xs text-gray-400 truncate">{tab === 'articles' ? '已公开文章' : tab === 'comments' ? '评论审核' : '页面布局'}</span>
         </div>
         <button onClick={onClose} className="text-xs text-gray-400 hover:text-emerald-600 shrink-0 px-2 py-1 rounded-lg hover:bg-gray-100" title="返回笔记工作区">
           返回笔记
@@ -214,9 +215,12 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
           评论管理
           {pendingCount > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">{pendingCount > 99 ? '99+' : pendingCount}</span>}
         </button>
+        <button onClick={() => onTabChange('layout')} className={tabCls(tab === 'layout')}>页面布局</button>
       </div>
 
-        {tab === 'articles' ? (
+        {tab === 'layout' ? (
+          <BlogLayoutPanel token={token} />
+        ) : tab === 'articles' ? (
           // 两栏(P11.7):左「已公开文章」列表 + 右完整编辑器,中间可拖拽分隔
           <div className="flex-1 flex min-h-0">
             <div className="flex flex-col min-h-0 shrink-0 border-r border-gray-100" style={{ width: listWidth }}>

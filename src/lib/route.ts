@@ -4,7 +4,8 @@
 //
 // 路径 = 基础位置:  /  |  /nb/:id[/:articleId]  |  /private[/:articleId]
 //                    |  /trash[/:articleId]     |  /tag/:name[/:articleId]
-// query = 叠加面板:  ?panel=files|settings|stats|logs|blog|comments(blog/comments 为博客管理的两个子视图)
+// query = 叠加面板:  ?panel=files|settings|stats|logs|blog|comments|layout
+//                    (blog/comments/layout 为博客管理的三个子视图)
 // 兼容入口:          /?article=:id  (window.open 深链;消费后规范化为 /nb/:nbId/:id)
 
 export type RouteView =
@@ -14,7 +15,7 @@ export type RouteView =
   | { kind: 'trash' }
   | { kind: 'tag'; name: string }
 
-export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | 'blog' | 'comments' | null
+export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | 'blog' | 'comments' | 'layout' | null
 
 /** 文件管理子视图(P11.6):侧栏二级菜单选中项;名字不入 URL,渲染时从 overview 现取 */
 export type FmSub =
@@ -33,7 +34,7 @@ export interface MainRoute {
   legacyArticleId: number | null
 }
 
-const PANELS = ['files', 'settings', 'stats', 'logs', 'blog', 'comments'] as const
+const PANELS = ['files', 'settings', 'stats', 'logs', 'blog', 'comments', 'layout'] as const
 
 /** 正整数(文章 id)否则 null;草稿负 id / 0 / 非法一律不入 URL */
 function posInt(s: string | null | undefined): number | null {

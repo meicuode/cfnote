@@ -59,11 +59,13 @@ describe('parseLocation', () => {
   })
 
   // P11.4:博客管理拆为两个内联子视图,各自可刷新保持
-  it('博客管理两个子视图 blog/comments 往返', () => {
+  it('博客管理三个子视图 blog/comments/layout 往返', () => {
     expect(parseLocation('/nb/5', '?panel=blog').panel).toBe('blog')
     expect(parseLocation('/nb/5', '?panel=comments').panel).toBe('comments')
+    expect(parseLocation('/nb/5', '?panel=layout').panel).toBe('layout')
     expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'blog' })).toBe('/?panel=blog')
     expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'comments' })).toBe('/?panel=comments')
+    expect(buildLocation({ view: { kind: 'none' }, articleId: null, panel: 'layout' })).toBe('/?panel=layout')
   })
 
   // P11.6:文件管理子视图(侧栏二级菜单)进 URL

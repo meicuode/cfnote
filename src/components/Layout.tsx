@@ -45,8 +45,9 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showFiles, setShowFiles] = useState(false)
   // 文件管理子视图(P11.6):与 URL 的 ?fm= 同步,侧栏二级菜单与右侧列表共用
   const [fmView, setFmView] = useState<FmView>({ kind: 'all' })
-  // 博客管理(P11.4):内联模块,null=不显示;'articles'/'comments' 为两个子视图(对应 ?panel=blog|comments)
-  const [blogView, setBlogView] = useState<'articles' | 'comments' | null>(null)
+  // 博客管理(P11.4;P12.1 加「页面布局」):内联模块,null=不显示;
+  // 三个子视图 'articles'/'comments'/'layout' 对应 ?panel=blog|comments|layout
+  const [blogView, setBlogView] = useState<'articles' | 'comments' | 'layout' | null>(null)
   const [importing, setImporting] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('cfnote-sidebar-open') !== '0')
   const toggleSidebar = () =>
@@ -223,7 +224,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     setShowSettings(r.panel === 'settings')
     setShowStats(r.panel === 'stats')
     setShowLogs(r.panel === 'logs')
-    setBlogView(r.panel === 'blog' ? 'articles' : r.panel === 'comments' ? 'comments' : null)
+    setBlogView(r.panel === 'blog' ? 'articles' : r.panel === 'comments' ? 'comments' : r.panel === 'layout' ? 'layout' : null)
   }, [notebooks, loadArticleDetail])
 
   // 由当前 state 反推规范 URL(pathname+search)
@@ -237,6 +238,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     const panel: RoutePanel =
       blogView === 'articles' ? 'blog'
       : blogView === 'comments' ? 'comments'
+      : blogView === 'layout' ? 'layout'
       : showFiles ? 'files' : showSettings ? 'settings' : showStats ? 'stats' : showLogs ? 'logs' : null
     const fm: FmSub | null = showFiles ? fmView : null
     return buildLocation({ view, articleId: activeArticle && activeArticle.id > 0 ? activeArticle.id : null, panel, fm })

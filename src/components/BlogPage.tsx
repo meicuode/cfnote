@@ -4,6 +4,7 @@ import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
 import { commentAvatar } from '../lib/comments'
 import { slugifyHeading, tocIndent, MIN_TOC_HEADINGS, type TocItem } from '../lib/toc'
+import { defaultLayout, parseBlogLayout, enabledWidgets, type BlogLayout, type SlotName, type Widget } from '../lib/blogLayout'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -314,6 +315,8 @@ export default function BlogPage() {
   const [detailErr, setDetailErr] = useState('')
   const [hot, setHot] = useState<HotItem[]>([])
   const [hotRange, setHotRange] = useState<'day' | 'week' | 'month'>('day')
+  // 页面布局(P12.1):随 posts / posts/:id 一起下发,先用默认值渲染(默认即改造前的样子,不会闪)
+  const [layout, setLayout] = useState<BlogLayout>(defaultLayout)
   const [theme, setTheme] = useState<BlogTheme>(initialBlogTheme)
   const [themeManual, setThemeManual] = useState(() => storedBlogTheme() != null)
   const [showTop, setShowTop] = useState(false)
@@ -400,7 +403,10 @@ export default function BlogPage() {
   useEffect(() => {
     fetch('/api/blog/posts')
       .then((r) => r.json() as Promise<any>)
-      .then((j) => setPosts(j.ok ? j.data : []))
+      .then((j) => {
+        setPosts(j.ok ? j.data?.posts || [] : [])
+        if (j.ok && j.data?.layout) setLayout(parseBlogLayout(JSON.stringify(j.data.layout)))
+      })
       .catch(() => setPosts([]))
   }, [])
 
@@ -427,6 +433,7 @@ export default function BlogPage() {
       .then((j) => {
         if (j.ok) {
           setDetail(j.data)
+          if (j.data?.layout) setLayout(parseBlogLayout(JSON.stringify(j.data.layout)))
           document.title = `${j.data.title} - CFNote 博客`
         } else {
           setDetailErr(j.error || '加载失败')
@@ -455,6 +462,74 @@ export default function BlogPage() {
     window.history.pushState(null, '', '/blog')
     setPostId(null)
   }
+
+  // ---- 模块渲染(P12.1)----
+  // 每个模块是一张卡片;标题为空则不出标题栏(热榜自带 tab 头,故默认无标题)。
+  const widgetCard = (w: Widget, body: React.ReactNode, pad = true) => (
+    <div key={w.id} className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg overflow-hidden">
+      {w.title && (
+        <h3 className="text-[15px] font-bold text-[var(--blog-title)] border-b border-[var(--blog-border)] px-5 py-2.5">{w.title}</h3>
+      )}
+      <div className={pad ? 'px-5 py-4' : ''}>{body}</div>
+    </div>
+  )
+
+  const renderWidget = (w: Widget) => {
+    switch (w.type) {
+      case 'hot':
+        return widgetCard(
+          w,
+          <>
+            <div className="flex items-center gap-7 px-5 pt-3 border-b border-[var(--blog-border)]">
+              {(['day', 'week', 'month'] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setHotRange(r)}
+                  className={`pb-2.5 text-[15px] border-b-2 -mb-px transition-colors ${
+                    hotRange === r
+                      ? 'text-[var(--blog-title)] font-medium border-[#d43030]'
+                      : 'text-[var(--blog-muted)] border-transparent hover:text-[var(--blog-text)]'
+                  }`}
+                >
+                  {r === 'day' ? '日榜' : r === 'week' ? '周榜' : '月榜'}
+                </button>
+              ))}
+            </div>
+            <ol className="px-5 py-3">
+              {hot.map((h, i) => (
+                <li key={h.id}>
+                  <button onClick={() => openPost(h.id)} className="w-full flex items-center gap-2.5 py-[7px] group text-left min-w-0">
+                    <span
+                      className={`w-[18px] h-[18px] rounded-[3px] text-[11px] font-bold text-white flex items-center justify-center shrink-0 ${
+                        i < 3 ? 'bg-[#d43030]' : 'bg-[var(--blog-rank)]'
+                      }`}
+                    >
+                      {i + 1}
+                    </span>
+                    <span className="flex-1 truncate text-sm text-[var(--blog-text)] group-hover:text-[#e05252] transition-colors">{h.title}</span>
+                  </button>
+                </li>
+              ))}
+              {hot.length === 0 && <li className="py-6 text-center text-xs text-gray-500">该时间段暂无上榜文章</li>}
+            </ol>
+          </>,
+          false
+        )
+      case 'about':
+        // 纯文本渲染(保留换行);自定义 Markdown 模块在 P12.2
+        return widgetCard(
+          w,
+          <p className="text-sm text-[var(--blog-muted)] leading-relaxed whitespace-pre-wrap break-words">{w.options.text || ''}</p>
+        )
+      default:
+        return null
+    }
+  }
+
+  // 当前页面的配置;槽位为空时整块不占位
+  const pageLayout = postId == null ? layout.list : layout.detail
+  const slot = (name: SlotName) => enabledWidgets(pageLayout, name)
+  const renderSlot = (name: SlotName) => slot(name).map(renderWidget)
 
   // 目录浮层:视口够宽时它落在 1400px 容器外的留白里,不挡正文,可以一直开着;
   // 窄于这个值就会压到正文上,此时按抽屉处理(点空白关、点章节跳完即关)。
@@ -521,7 +596,12 @@ export default function BlogPage() {
         </div>
       </nav>
 
-      <div className="max-w-[1400px] w-full mx-auto px-5 py-5 flex items-start gap-7 flex-1">
+      <div className="max-w-[1400px] w-full mx-auto px-5 py-5 flex-1">
+        {/* 顶部槽位(全宽);无模块则整块不占位 */}
+        {slot('top').length > 0 && <div className="space-y-5 mb-5">{renderSlot('top')}</div>}
+
+        {/* 正文 + 右栏(缩进沿用改造前,避免整块 90 行只为缩进而变动) */}
+        <div className="flex items-start gap-7">
         <main className="flex-1 min-w-0">
           {postId == null ? (
             /* ---- 列表 ---- */
@@ -615,52 +695,18 @@ export default function BlogPage() {
           )}
         </main>
 
-        {/* 右侧栏 */}
-        <aside className="w-[380px] shrink-0 hidden xl:block">
-          <div className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg overflow-hidden">
-            <div className="flex items-center gap-7 px-5 pt-3 border-b border-[var(--blog-border)]">
-              {(['day', 'week', 'month'] as const).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setHotRange(r)}
-                  className={`pb-2.5 text-[15px] border-b-2 -mb-px transition-colors ${
-                    hotRange === r
-                      ? 'text-[var(--blog-title)] font-medium border-[#d43030]'
-                      : 'text-[var(--blog-muted)] border-transparent hover:text-[var(--blog-text)]'
-                  }`}
-                >
-                  {r === 'day' ? '日榜' : r === 'week' ? '周榜' : '月榜'}
-                </button>
-              ))}
-            </div>
-            <ol className="px-5 py-3">
-              {hot.map((h, i) => (
-                <li key={h.id}>
-                  <button onClick={() => openPost(h.id)} className="w-full flex items-center gap-2.5 py-[7px] group text-left min-w-0">
-                    <span
-                      className={`w-[18px] h-[18px] rounded-[3px] text-[11px] font-bold text-white flex items-center justify-center shrink-0 ${
-                        i < 3 ? 'bg-[#d43030]' : 'bg-[var(--blog-rank)]'
-                      }`}
-                    >
-                      {i + 1}
-                    </span>
-                    <span className="flex-1 truncate text-sm text-[var(--blog-text)] group-hover:text-[#e05252] transition-colors">{h.title}</span>
-                  </button>
-                </li>
-              ))}
-              {hot.length === 0 && <li className="py-6 text-center text-xs text-gray-500">该时间段暂无上榜文章</li>}
-            </ol>
-          </div>
+        {/* 右侧栏槽位:sticky 跟随滚动(父容器 flex items-start 是生效前提;top-20 让开 h-14 的 sticky 顶栏,
+            与左侧目录浮层对齐)。内容可能比视口高(热榜 12 条 + 关于本站),故限高并内部滚动。
+            不设 z-index:目录抽屉的遮罩(z-20)仍能盖住它。右栏无模块时整列不占位,正文自动铺满。 */}
+        {slot('right').length > 0 && (
+          <aside className="w-[380px] shrink-0 hidden xl:block sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto space-y-5">
+            {renderSlot('right')}
+          </aside>
+        )}
+        </div>{/* /正文 + 右栏 */}
 
-          {postId == null && (
-            <div className="bg-[var(--blog-card)] border border-[var(--blog-border)] rounded-lg mt-5 px-5 py-4">
-              <h3 className="text-[15px] font-bold text-[var(--blog-title)] border-b border-[var(--blog-border)] pb-2.5 mb-3">关于本站</h3>
-              <p className="text-sm text-[var(--blog-muted)] leading-relaxed">
-                这里是我的公开笔记精选,由 CFNote 个人知识库发布:笔记在编辑器中一键公开,经敏感信息检查后即刻上线。
-              </p>
-            </div>
-          )}
-        </aside>
+        {/* 底部槽位(全宽) */}
+        {slot('bottom').length > 0 && <div className="space-y-5 mt-5">{renderSlot('bottom')}</div>}
       </div>
 
       {/* 章节目录(P11.8,详情页且 ≥3 个标题才出现):默认收起,左侧浮层。

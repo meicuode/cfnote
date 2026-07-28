@@ -3,6 +3,7 @@ import { ok, err, getSettingValue } from '../utils'
 import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
 import { parseTags } from '../../src/types'
 import { validateCommentInput, resolveThreadParent, buildThread, isHoneypotTripped, type FlatComment } from '../../src/lib/comments'
+import { parseBlogLayout, BLOG_LAYOUT_KEY } from '../../src/lib/blogLayout'
 import { notifyPendingComment } from './notify'
 import type { AppEnv } from '../types'
 
@@ -10,18 +11,27 @@ import type { AppEnv } from '../types'
 // 只暴露 is_public=1 且非私有的文章;私有/未公开的任何字段都不可达。
 export const blog = new Hono<AppEnv>()
 
-// GET /api/blog/posts - 公开文章列表(标题/摘要/缩略图/笔记本 tag/发布时间)
+// 页面布局(P12.1):跟着 posts / posts/:id 一起下发,不单开端点——
+// 布局决定页面骨架,晚到会导致首屏模块位置跳动。坏配置在 parseBlogLayout 里回落默认。
+async function readLayout(env: AppEnv['Bindings']) {
+  return parseBlogLayout(await getSettingValue(env, BLOG_LAYOUT_KEY, ''))
+}
+
+// GET /api/blog/posts - 公开文章列表(标题/摘要/缩略图/笔记本 tag/发布时间)+ 列表页布局
 blog.get('/posts', async (c) => {
   try {
-    const { results } = await c.env.DB.prepare(
-      `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
-              a.published_at, a.updated_at, a.views, a.tags, n.name as tag
-       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL
-       ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 100`
-    ).all<any>()
-    return ok(
-      (results || []).map((r) => ({
+    const [{ results }, layout] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head,
+                a.published_at, a.updated_at, a.views, a.tags, n.name as tag
+         FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+         WHERE a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL
+         ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 100`
+      ).all<any>(),
+      readLayout(c.env),
+    ])
+    return ok({
+      posts: (results || []).map((r) => ({
         id: r.id,
         title: r.title,
         tag: r.tag || '未分类',
@@ -30,8 +40,9 @@ blog.get('/posts', async (c) => {
         thumb: mdFirstImage(r.head || ''),
         published_at: r.published_at || r.updated_at,
         views: r.views || 0,
-      }))
-    )
+      })),
+      layout,
+    })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }
@@ -88,7 +99,7 @@ blog.get('/posts/:id', async (c) => {
       )
     }
     const commentsEnabled = (await getSettingValue(c.env, 'comments_enabled', '1')) !== '0'
-    return ok({ ...a, tag: a.tag || '未分类', tags: parseTags(a.tags), comments_enabled: commentsEnabled, published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
+    return ok({ ...a, tag: a.tag || '未分类', tags: parseTags(a.tags), comments_enabled: commentsEnabled, layout: await readLayout(c.env), published_at: a.published_at || a.updated_at, views: (a.views || 0) + (counted ? 1 : 0) })
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }
@@ -114,6 +125,7 @@ blog.get('/share/:token', async (c) => {
       shared: true,
       tag: a.tag || '未分类',
       tags: parseTags(a.tags),
+      layout: await readLayout(c.env),
       published_at: a.published_at || a.updated_at,
       views: a.views || 0,
     })

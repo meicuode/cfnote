@@ -348,7 +348,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/blog/posts` `/:id` `/hot` | 博客列表 / 详情（计浏览）/ 热榜 |
+| GET | `/api/blog/posts` `/:id` `/hot` | 博客列表（`{ posts, layout }`，P12.1）/ 详情（计浏览，带 layout）/ 热榜 |
 | GET | `/api/blog/share/:token` | 私密分享详情（不入列表/不计浏览，过期 410） |
 | GET/POST | `/api/blog/comments` | 某公开文章已通过评论（2 层线程）/ 访客提交（免登录，默认待审核，限流+蜜罐；POST 回传 `{status,id,parent_id,root_id,created_at}` 供前端就地渲染待审那条，P11.7） |
 | GET | `/api/comments` `/counts` | 评论审核列表 / 待审计数（鉴权，经文章所有权） |
@@ -382,7 +382,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | `/` | 未选笔记本(或回退 localStorage 恢复上次) |
 | `/nb/:id`、`/nb/:id/:articleId` | 真实笔记本(可带打开的文章) |
 | `/private`、`/trash`、`/tag/:name`(可各带 `/:articleId`) | 私有 / 回收站 / 标签 虚拟视图 |
-| `?panel=files\|settings\|stats\|logs\|blog\|comments` | 叠加在基础路径上的主模块面板。**文件管理(files)与博客管理(blog/comments)为内联工作区视图**(占据侧栏右侧区域,非弹窗);设置/统计/日志仍为叠层面板 |
+| `?panel=files\|settings\|stats\|logs\|blog\|comments\|layout` | 叠加在基础路径上的主模块面板。**文件管理(files)与博客管理(blog/comments/layout)为内联工作区视图**(占据侧栏右侧区域,非弹窗);设置/统计/日志仍为叠层面板 |
 | `&fm=unref\|nb:<id>\|folder:<id>` | 文件管理子视图(P11.6,侧栏二级菜单选中项);默认「全部文件」不写入,非法值与非 files 面板一律忽略 |
 | `/?article=<id>` | 兼容深链(`window.open` 生产):拉文章定位笔记本后 `replaceState` 规范化为 `/nb/:nbId/:id` |
 
@@ -457,7 +457,8 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 - 发布前对全文做敏感信息扫描 + 附件清单目视确认（`sensitiveScan`）。
 - 章节目录（P11.8）：详情页左侧 `fixed` 浮层，**默认收起**、状态存 `localStorage['cfnote-blog-toc']`，**≥3 个标题才出现**（`MIN_TOC_HEADINGS`）。不占布局——`left-[max(0.75rem,calc((100vw-1400px)/2-15rem))]` 自适应，视口 ≥1880px 时落在 1400px 容器外的留白里不遮正文，再窄则贴边并按抽屉处理（遮罩关闭、点章节跳完即关）。正文渲染后扫 h1~h3 打稳定 id（`src/lib/toc.ts` 的 `slugifyHeading`，中文原样保留、重名加 `-2`），点章节用 `replaceState` 写 `#章节` 到地址栏（可复制分享到某一节，不塞历史），跳转后复用 `.cfnote-highlight` 高亮；与评论锚点 `#comment-<id>` 靠 id 形态区分。
 - 私密分享：`articles.share_token/share_expires_at` 两列即全部状态（单分享），`/blog/share/<token>` 凭链接可看，不入列表/热榜、不计浏览量，过期 410；设为私有或移入回收站自动撤销。
-- 博客管理（P11.1，P11.4 改内联，P11.7 改两栏可编辑）：侧栏「博客管理」**内联占据右侧工作区**（非弹窗，`?panel=blog`）。左侧为已公开文章列表（`GET /api/articles/published`，**按 `updated_at` 降序**，搜索/按笔记本过滤，悬浮出「预览↗ / 取消公开」，右缘可拖拽、宽度存 `cfnote-blog-list-w`），右侧点选后取全文并**复用 `ArticleEditor`** 直接编辑（源码/富文本/预览三模式）；保存走 `PUT /api/articles/:id`，只就地更新该行、**不重排列表**，取消公开/设为私有则移出列表并清空右栏。其下「评论管理」为二级菜单（`?panel=comments`）。
+- 页面布局（P12.1）：博客列表页与详情页各自把模块摆进「顶部 / 右侧栏 / 底部」三个槽位，配置存 `settings.blog_layout`（一个 JSON 字符串，**无 schema 改动**），随 `GET /api/blog/posts`（响应改为 `{ posts, layout }`）与 `/posts/:id`、`/share/:token` 一起下发——不单开端点，避免布局晚到导致首屏模块位置跳动。模块类型 P12.1 为 `hot`（热榜）/`about`（关于本站），默认配置等于改造前的样子。纯逻辑在 `src/lib/blogLayout.ts`（容错解析：坏 JSON/未知类型一律回落默认，绝不让配置错误使博客页打不开）。配置界面在「博客管理 → 页面布局」（`?panel=layout`）。**左侧栏留给 P12.2**：容器 `max-w-[1400px]` 下右栏 380px 时正文已只剩约 950px，再切左栏会压到 ~560px，需先做「侧栏宽度可配 + 窄屏降级位置」。
+- 博客管理（P11.1，P11.4 改内联，P11.7 改两栏可编辑）：侧栏「博客管理」**内联占据右侧工作区**（非弹窗，`?panel=blog`）。左侧为已公开文章列表（`GET /api/articles/published`，**按 `updated_at` 降序**，搜索/按笔记本过滤，悬浮出「预览↗ / 取消公开」，右缘可拖拽、宽度存 `cfnote-blog-list-w`），右侧点选后取全文并**复用 `ArticleEditor`** 直接编辑（源码/富文本/预览三模式）；保存走 `PUT /api/articles/:id`，只就地更新该行、**不重排列表**，取消公开/设为私有则移出列表并清空右栏。其下「评论管理」（`?panel=comments`）与「页面布局」（`?panel=layout`）为二级菜单。
 - 评论（P11.2，P11.7 增待审就地显示与锚点，P11.9 记来源）：`comments` 表（`parent_id`/`root_id` 支持 2 层嵌套，`status` pending/approved/rejected，`is_admin` 博主回复，`ip`/`user_agent` 明文来源仅管理端可见）；公开 `GET/POST /api/blog/comments`（POST 中间件单独放行，默认待审核、每 IP 每分钟限流、蜜罐、正文纯文本渲染防 XSS），鉴权 `/api/comments/*` 审核；开关与免审核存 `settings.comments_enabled/comments_auto_approve`；私密分享页不显示评论；待审可复用通知渠道推送。访客提交后其待审评论存 `localStorage`（`cfnote-pending-cmt-<articleId>`）并就地降调显示为「待审核」，通过或超 7 天自动清除（合并逻辑见 `src/lib/pendingComments.ts`）；评论行带 `id="comment-<id>"` 锚点，`/blog/:id#comment-<id>` 可直达并短暂高亮。管理在「博客管理 → 评论管理」二级菜单，列表显示来源 IP 与 UA。
 
 ## 11. 项目结构
