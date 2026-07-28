@@ -4,13 +4,21 @@ import {
   parseBlogLayout,
   serializeBlogLayout,
   enabledWidgets,
+  hasSide,
+  contentWidth,
+  clampWidth,
+  parseLinks,
   toggleWidget,
   updateWidget,
+  updatePageSettings,
   moveWidget,
   locateWidget,
   addWidget,
   removeWidget,
   BLOG_LAYOUT_KEY,
+  MIN_SIDE_WIDTH,
+  MAX_SIDE_WIDTH,
+  CONTENT_WARN_BELOW,
 } from '../src/lib/blogLayout'
 
 describe('parseBlogLayout(容错解析,P12.1)', () => {
@@ -24,11 +32,12 @@ describe('parseBlogLayout(容错解析,P12.1)', () => {
     expect(parseBlogLayout('{"foo":1}')).toEqual(def)
   })
 
-  it('默认布局等于改造前的样子:列表页右栏热榜+关于本站,详情页右栏只有热榜', () => {
+  it('默认布局等于模块化之前的样子:列表页右栏热榜+关于本站,详情页右栏只有热榜', () => {
     const def = defaultLayout()
     expect(def.list.right.map((w) => w.type)).toEqual(['hot', 'about'])
     expect(def.detail.right.map((w) => w.type)).toEqual(['hot'])
     expect(def.list.top).toEqual([])
+    expect(def.list.left).toEqual([])
     expect(def.list.bottom).toEqual([])
   })
 
@@ -79,6 +88,79 @@ describe('parseBlogLayout(容错解析,P12.1)', () => {
   })
 })
 
+describe('侧栏宽度与窄屏降级(P12.2)', () => {
+  it('宽度夹到 [200,420],非数字回落', () => {
+    expect(clampWidth(10, 300)).toBe(MIN_SIDE_WIDTH)
+    expect(clampWidth(9999, 300)).toBe(MAX_SIDE_WIDTH)
+    expect(clampWidth('320', 300)).toBe(320)
+    expect(clampWidth('abc', 300)).toBe(300)
+    expect(clampWidth(undefined, 300)).toBe(300)
+  })
+
+  it('解析时越界宽度被夹取,非法 narrow 回落默认', () => {
+    const l = parseBlogLayout(JSON.stringify({
+      list: { right: [], leftWidth: 5, rightWidth: 5000, narrow: '乱写' },
+      detail: {},
+    }))
+    expect(l.list.leftWidth).toBe(MIN_SIDE_WIDTH)
+    expect(l.list.rightWidth).toBe(MAX_SIDE_WIDTH)
+    expect(l.list.narrow).toBe('bottom')
+  })
+
+  it('hasSide 只认「有启用模块」的侧栏', () => {
+    const def = defaultLayout()
+    expect(hasSide(def.list, 'right')).toBe(true)
+    expect(hasSide(def.list, 'left')).toBe(false)
+    const off = toggleWidget(toggleWidget(def, 'list', 'hot'), 'list', 'about')
+    expect(hasSide(off.list, 'right')).toBe(false)
+  })
+
+  it('contentWidth:只右栏 380 时正文约 952,左右同开会跌破警告线', () => {
+    const def = defaultLayout()
+    expect(contentWidth(def.list)).toBe(1400 - 40 - 380 - 28) // 952
+    let l = addWidget(def, 'list', 'left', 'tags')
+    l = updatePageSettings(l, 'list', { leftWidth: 300 })
+    expect(contentWidth(l.list)).toBe(1400 - 40 - 380 - 28 - 300 - 28) // 624
+    expect(contentWidth(l.list)).toBeLessThan(CONTENT_WARN_BELOW)
+  })
+
+  it('两侧都空时正文吃满容器', () => {
+    const empty = parseBlogLayout(JSON.stringify({ list: {}, detail: {} }))
+    expect(contentWidth(empty.list)).toBe(1360)
+  })
+
+  it('updatePageSettings 夹取宽度且不动模块', () => {
+    const l = updatePageSettings(defaultLayout(), 'list', { leftWidth: 9999, narrow: 'top' })
+    expect(l.list.leftWidth).toBe(MAX_SIDE_WIDTH)
+    expect(l.list.narrow).toBe('top')
+    expect(l.list.right.map((w) => w.id)).toEqual(['hot', 'about'])
+  })
+})
+
+describe('parseLinks(友情链接,P12.2)', () => {
+  it('一行一条「名称|URL」', () => {
+    expect(parseLinks('CF|https://cloudflare.com\n本站|/blog')).toEqual([
+      { name: 'CF', url: 'https://cloudflare.com' },
+      { name: '本站', url: '/blog' },
+    ])
+  })
+
+  it('丢弃空行、缺分隔、缺名称或缺 URL 的行', () => {
+    expect(parseLinks('\n  \n没有分隔符\n|只有url\nname|')).toEqual([])
+  })
+
+  it('挡掉 javascript: 一类的 URL(只放行 http(s) 与站内相对路径)', () => {
+    expect(parseLinks('坏|javascript:alert(1)\n坏2|data:text/html,x\n好|https://a.com')).toEqual([
+      { name: '好', url: 'https://a.com' },
+    ])
+  })
+
+  it('空配置返回空数组', () => {
+    expect(parseLinks(undefined)).toEqual([])
+    expect(parseLinks('')).toEqual([])
+  })
+})
+
 describe('布局编辑操作(不可变,P12.1)', () => {
   it('toggleWidget 只翻转目标模块,且不改入参', () => {
     const l = defaultLayout()
@@ -95,10 +177,11 @@ describe('布局编辑操作(不可变,P12.1)', () => {
     expect(w.options.text).toBe('新正文')
   })
 
-  it('moveWidget 跨槽位移动', () => {
-    const l = moveWidget(defaultLayout(), 'list', 'about', 'bottom', 0)
+  it('moveWidget 跨槽位移动(含左栏),页面级设置不丢', () => {
+    const l = moveWidget(updatePageSettings(defaultLayout(), 'list', { leftWidth: 260 }), 'list', 'about', 'left', 0)
     expect(l.list.right.map((w) => w.id)).toEqual(['hot'])
-    expect(l.list.bottom.map((w) => w.id)).toEqual(['about'])
+    expect(l.list.left.map((w) => w.id)).toEqual(['about'])
+    expect(l.list.leftWidth).toBe(260)
   })
 
   it('moveWidget 同槽位换序(下标按摘出后计算)', () => {
@@ -118,11 +201,12 @@ describe('布局编辑操作(不可变,P12.1)', () => {
     expect(locateWidget(defaultLayout().list, '没有')).toBeNull()
   })
 
-  it('addWidget 追加到槽位末尾并生成唯一 id', () => {
+  it('addWidget 追加到槽位末尾并生成唯一 id,带上该类型的初始配置', () => {
     let l = addWidget(defaultLayout(), 'list', 'top', 'hot')
     expect(l.list.top.map((w) => w.id)).toEqual(['hot-2']) // 'hot' 已被右栏占用
-    l = addWidget(l, 'list', 'top', 'hot')
-    expect(l.list.top.map((w) => w.id)).toEqual(['hot-2', 'hot-3'])
+    l = addWidget(l, 'list', 'top', 'recent')
+    expect(l.list.top[1].options.count).toBe('8')
+    expect(l.list.top[1].title).toBe('最新文章')
   })
 
   it('removeWidget 删除并保留其余', () => {

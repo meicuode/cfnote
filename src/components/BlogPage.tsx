@@ -4,7 +4,10 @@ import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
 import { commentAvatar } from '../lib/comments'
 import { slugifyHeading, tocIndent, MIN_TOC_HEADINGS, type TocItem } from '../lib/toc'
-import { defaultLayout, parseBlogLayout, enabledWidgets, type BlogLayout, type SlotName, type Widget } from '../lib/blogLayout'
+import {
+  defaultLayout, parseBlogLayout, enabledWidgets, hasSide, parseLinks,
+  type BlogLayout, type SlotName, type Widget,
+} from '../lib/blogLayout'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -516,11 +519,81 @@ export default function BlogPage() {
           false
         )
       case 'about':
-        // 纯文本渲染(保留换行);自定义 Markdown 模块在 P12.2
+        // 纯文本渲染(保留换行)
         return widgetCard(
           w,
           <p className="text-sm text-[var(--blog-muted)] leading-relaxed whitespace-pre-wrap break-words">{w.options.text || ''}</p>
         )
+      case 'markdown':
+        // 作者自己在管理端写的内容,与文章正文同等信任(同一条 marked 路径,仓库无消毒库故不开裸 HTML 入口)
+        return widgetCard(
+          w,
+          <div className="cfnote-preview prose prose-sm max-w-none text-sm" dangerouslySetInnerHTML={renderMd(w.options.text || '')} />
+        )
+      case 'recent': {
+        const n = Math.max(1, Math.min(20, Number(w.options.count) || 8))
+        const items = (posts || []).slice(0, n)
+        return widgetCard(
+          w,
+          items.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-2">还没有公开文章</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {items.map((p) => (
+                <li key={p.id}>
+                  <button onClick={() => openPost(p.id)} className="w-full text-left text-sm text-[var(--blog-text)] hover:text-[#e05252] transition-colors truncate" title={p.title}>
+                    {p.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )
+        )
+      }
+      case 'tags': {
+        // 从已拉到的列表聚合(笔记本名 + 文章标签),不额外请求
+        const counts = new Map<string, number>()
+        for (const p of posts || []) {
+          for (const t of [p.tag, ...(p.tags || [])]) {
+            if (t) counts.set(t, (counts.get(t) || 0) + 1)
+          }
+        }
+        const tags = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30)
+        return widgetCard(
+          w,
+          tags.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-2">暂无标签</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {tags.map(([t, c]) => (
+                <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-[var(--blog-panel)] text-[var(--blog-muted)]">
+                  {t}
+                  <span className="ml-1 text-[10px] opacity-70">{c}</span>
+                </span>
+              ))}
+            </div>
+          )
+        )
+      }
+      case 'links': {
+        const links = parseLinks(w.options.items)
+        return widgetCard(
+          w,
+          links.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-2">还没有配置链接</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {links.map((l) => (
+                <li key={l.url}>
+                  <a href={l.url} target="_blank" rel="noreferrer noopener" className="text-sm text-[var(--blog-text)] hover:text-[#e05252] transition-colors truncate block">
+                    {l.name}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )
+        )
+      }
       default:
         return null
     }
@@ -530,6 +603,14 @@ export default function BlogPage() {
   const pageLayout = postId == null ? layout.list : layout.detail
   const slot = (name: SlotName) => enabledWidgets(pageLayout, name)
   const renderSlot = (name: SlotName) => slot(name).map(renderWidget)
+  // 窄屏(<xl)侧栏放不下:按配置并到顶部/底部,或干脆不显示。
+  // 用两份渲染 + CSS 断点切换,而不是 JS 判断视口——避免首屏闪一下再跳位。
+  const narrowSide = pageLayout.narrow === 'hide' ? [] : [...slot('left'), ...slot('right')]
+  const narrowAt = (where: 'top' | 'bottom') =>
+    pageLayout.narrow === where && narrowSide.length > 0 ? narrowSide.map(renderWidget) : null
+  // 侧栏公共样式:sticky 跟随滚动(父容器 flex items-start 是生效前提;top-20 让开 h-14 的 sticky 顶栏)。
+  // 内容可能比视口高,故限高并内部滚动。不设 z-index:目录抽屉的遮罩(z-20)仍能盖住它。
+  const railCls = 'shrink-0 hidden xl:block sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto space-y-5'
 
   // 目录浮层:视口够宽时它落在 1400px 容器外的留白里,不挡正文,可以一直开着;
   // 窄于这个值就会压到正文上,此时按抽屉处理(点空白关、点章节跳完即关)。
@@ -597,11 +678,21 @@ export default function BlogPage() {
       </nav>
 
       <div className="max-w-[1400px] w-full mx-auto px-5 py-5 flex-1">
-        {/* 顶部槽位(全宽);无模块则整块不占位 */}
-        {slot('top').length > 0 && <div className="space-y-5 mb-5">{renderSlot('top')}</div>}
+        {/* 顶部槽位(全宽);无模块则整块不占位。窄屏侧栏若配置为「并到顶部」也落在这里 */}
+        {(slot('top').length > 0 || narrowAt('top')) && (
+          <div className="space-y-5 mb-5">
+            {renderSlot('top')}
+            {narrowAt('top') && <div className="xl:hidden space-y-5">{narrowAt('top')}</div>}
+          </div>
+        )}
 
-        {/* 正文 + 右栏(缩进沿用改造前,避免整块 90 行只为缩进而变动) */}
+        {/* 正文 + 左右侧栏(缩进沿用改造前,避免整块 90 行只为缩进而变动) */}
         <div className="flex items-start gap-7">
+        {hasSide(pageLayout, 'left') && (
+          <aside className={railCls} style={{ width: pageLayout.leftWidth }}>
+            {renderSlot('left')}
+          </aside>
+        )}
         <main className="flex-1 min-w-0">
           {postId == null ? (
             /* ---- 列表 ---- */
@@ -695,18 +786,21 @@ export default function BlogPage() {
           )}
         </main>
 
-        {/* 右侧栏槽位:sticky 跟随滚动(父容器 flex items-start 是生效前提;top-20 让开 h-14 的 sticky 顶栏,
-            与左侧目录浮层对齐)。内容可能比视口高(热榜 12 条 + 关于本站),故限高并内部滚动。
-            不设 z-index:目录抽屉的遮罩(z-20)仍能盖住它。右栏无模块时整列不占位,正文自动铺满。 */}
-        {slot('right').length > 0 && (
-          <aside className="w-[380px] shrink-0 hidden xl:block sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto space-y-5">
+        {/* 右侧栏槽位:宽度按配置;无模块时整列不占位,正文自动铺满 */}
+        {hasSide(pageLayout, 'right') && (
+          <aside className={railCls} style={{ width: pageLayout.rightWidth }}>
             {renderSlot('right')}
           </aside>
         )}
-        </div>{/* /正文 + 右栏 */}
+        </div>{/* /正文 + 左右侧栏 */}
 
-        {/* 底部槽位(全宽) */}
-        {slot('bottom').length > 0 && <div className="space-y-5 mt-5">{renderSlot('bottom')}</div>}
+        {/* 底部槽位(全宽);窄屏侧栏若配置为「并到底部」也落在这里 */}
+        {(slot('bottom').length > 0 || narrowAt('bottom')) && (
+          <div className="space-y-5 mt-5">
+            {narrowAt('bottom') && <div className="xl:hidden space-y-5">{narrowAt('bottom')}</div>}
+            {renderSlot('bottom')}
+          </div>
+        )}
       </div>
 
       {/* 章节目录(P11.8,详情页且 ≥3 个标题才出现):默认收起,左侧浮层。

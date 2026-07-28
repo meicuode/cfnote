@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useApi } from '../hooks/useApi'
 import {
-  defaultLayout, parseBlogLayout, serializeBlogLayout, locateWidget,
-  toggleWidget, updateWidget, moveWidget, addWidget, removeWidget,
-  SLOTS, SLOT_LABELS, PAGES, PAGE_LABELS, WIDGET_TYPES, WIDGET_LABELS, BLOG_LAYOUT_KEY,
-  type BlogLayout, type PageName, type SlotName, type Widget,
+  defaultLayout, parseBlogLayout, serializeBlogLayout, locateWidget, contentWidth, hasSide,
+  toggleWidget, updateWidget, updatePageSettings, moveWidget, addWidget, removeWidget,
+  SLOTS, SLOT_LABELS, PAGES, PAGE_LABELS, WIDGET_TYPES, WIDGET_LABELS, NARROW_LABELS,
+  BLOG_LAYOUT_KEY, MIN_SIDE_WIDTH, MAX_SIDE_WIDTH, CONTENT_WARN_BELOW,
+  type BlogLayout, type PageName, type SlotName, type Widget, type NarrowMode,
 } from '../lib/blogLayout'
 
-// 页面布局配置(P12.1):博客管理下的第三个子视图。
-// 列表页/详情页各一套,模块摆进「顶部 / 右侧栏 / 底部」三个槽位;左栏留给 P12.2(宽度问题见 blogLayout.ts 注释)。
+// 页面布局配置(P12.1 骨架;P12.2 加左栏/拖拽/宽度/窄屏降级/更多模块):
+// 博客管理下的第三个子视图。列表页/详情页各一套,模块摆进「顶部 / 左侧栏 / 右侧栏 / 底部」四个槽位。
 // 存 settings 表的 blog_layout 键(一个 JSON 字符串),复用既有的 GET/PUT /api/settings,无 schema 改动。
 
 interface Props {
@@ -23,6 +24,9 @@ export default function BlogLayoutPanel({ token }: Props) {
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<string | null>(null)
+  // 拖拽中的模块 id 与当前悬停的槽位(仅用于高亮)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overSlot, setOverSlot] = useState<SlotName | null>(null)
 
   const load = useCallback(async () => {
     const res = await api.get<Record<string, string>>('/settings')
@@ -63,11 +67,42 @@ export default function BlogLayoutPanel({ token }: Props) {
     edit((l) => moveWidget(l, page, w.id, at.slot, to))
   }
 
+  /**
+   * 落点计算:拖到某一行 = 插到该行之前;拖到槽位空白 = 追加到末尾。
+   * moveWidget 是「先摘出再插入」,所以同槽位且源在目标之前时下标要减 1,
+   * 否则视觉上会比预期少挪一位。
+   */
+  const drop = (toSlot: SlotName, rowIndex: number | null) => {
+    if (!layout || !dragId) return
+    const from = locateWidget(layout[page], dragId)
+    const id = dragId
+    setDragId(null)
+    setOverSlot(null)
+    if (!from) return
+    let to = rowIndex ?? layout[page][toSlot].length
+    if (from.slot === toSlot && from.index < to) to -= 1
+    if (from.slot === toSlot && from.index === to) return
+    edit((l) => moveWidget(l, page, id, toSlot, to))
+  }
+
   const cur = layout?.[page]
+  const width = cur ? contentWidth(cur) : 0
+  const tooNarrow = width < CONTENT_WARN_BELOW
 
   const widgetRow = (w: Widget, slot: SlotName, i: number, total: number) => (
-    <li key={w.id} className={`px-3 py-2 rounded-lg border ${w.enabled ? 'border-gray-200 bg-white' : 'border-dashed border-gray-200 bg-gray-50'}`}>
+    <li
+      key={w.id}
+      draggable
+      onDragStart={(e) => { setDragId(w.id); e.dataTransfer.effectAllowed = 'move' }}
+      onDragEnd={() => { setDragId(null); setOverSlot(null) }}
+      onDragOver={(e) => { if (dragId) { e.preventDefault(); e.stopPropagation(); setOverSlot(slot) } }}
+      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); drop(slot, i) }}
+      className={`px-3 py-2 rounded-lg border cursor-move transition-opacity ${
+        dragId === w.id ? 'opacity-40' : ''
+      } ${w.enabled ? 'border-gray-200 bg-white' : 'border-dashed border-gray-200 bg-gray-50'}`}
+    >
       <div className="flex items-center gap-2">
+        <span className="text-gray-300 shrink-0 select-none" title="拖动排序或换槽位">⠿</span>
         <span className={`text-sm truncate flex-1 ${w.enabled ? 'text-gray-800' : 'text-gray-400 line-through'}`}>
           {WIDGET_LABELS[w.type]}
           {w.title && <span className="text-gray-400 text-xs ml-1">「{w.title}」</span>}
@@ -90,22 +125,55 @@ export default function BlogLayoutPanel({ token }: Props) {
             <input
               value={w.title}
               onChange={(e) => edit((l) => updateWidget(l, page, w.id, { title: e.target.value }))}
-              placeholder={w.type === 'hot' ? '热榜自带日/周/月切换,通常留空' : '关于本站'}
+              placeholder={w.type === 'hot' ? '热榜自带日/周/月切换,通常留空' : ''}
               className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400"
             />
           </label>
-          {w.type === 'about' && (
+
+          {(w.type === 'about' || w.type === 'markdown') && (
             <label className="block">
-              <span className="text-[11px] text-gray-400">正文(纯文本,换行保留)</span>
+              <span className="text-[11px] text-gray-400">
+                {w.type === 'markdown' ? '正文(支持 Markdown:标题/列表/链接/图片/代码块)' : '正文(纯文本,换行保留)'}
+              </span>
               <textarea
                 value={w.options.text || ''}
                 onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, text: e.target.value } }))}
-                rows={4}
-                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y"
+                rows={5}
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
               />
             </label>
           )}
-          <div className="flex items-center gap-2">
+
+          {w.type === 'recent' && (
+            <label className="block">
+              <span className="text-[11px] text-gray-400">显示条数(1–20)</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={w.options.count || '8'}
+                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, count: e.target.value } }))}
+                className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 block"
+              />
+            </label>
+          )}
+
+          {w.type === 'links' && (
+            <label className="block">
+              <span className="text-[11px] text-gray-400">一行一条,格式「名称|链接」(仅支持 http(s) 与站内 / 开头的路径)</span>
+              <textarea
+                value={w.options.items || ''}
+                onChange={(e) => edit((l) => updateWidget(l, page, w.id, { options: { ...w.options, items: e.target.value } }))}
+                rows={4}
+                placeholder={'Cloudflare|https://www.cloudflare.com\n我的另一个站|https://example.com'}
+                className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1 mt-0.5 outline-none focus:border-emerald-400 resize-y font-mono"
+              />
+            </label>
+          )}
+
+          {w.type === 'tags' && <p className="text-[11px] text-gray-400">自动统计已公开文章的笔记本与标签,取前 30 个,无需配置。</p>}
+
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[11px] text-gray-400">移到槽位</span>
             {SLOTS.filter((s) => s !== slot).map((s) => (
               <button key={s} onClick={() => edit((l) => moveWidget(l, page, w.id, s, 99))} className="text-xs px-2 py-0.5 rounded border border-gray-200 text-gray-600 hover:border-emerald-400 hover:text-emerald-600">
@@ -126,7 +194,28 @@ export default function BlogLayoutPanel({ token }: Props) {
             {PAGE_LABELS[p]}
           </button>
         ))}
-        <span className="text-[11px] text-gray-400 ml-2">左侧栏在下一批支持(正文宽度需先可配)</span>
+
+        {cur && (
+          <>
+            {/* 正文剩余宽度实时提示:左右同开最容易把正文压得没法看 */}
+            <span className={`text-[11px] ml-2 px-2 py-0.5 rounded ${tooNarrow ? 'bg-amber-100 text-amber-700' : 'text-gray-400'}`}>
+              正文宽约 {width}px{tooNarrow ? ' · 偏窄,代码块和表格会难看' : ''}
+            </span>
+            <label className="text-[11px] text-gray-400 flex items-center gap-1 ml-2">
+              窄屏侧栏
+              <select
+                value={cur.narrow}
+                onChange={(e) => edit((l) => updatePageSettings(l, page, { narrow: e.target.value as NarrowMode }))}
+                className="text-[11px] border border-gray-200 rounded px-1 py-0.5 text-gray-600 outline-none focus:border-emerald-400"
+              >
+                {(Object.keys(NARROW_LABELS) as NarrowMode[]).map((m) => (
+                  <option key={m} value={m}>{NARROW_LABELS[m]}</option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+
         {notice && <span className="text-xs text-emerald-600 ml-auto">{notice}</span>}
         <button onClick={reset} className={`text-xs text-gray-400 hover:text-gray-700 ${notice ? '' : 'ml-auto'}`}>恢复默认</button>
         <button onClick={save} disabled={saving || !dirty} className="text-xs px-3 py-1 rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50">
@@ -138,30 +227,60 @@ export default function BlogLayoutPanel({ token }: Props) {
         {!cur ? (
           <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
         ) : (
-          <div className="grid gap-3 md:grid-cols-3">
-            {SLOTS.map((s) => (
-              <div key={s} className="border border-gray-100 rounded-lg p-2 flex flex-col min-h-[160px]">
-                <div className="flex items-center justify-between px-1 pb-2">
-                  <span className="text-xs font-medium text-gray-600">
-                    {SLOT_LABELS[s]}
-                    <span className="text-[11px] text-gray-400 ml-1">{s === 'right' ? '(窄屏隐藏)' : '(全宽)'}</span>
-                  </span>
-                  <select
-                    value=""
-                    onChange={(e) => { if (e.target.value) edit((l) => addWidget(l, page, s, e.target.value as any)) }}
-                    className="text-[11px] border border-gray-200 rounded px-1 py-0.5 text-gray-500 outline-none focus:border-emerald-400"
-                  >
-                    <option value="">+ 添加</option>
-                    {WIDGET_TYPES.map((t) => (<option key={t} value={t}>{WIDGET_LABELS[t]}</option>))}
-                  </select>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {SLOTS.map((s) => {
+              const side = s === 'left' || s === 'right'
+              return (
+                <div
+                  key={s}
+                  onDragOver={(e) => { if (dragId) { e.preventDefault(); setOverSlot(s) } }}
+                  onDragLeave={() => setOverSlot((cs) => (cs === s ? null : cs))}
+                  onDrop={(e) => { e.preventDefault(); drop(s, null) }}
+                  className={`border rounded-lg p-2 flex flex-col min-h-[180px] transition-colors ${
+                    overSlot === s ? 'border-emerald-400 bg-emerald-50/40' : 'border-gray-100'
+                  }`}
+                >
+                  <div className="flex items-center justify-between px-1 pb-2">
+                    <span className="text-xs font-medium text-gray-600">
+                      {SLOT_LABELS[s]}
+                      <span className="text-[11px] text-gray-400 ml-1">{side ? '(窄屏按上面的设置降级)' : '(全宽)'}</span>
+                    </span>
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) edit((l) => addWidget(l, page, s, e.target.value as any)) }}
+                      className="text-[11px] border border-gray-200 rounded px-1 py-0.5 text-gray-500 outline-none focus:border-emerald-400"
+                    >
+                      <option value="">+ 添加</option>
+                      {WIDGET_TYPES.map((t) => (<option key={t} value={t}>{WIDGET_LABELS[t]}</option>))}
+                    </select>
+                  </div>
+
+                  {/* 侧栏宽度:只有该侧真的有启用模块时才影响正文,故未启用时给出说明 */}
+                  {side && (
+                    <label className="px-1 pb-2 flex items-center gap-2 text-[11px] text-gray-400">
+                      <span className="shrink-0">宽度</span>
+                      <input
+                        type="range"
+                        min={MIN_SIDE_WIDTH}
+                        max={MAX_SIDE_WIDTH}
+                        step={10}
+                        value={s === 'left' ? cur.leftWidth : cur.rightWidth}
+                        onChange={(e) => edit((l) => updatePageSettings(l, page, s === 'left' ? { leftWidth: Number(e.target.value) } : { rightWidth: Number(e.target.value) }))}
+                        className="flex-1 min-w-0 accent-emerald-500"
+                      />
+                      <span className="shrink-0 tabular-nums w-10 text-right">{s === 'left' ? cur.leftWidth : cur.rightWidth}</span>
+                      {!hasSide(cur, s) && <span className="shrink-0 text-gray-300">未启用</span>}
+                    </label>
+                  )}
+
+                  {cur[s].length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-[11px] text-gray-300">拖模块到这里</div>
+                  ) : (
+                    <ul className="space-y-1.5">{cur[s].map((w, i) => widgetRow(w, s, i, cur[s].length))}</ul>
+                  )}
                 </div>
-                {cur[s].length === 0 ? (
-                  <div className="flex-1 flex items-center justify-center text-[11px] text-gray-300">空</div>
-                ) : (
-                  <ul className="space-y-1.5">{cur[s].map((w, i) => widgetRow(w, s, i, cur[s].length))}</ul>
-                )}
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
