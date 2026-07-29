@@ -6,6 +6,7 @@ import {
   robotsTxt, sitemapXml, feedXml, themeBootScript,
 } from '../src/lib/blogSeo'
 import type { MenuItem } from '../src/lib/blogLayout'
+import { defaultArticleParts } from '../src/lib/blogArticleParts'
 
 describe('parsePrerenderMode', () => {
   it('只认三个档位,其余一律回落 full', () => {
@@ -137,9 +138,11 @@ describe('articleBlockHtml', () => {
     id: 1, title: '<标题>', tag: '运维', tags: ['nginx'],
     publishedAt: '2026-07-24 07:26:56', views: 12, bodyHtml: '<p>正文</p>',
   }
+  // 部件顺序与开关由 layout.article 决定(P12.8);更细的用例在 blogArticleParts.test.ts
+  const parts = defaultArticleParts()
 
   it('标题转义,正文原样保留', () => {
-    const h = articleBlockHtml(a, '')
+    const h = articleBlockHtml(a, parts, '')
     expect(h).toContain('&lt;标题&gt;')
     expect(h).toContain('<p>正文</p>')
     // 正文容器必须是 index.css 里的实类:Tailwind 扫不到 worker 侧字符串里的类名
@@ -147,7 +150,7 @@ describe('articleBlockHtml', () => {
   })
 
   it('内链块拼在正文之后', () => {
-    expect(articleBlockHtml(a, '<nav>X</nav>')).toContain('<nav>X</nav>')
+    expect(articleBlockHtml(a, parts, '<nav>X</nav>')).toContain('<nav>X</nav>')
   })
 })
 

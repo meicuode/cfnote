@@ -8,6 +8,9 @@
 
 import type { MenuItem } from './blogLayout'
 import { usableMenu } from './blogLayout'
+import {
+  enabledArticleParts, partFlag, DEFAULT_SOURCE_TEXT, DEFAULT_DIVIDER_TEXT, type ArticlePart,
+} from './blogArticleParts'
 
 // ---- 预渲染档位(settings.blog_prerender)----
 // 三档而不是布尔:出问题时「仅 meta」是一个中间落点——分享卡片和搜索摘要照常好用,只是正文不进 HTML。
@@ -226,6 +229,8 @@ export interface PrerenderArticle {
   views: number
   /** 已由 marked 渲染好的正文 HTML */
   bodyHtml: string
+  /** 已渲染好的版权声明(空则该部件不出);marked 在 worker 侧调用,本文件保持零依赖 */
+  copyrightHtml?: string
 }
 
 const fmtDay = (d: string): string => {
@@ -239,25 +244,74 @@ const fmtDay = (d: string): string => {
  * 注入 #root 的正文块。React 挂载时 createRoot 会清空容器,所以这块对最终用户是过渡态——
  * 它真正的服务对象是不执行 JS 的抓取器,以及「文字比 JS 先到」的首屏观感。
  *
+ * 部件顺序与开关走**与客户端同一份 `layout.article`**(P12.8):两边照同一张表渲染,
+ * 否则抓取器看到的结构会和读者看到的不一致。评论区永远不预渲染(变化频率远高于文章,会毁掉边缘缓存)。
+ *
  * 版式用内联 style 而不是 Tailwind 类:类名要被 Tailwind 扫到才会进产物,而本文件产出的是 worker 侧字符串,
  * 不在扫描范围内,写了也不会生效。正文容器保留 `cfnote-preview`——那是 index.css 里的实类,一定在。
  */
-export function articleBlockHtml(a: PrerenderArticle, extraNav: string): string {
+export function articleBlockHtml(a: PrerenderArticle, parts: ArticlePart[], extraNav: string): string {
   const tags = [a.tag, ...(a.tags || [])].filter(Boolean)
+  const tagLinks = tags
+    .map((t) => `<a href="/blog?tag=${escapeAttr(encodeURIComponent(t))}" style="color:inherit">${escapeHtml(t)}</a>`)
+    .join('、')
+
+  const chunks: string[] = []
+  for (const p of enabledArticleParts(parts)) {
+    switch (p.type) {
+      case 'breadcrumb':
+        chunks.push(
+          `<nav style="font-size:15px;color:#8f8f8f"><a href="/blog" style="color:inherit">首页</a> &gt; ` +
+            `<a href="/blog?tag=${escapeAttr(encodeURIComponent(a.tag))}" style="color:inherit">${escapeHtml(a.tag)}</a></nav>`
+        )
+        break
+      case 'title':
+        chunks.push(
+          `<h1 style="font-size:28px;font-weight:700;line-height:1.35;margin:20px 0 0;color:var(--blog-title)">${escapeHtml(a.title)}</h1>`
+        )
+        break
+      case 'meta': {
+        const bits: string[] = []
+        if (partFlag(p, 'time')) bits.push(`<span>${escapeHtml(fmtDay(a.publishedAt))}</span>`)
+        const source = p.options?.sourceText ?? DEFAULT_SOURCE_TEXT
+        if (partFlag(p, 'source') && source) bits.push(`<span>${escapeHtml(source)}</span>`)
+        if (partFlag(p, 'tags') && tagLinks) bits.push(`<span>Tags：${tagLinks}</span>`)
+        if (partFlag(p, 'views')) bits.push(`<span>浏览：${Number(a.views) || 0}</span>`)
+        if (bits.length) {
+          chunks.push(
+            `<div style="font-size:13px;color:#6b7280;margin-top:16px">${bits.join('<span style="display:inline-block;width:20px"></span>')}</div>`
+          )
+        }
+        break
+      }
+      case 'content':
+        chunks.push(`<div class="cfnote-preview" style="margin-top:24px">${a.bodyHtml}</div>`)
+        break
+      case 'tags':
+        if (tagLinks) chunks.push(`<div style="font-size:13px;color:#6b7280;margin-top:24px">标签：${tagLinks}</div>`)
+        break
+      case 'divider':
+        chunks.push(
+          `<p style="text-align:center;color:#6b7280;font-size:14px;margin-top:48px">${escapeHtml(p.options?.text || DEFAULT_DIVIDER_TEXT)}</p>`
+        )
+        break
+      case 'copyright':
+        if (a.copyrightHtml) {
+          chunks.push(
+            `<div class="cfnote-preview" style="font-size:13px;margin-top:32px;padding-top:16px;border-top:1px solid var(--blog-border)">${a.copyrightHtml}</div>`
+          )
+        }
+        break
+      // 评论区不预渲染
+      default:
+        break
+    }
+  }
+
   return (
     `<div id="cfnote-prerender" style="max-width:var(--blog-max,1400px);margin:0 auto;padding:24px 20px;` +
     `background:var(--blog-bg);color:var(--blog-text);min-height:100vh">` +
-    `<nav style="font-size:15px;color:#8f8f8f"><a href="/blog" style="color:inherit">首页</a> &gt; ` +
-    `<a href="/blog?tag=${escapeAttr(encodeURIComponent(a.tag))}" style="color:inherit">${escapeHtml(a.tag)}</a></nav>` +
-    `<h1 style="font-size:28px;font-weight:700;line-height:1.35;margin:20px 0 0;color:var(--blog-title)">${escapeHtml(a.title)}</h1>` +
-    `<div style="font-size:13px;color:#6b7280;margin-top:16px">` +
-    `<span>${escapeHtml(fmtDay(a.publishedAt))}</span>` +
-    `<span style="margin-left:20px">来源：CFNote 笔记</span>` +
-    (tags.length ? `<span style="margin-left:20px">Tags：${tags.map((t) => escapeHtml(t)).join('、')}</span>` : '') +
-    `<span style="margin-left:20px">浏览：${Number(a.views) || 0}</span>` +
-    `</div>` +
-    `<div class="cfnote-preview" style="margin-top:24px">${a.bodyHtml}</div>` +
-    `<p style="text-align:center;color:#6b7280;font-size:14px;margin-top:48px">· 完 ·</p>` +
+    chunks.join('') +
     extraNav +
     `</div>`
   )

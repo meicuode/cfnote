@@ -22,6 +22,11 @@ import {
   addTheme, updateTheme, renameTheme, removeTheme, exportThemeJson, themeFileName, parseImportedTheme,
   type SavedTheme,
 } from '../lib/blogThemes'
+import {
+  ARTICLE_PART_LABELS, ARTICLE_PART_HINTS, DEFAULT_SOURCE_TEXT, DEFAULT_DIVIDER_TEXT, MAX_PART_TEXT,
+  isPartLocked, partFlag, moveArticlePart, toggleArticlePart, setArticlePartOption,
+  type ArticlePart,
+} from '../lib/blogArticleParts'
 
 // 页面布局(P12.1 骨架;P12.2 左栏/拖拽/宽度/窄屏降级;P12.3 导航菜单;P12.4 真预览 + 顶部/底部模块):
 // 博客管理下的第三个子视图。左边摆模块(四个槽位竖排),右边是**真的博客页** iframe 实时预览
@@ -526,8 +531,106 @@ export default function BlogLayoutPanel({ token }: Props) {
       </div>
     )
   }
-  const menuEditor = (l: BlogLayout) => (
-    <div className="max-w-3xl space-y-2">
+  // ---- 文章块部件(P12.8)----
+  // 详情页正文区此前是写死的:面包屑 → 标题 → 元信息 → 正文 → 「· 完 ·」→ 评论。
+  // 成员固定、只能排序与开关——这样「详情页由这几块组成」是个恒定的心智模型,
+  // 也省掉了「配置里没有正文怎么办」这类边界。存在 blog_layout.article 里,跟着布局一起下发。
+  const editArticle = (fn: (parts: ArticlePart[]) => ArticlePart[]) =>
+    edit((l) => ({ ...l, article: fn(l.article) }))
+
+  const partOptionRows = (p: ArticlePart) => {
+    const sub = (key: string, label: string) => (
+      <label key={key} className="flex items-center gap-1 text-[11px] text-gray-500">
+        <input
+          type="checkbox"
+          checked={partFlag(p, key)}
+          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, key, e.target.checked ? '1' : '0'))}
+          className="accent-emerald-500"
+        />
+        {label}
+      </label>
+    )
+    if (p.type === 'meta') {
+      return (
+        <div className="ml-6 mt-1.5 space-y-1.5">
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            {sub('time', '时间')}
+            {sub('source', '来源')}
+            {sub('tags', 'Tags')}
+            {sub('views', '浏览数')}
+          </div>
+          {partFlag(p, 'source') && (
+            <input
+              value={p.options.sourceText ?? DEFAULT_SOURCE_TEXT}
+              onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'sourceText', e.target.value))}
+              placeholder={DEFAULT_SOURCE_TEXT}
+              className="w-full text-xs border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+            />
+          )}
+        </div>
+      )
+    }
+    if (p.type === 'divider') {
+      return (
+        <input
+          value={p.options.text ?? DEFAULT_DIVIDER_TEXT}
+          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
+          placeholder={DEFAULT_DIVIDER_TEXT}
+          className="ml-6 mt-1.5 w-40 text-xs border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
+        />
+      )
+    }
+    if (p.type === 'copyright') {
+      return (
+        <textarea
+          value={p.options.text ?? ''}
+          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
+          rows={3}
+          maxLength={MAX_PART_TEXT}
+          placeholder="本文采用 [CC BY-NC-SA 4.0](https://example.com) 许可协议，转载请注明出处。"
+          className="ml-6 mt-1.5 w-[calc(100%-1.5rem)] text-xs border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400 font-mono"
+        />
+      )
+    }
+    return null
+  }
+
+  const articleEditor = (l: BlogLayout) => (
+    <div className="border border-gray-100 rounded-lg p-2">
+      <div className="px-1 pb-2">
+        <span className="text-xs font-medium text-gray-600">文章块<span className="text-[11px] text-gray-400 ml-1">(正文区,只在详情页)</span></span>
+        <p className="text-[11px] text-gray-400 mt-1">
+          可排序、可开关,但不能增删——这样「详情页由这几块组成」是恒定的。
+          服务端预渲染照同一份配置产出 HTML,抓取器看到的顺序与读者一致。
+        </p>
+      </div>
+      <ul className="space-y-1">
+        {l.article.map((p, i) => (
+          <li key={p.type} className="px-2 py-1.5 rounded-lg border border-gray-200 bg-white">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={p.enabled}
+                disabled={isPartLocked(p.type)}
+                onChange={(e) => editArticle((x) => toggleArticlePart(x, p.type, e.target.checked))}
+                className="accent-emerald-500 disabled:opacity-40"
+                title={isPartLocked(p.type) ? '该部件不可停用' : ''}
+              />
+              <span className={`text-sm flex-1 min-w-0 ${p.enabled ? 'text-gray-700' : 'text-gray-400'}`}>
+                {ARTICLE_PART_LABELS[p.type]}
+              </span>
+              <button onClick={() => editArticle((x) => moveArticlePart(x, p.type, -1))} disabled={i === 0} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="上移">↑</button>
+              <button onClick={() => editArticle((x) => moveArticlePart(x, p.type, 1))} disabled={i === l.article.length - 1} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="下移">↓</button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-0.5 ml-6">{ARTICLE_PART_HINTS[p.type]}</p>
+            {p.enabled && partOptionRows(p)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+
+  const menuEditor = (l: BlogLayout) => (    <div className="max-w-3xl space-y-2">
       <p className="text-[11px] text-gray-400 leading-relaxed">
         博客顶栏菜单,从上到下即从左到右。窄屏会自动收进汉堡按钮。
         「单页」指向某篇已公开的笔记(比如写一篇「关于我」公开后挂上来),「标签」指向按该标签筛选后的列表。
@@ -710,6 +813,7 @@ export default function BlogLayoutPanel({ token }: Props) {
             skinEditor(skin)
           ) : (
             <div className="space-y-3">
+              {tab === 'detail' && articleEditor(layout)}
               {SLOTS.map((s) => {
                 const side = s === 'left' || s === 'right'
                 const choices = widgetChoices(s, page)

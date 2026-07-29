@@ -11,6 +11,7 @@ import {
   type PrerenderMode,
 } from '../../src/lib/blogSeo'
 import { loadBlogDetail, listSitemapPosts, listFeedPosts, countBlogView } from './blog'
+import { articlePartOption } from '../../src/lib/blogArticleParts'
 import type { AppEnv } from '../types'
 
 // 页面级路由(P12.6):详情页 HTML 预渲染 + robots / sitemap / feed。
@@ -159,6 +160,8 @@ pages.get('/blog/:id', async (c) => {
         related: data.related || [],
         tags: [data.tag, ...(data.tags || [])].filter(Boolean) as string[],
       })
+      const parts = data.layout?.article || []
+      const copyright = articlePartOption(parts, 'copyright', 'text', '').trim()
       body = articleBlockHtml(
         {
           id: Number(id),
@@ -169,7 +172,9 @@ pages.get('/blog/:id', async (c) => {
           views: Number(data.views) || 0,
           // 与客户端 BlogPage.renderMd 同一个 marked 实例、同一份配置,输出同一个字符串
           bodyHtml: marked(content, { breaks: true }) as string,
+          copyrightHtml: copyright ? (marked(copyright, { breaks: true }) as string) : '',
         },
+        parts,
         nav
       )
       // 内联状态:前端读到就不再打 /api/blog/posts/:id,计费请求维持 1 次

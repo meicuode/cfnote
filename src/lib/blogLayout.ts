@@ -4,6 +4,8 @@
 //
 // 纯逻辑(默认值/容错解析/增删改排序/宽度计算),前端与 worker 复用,可单测。
 
+import { defaultArticleParts, parseArticleParts, type ArticlePart } from './blogArticleParts'
+
 export const BLOG_LAYOUT_KEY = 'blog_layout'
 
 /** 槽位:上(全宽) / 左(侧栏) / 右(侧栏) / 下(全宽) */
@@ -142,6 +144,8 @@ export interface BlogLayout {
   list: PageLayout
   detail: PageLayout
   menu: MenuItem[]
+  /** 详情页正文区的部件与顺序(P12.8)。跟着布局走,不单开 settings 键——每多一个键就是每次博客请求多一趟 D1 */
+  article: ArticlePart[]
 }
 
 const ABOUT_DEFAULT_TEXT =
@@ -171,6 +175,7 @@ export function defaultLayout(): BlogLayout {
       right: [{ id: 'hot', type: 'hot', title: '', enabled: true, options: {} }],
     },
     menu: defaultMenu(),
+    article: defaultArticleParts(),
   }
 }
 
@@ -293,13 +298,16 @@ export function parseBlogLayout(raw: string | null | undefined): BlogLayout {
   }
   if (!data || typeof data !== 'object') return defaultLayout()
   const o = data as Record<string, unknown>
-  // 三部分都没有可识别内容时视为坏配置,回落默认(而不是给出一个空白页面)
-  if (o.list === undefined && o.detail === undefined && o.menu === undefined) return defaultLayout()
+  // 几部分都没有可识别内容时视为坏配置,回落默认(而不是给出一个空白页面)
+  if (o.list === undefined && o.detail === undefined && o.menu === undefined && o.article === undefined) {
+    return defaultLayout()
+  }
   const def = defaultLayout()
   return {
     list: o.list === undefined ? def.list : parsePage(o.list),
     detail: o.detail === undefined ? def.detail : parsePage(o.detail),
     menu: o.menu === undefined ? def.menu : parseMenu(o.menu),
+    article: o.article === undefined ? def.article : parseArticleParts(o.article),
   }
 }
 

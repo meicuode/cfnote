@@ -10,6 +10,10 @@ import {
   type BlogLayout, type SlotName, type Widget, type MenuItem,
 } from '../lib/blogLayout'
 import {
+  enabledArticleParts, articlePartOption, partFlag, DEFAULT_DIVIDER_TEXT, DEFAULT_SOURCE_TEXT,
+  type ArticlePart,
+} from '../lib/blogArticleParts'
+import {
   parseBlogFilter, blogListUrl, blogListQuery, filterKey, isFiltered, PAGE_SIZE,
   type BlogFilter,
 } from '../lib/blogQuery'
@@ -655,6 +659,12 @@ export default function BlogPage() {
   // 我们打在标题上的 id 随之丢失(P11.8 目录点了不跳的根因),高亮也会被抹掉。
   const contentHtml = useMemo(() => renderMd(detail?.content || ''), [detail])
 
+  // 版权声明(P12.8):内容来自布局配置,变动极少;同样要缓存引用,理由同上
+  const copyrightHtml = useMemo(() => {
+    const text = articlePartOption(layout.article, 'copyright', 'text', '').trim()
+    return text ? renderMd(text) : null
+  }, [layout])
+
   // 详情渲染后:代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid),并扫 h1~h3 打稳定 id 生成目录。
   // 两件事都要在「DOM 落定后」做且必须可重跑——mermaid 会异步把 pre 换成 SVG——所以共用一个
   // MutationObserver:各库靠 data-* 标记幂等,扫标题时 id 相同则不重复写,列表不变则不 setState,不会循环。
@@ -846,6 +856,93 @@ export default function BlogPage() {
   const openSearch = (q: string) => go(blogListUrl({ tag: '', q }))
 
   const hot = side.hot?.[hotRange] || []
+
+  // ---- 文章块部件(P12.8)----
+  // 详情页正文区的顺序与开关来自 layout.article。预渲染那侧(blogSeo.articleBlockHtml)照**同一份配置**
+  // 产出 HTML,否则抓取器看到的顺序会和读者看到的不一致。
+  // 每个部件保留它原来的上边距类,所以默认配置渲染出来与改造前逐项一致;换了顺序就是各自带着自己的间距。
+
+  /** 可点的标签(私密分享页不可点:那些页面本就没有列表可跳) */
+  const tagLinks = (d: BlogDetail) =>
+    [d.tag, ...(d.tags || [])].filter(Boolean).map((t, i) => (
+      <span key={`${t}-${i}`}>
+        {i > 0 && '、'}
+        {d.shared ? (
+          t
+        ) : (
+          <button onClick={() => openTag(t)} className="hover:text-[var(--blog-accent-hover)] hover:underline transition-colors">
+            {t}
+          </button>
+        )}
+      </span>
+    ))
+
+  const renderArticlePart = (p: ArticlePart, d: BlogDetail): React.ReactNode => {
+    switch (p.type) {
+      case 'breadcrumb':
+        return (
+          <div key={p.type} className="text-[15px] flex items-center gap-2">
+            <button onClick={goHome} className="text-[#8f8f8f] hover:text-[var(--blog-accent-hover)] transition-colors">
+              首页
+            </button>
+            <span className="text-[#8f8f8f]">&gt;</span>
+            {d.shared ? (
+              <span className="text-[#8f8f8f]">{d.tag}</span>
+            ) : (
+              <button onClick={() => openTag(d.tag)} className="text-[#8f8f8f] hover:text-[var(--blog-accent-hover)] transition-colors">
+                {d.tag}
+              </button>
+            )}
+            {d.shared && (
+              <span className="text-[12px] px-1.5 py-0.5 rounded bg-[var(--blog-accent-soft)] text-[var(--blog-accent-hover)]" title="凭链接访问的私密分享,不会出现在博客列表">
+                私密分享
+              </span>
+            )}
+          </div>
+        )
+      case 'title':
+        return (
+          <h1 key={p.type} className="text-[26px] sm:text-[28px] font-bold leading-snug text-[var(--blog-title)] mt-5">
+            {d.title}
+          </h1>
+        )
+      case 'meta': {
+        const source = p.options.sourceText ?? DEFAULT_SOURCE_TEXT
+        return (
+          <div key={p.type} className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-gray-500 mt-4">
+            {partFlag(p, 'time') && <span>{fmtFull(d.published_at)}</span>}
+            {partFlag(p, 'source') && source && <span>{source}</span>}
+            {partFlag(p, 'tags') && <span>Tags：{tagLinks(d)}</span>}
+            {partFlag(p, 'views') && <span className="ml-auto">浏览：{d.views}</span>}
+          </div>
+        )
+      }
+      case 'content':
+        return <div key={p.type} ref={contentRef} className="cfnote-preview prose prose-sm max-w-none mt-6" dangerouslySetInnerHTML={contentHtml} />
+      case 'tags':
+        return (
+          <div key={p.type} className="text-[13px] text-gray-500 mt-6">
+            标签：{tagLinks(d)}
+          </div>
+        )
+      case 'divider':
+        return (
+          <p key={p.type} className="text-center text-gray-600 text-sm mt-12">
+            {p.options.text || DEFAULT_DIVIDER_TEXT}
+          </p>
+        )
+      case 'copyright':
+        // 内容由博主撰写,与自定义 Markdown 模块同等信任、同一条渲染路径
+        return copyrightHtml ? (
+          <div key={p.type} className="cfnote-preview text-[13px] mt-8 pt-4 border-t border-[var(--blog-border)]" dangerouslySetInnerHTML={copyrightHtml} />
+        ) : null
+      case 'comments':
+        // 私密分享页不显示评论(P11.2);彻底开关在「设置 → 评论」
+        return d.shared ? null : <CommentsSection key={p.type} articleId={d.id} enabled={d.comments_enabled !== false} />
+      default:
+        return null
+    }
+  }
 
   // ---- 模块渲染(P12.1)----
   // 每个模块是一张卡片;标题为空则不出标题栏(热榜自带 tab 头,故默认无标题)。
@@ -1337,57 +1434,7 @@ export default function BlogPage() {
             <Spinner />
           ) : (
             <div className="pt-1">
-              {/* 面包屑 */}
-              <div className="text-[15px] flex items-center gap-2">
-                <button onClick={goHome} className="text-[#8f8f8f] hover:text-[var(--blog-accent-hover)] transition-colors">
-                  首页
-                </button>
-                <span className="text-[#8f8f8f]">&gt;</span>
-                {detail.shared ? (
-                  <span className="text-[#8f8f8f]">{detail.tag}</span>
-                ) : (
-                  <button onClick={() => openTag(detail.tag)} className="text-[#8f8f8f] hover:text-[var(--blog-accent-hover)] transition-colors">
-                    {detail.tag}
-                  </button>
-                )}
-                {detail.shared && (
-                  <span className="text-[12px] px-1.5 py-0.5 rounded bg-[var(--blog-accent-soft)] text-[var(--blog-accent-hover)]" title="凭链接访问的私密分享,不会出现在博客列表">
-                    私密分享
-                  </span>
-                )}
-              </div>
-              <h1 className="text-[26px] sm:text-[28px] font-bold leading-snug text-[var(--blog-title)] mt-5">{detail.title}</h1>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-gray-500 mt-4">
-                <span>{fmtFull(detail.published_at)}</span>
-                <span>来源：CFNote 笔记</span>
-                <span>
-                  Tags：
-                  {[detail.tag, ...(detail.tags || [])].filter(Boolean).map((t, i) => (
-                    <span key={`${t}-${i}`}>
-                      {i > 0 && '、'}
-                      {detail.shared ? (
-                        t
-                      ) : (
-                        <button onClick={() => openTag(t)} className="hover:text-[var(--blog-accent-hover)] hover:underline transition-colors">
-                          {t}
-                        </button>
-                      )}
-                    </span>
-                  ))}
-                </span>
-                <span className="ml-auto">浏览：{detail.views}</span>
-              </div>
-              <div
-                ref={contentRef}
-                className="cfnote-preview prose prose-sm max-w-none mt-6"
-                dangerouslySetInnerHTML={contentHtml}
-              />
-              <p className="text-center text-gray-600 text-sm mt-12">· 完 ·</p>
-
-              {/* 评论区(P11.2):仅公开文章展示;私密分享页不显示 */}
-              {!detail.shared && (
-                <CommentsSection articleId={detail.id} enabled={detail.comments_enabled !== false} />
-              )}
+              {enabledArticleParts(layout.article).map((p) => renderArticlePart(p, detail))}
             </div>
           )}
         </main>
