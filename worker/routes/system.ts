@@ -2,7 +2,9 @@ import { Hono } from 'hono'
 import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
 import { vectorizeArticle } from './articles'
 import { syncArticleFiles } from './files'
+import { MASK_PREFIX, maskChannels, mergeMaskedChannels, type NotifyChannel } from '../../src/lib/notifyChannels'
 import type { AppEnv } from '../types'
+import type { Env } from '../../src/types'
 
 export const system = new Hono<AppEnv>()
 
@@ -216,8 +218,8 @@ system.post('/init', async (c) => {
 // ---- Settings ----
 
 const SENSITIVE_PATTERNS = /key|token|secret/i
-const MASK_PREFIX = '****'
 
+// 掩码前缀与 notifyChannels 共用一个常量:两处各写一遍 '****' 迟早只改其中一处。
 function maskValue(key: string, value: string): string {
   if (!SENSITIVE_PATTERNS.test(key) || !value) return value
   if (value.length <= 4) return MASK_PREFIX
@@ -228,6 +230,24 @@ function isMasked(value: string): boolean {
   return value.startsWith(MASK_PREFIX)
 }
 
+const CHANNELS_KEY = 'notify_channels'
+
+function parseChannels(raw: string | null | undefined): NotifyChannel[] {
+  if (!raw) return []
+  try {
+    const v = JSON.parse(raw)
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}
+
+/** 读库里已存的渠道配置(掩码合并时要拿回真值) */
+async function storedChannels(env: Env): Promise<NotifyChannel[]> {
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(CHANNELS_KEY).first<{ value: string }>()
+  return parseChannels(row?.value)
+}
+
 // GET /api/settings - Get all settings as key-value object (sensitive values masked)
 system.get('/settings', async (c) => {
   try {
@@ -235,6 +255,11 @@ system.get('/settings', async (c) => {
     const settings: Record<string, string> = {}
     for (const r of rows.results ?? []) {
       settings[r.key] = maskValue(r.key, r.value)
+    }
+    // notify_channels 是一整块 JSON,键名不匹配 SENSITIVE_PATTERNS,此前整块明文下发。
+    // 逐字段掩码:token / sendkey / 加签密钥,以及企业微信、钉钉的 Webhook 地址(URL 本身就是凭据)。
+    if (settings[CHANNELS_KEY]) {
+      settings[CHANNELS_KEY] = JSON.stringify(maskChannels(parseChannels(settings[CHANNELS_KEY])))
     }
     // Ensure llm_model always has a value
     if (!settings.llm_model) {
@@ -260,10 +285,16 @@ system.put('/settings', async (c) => {
       // Skip masked values — user didn't change the key
       if (isMasked(value)) continue
 
+      // 渠道配置不能整键跳过:同一份 JSON 里还有 enabled / chat_id 等确实要保存的改动,
+      // 只把仍是掩码的凭据字段还原成库里的旧值。
+      const toStore = key === CHANNELS_KEY
+        ? JSON.stringify(mergeMaskedChannels(parseChannels(value), await storedChannels(c.env)))
+        : value
+
       await c.env.DB.prepare(
         `INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-      ).bind(key, value).run()
+      ).bind(key, toStore).run()
     }
 
     return ok(body)
@@ -274,29 +305,50 @@ system.put('/settings', async (c) => {
 
 // ---- Export ----
 
+// 可以从备份恢复的设置键(P12.11):只放行博客展示层的配置。
+// 不含 site_url(换域名恢复会把 RSS/sitemap 里的绝对地址写错)、不含模型与任何敏感项。
+export function isRestorableSetting(key: string): boolean {
+  if (SENSITIVE_PATTERNS.test(key) || key === CHANNELS_KEY) return false
+  return key.startsWith('blog_') || key.startsWith('comments_')
+}
+
 // GET /api/export - 全量数据备份(JSON 附件下载;敏感设置不导出)
+// ?versions=1 额外带上文章的历史版本(每篇可能有几十版,体积会翻几倍,故默认不带)
 system.get('/export', async (c) => {
   const user = c.get('user')
+  const withVersions = c.req.query('versions') === '1'
   try {
-    const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows] = await Promise.all([
+    const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows, commentRows, versionRows] = await Promise.all([
       c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
-      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
+      // P12.11 补上博客那一层:此前只导正文,恢复之后所有文章都变回未公开、浏览数归零
+      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
       c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
       c.env.DB.prepare('SELECT id, key, name, folder_id, size, content_type, category, created_at FROM files WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
       c.env.DB.prepare('SELECT id, name, parent_id, created_at FROM folders WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
+      // 评论含邮箱与 IP:这是本人的完整备份,备份丢数据就不叫备份;而同一个文件里本来就是整个知识库,
+      // 比访客 IP 敏感得多。公开接口那条「永不返回 ip/user_agent/author_email」的规矩只管 /api/blog/comments。
+      c.env.DB.prepare(
+        `SELECT cm.id, cm.article_id, cm.parent_id, cm.root_id, cm.author_name, cm.author_email,
+                cm.content, cm.status, cm.is_admin, cm.ip, cm.user_agent, cm.created_at
+           FROM comments cm JOIN articles a ON a.id = cm.article_id
+          WHERE a.user_id = ? ORDER BY cm.id`
+      ).bind(user.id).all().catch(() => ({ results: [] })),
+      withVersions
+        ? c.env.DB.prepare('SELECT id, article_id, title, content, tags, created_at FROM article_versions WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] }))
+        : Promise.resolve({ results: [] }),
     ])
 
     const settings: Record<string, string> = {}
     for (const r of settingsRows.results ?? []) {
-      if (SENSITIVE_PATTERNS.test(r.key) || r.key === 'notify_channels') continue
+      if (SENSITIVE_PATTERNS.test(r.key) || r.key === CHANNELS_KEY) continue
       settings[r.key] = r.value
     }
 
     const payload = {
       app: 'cfnote',
-      export_version: 1,
+      export_version: 2,
       exported_at: new Date().toISOString(),
       username: user.username,
       notebooks: notebooks.results ?? [],
@@ -305,6 +357,8 @@ system.get('/export', async (c) => {
       messages: (msgs.results ?? []).map((m: any) => ({ ...m, sources: m.sources ? JSON.parse(m.sources) : null })),
       files: fileRows.results ?? [],
       folders: folderRows.results ?? [],
+      comments: commentRows.results ?? [],
+      article_versions: versionRows.results ?? [],
       settings,
     }
 
@@ -354,12 +408,17 @@ system.post('/import', async (c) => {
 
     // 2. 文章:按 标题+内容哈希 去重后批量插入(未向量化)
     const { results: existingArts } = await c.env.DB.prepare(
-      'SELECT title, content_hash FROM articles WHERE user_id = ?'
-    ).bind(user.id).all<{ title: string; content_hash: string }>()
-    const existingKeys = new Set(existingArts.map((a) => `${a.title} ${a.content_hash}`))
+      'SELECT id, title, content_hash FROM articles WHERE user_id = ?'
+    ).bind(user.id).all<{ id: number; title: string; content_hash: string }>()
+    // 值是本库文章 id:评论要按「备份里的 article_id → 本库 id」重挂;
+    // 跳过的重复文章同样要进这张表,否则它们的评论会全丢
+    const existingKeys = new Map(existingArts.map((a) => [`${a.title} ${a.content_hash}`, a.id]))
+
+    const artMap = new Map<number, number>() // 备份中的文章 id -> 本库 id
 
     const inserts: D1PreparedStatement[] = []
     const insertContents: string[] = []
+    const insertOldIds: number[] = []
     let skipped = 0
     for (const a of data.articles) {
       const nbId = nbMap.get(a?.notebook_id)
@@ -367,13 +426,27 @@ system.post('/import', async (c) => {
       const content = typeof a.content === 'string' ? a.content : ''
       const hash = await contentHash(content)
       const key = `${a.title} ${hash}`
-      if (existingKeys.has(key)) { skipped++; continue }
-      existingKeys.add(key)
+      if (existingKeys.has(key)) {
+        const dup = existingKeys.get(key)
+        if (dup !== undefined && dup > 0 && typeof a.id === 'number') artMap.set(a.id, dup)
+        skipped++
+        continue
+      }
+      existingKeys.set(key, -1) // 占位:同一份文件里的重复项也要跳过,真实 id 插入后回填
+      // P12.11:公开状态与浏览数一并恢复,否则恢复完整个博客是空的。
+      // is_public 与 is_private 互斥由这里保证(与 PUT /api/articles/:id 同一条规则)。
+      const priv = a.is_private ? 1 : 0
       inserts.push(c.env.DB.prepare(
-        'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized, tags, pinned) VALUES (?, ?, ?, ?, ?, 0, ?, ?)'
+        `INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized, tags, pinned,
+                               is_public, is_private, published_at, views)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
       ).bind(nbId, user.id, a.title, content, hash,
-        typeof a.tags === 'string' && a.tags ? a.tags : null, a.pinned ? 1 : 0))
+        typeof a.tags === 'string' && a.tags ? a.tags : null, a.pinned ? 1 : 0,
+        !priv && a.is_public ? 1 : 0, priv,
+        typeof a.published_at === 'string' ? a.published_at : null,
+        Number.isFinite(a.views) ? Math.max(0, Math.trunc(a.views)) : 0))
       insertContents.push(content)
+      insertOldIds.push(typeof a.id === 'number' ? a.id : -1)
     }
     if (inserts.length > 0) {
       const created = await c.env.DB.batch(inserts)
@@ -383,17 +456,91 @@ system.post('/import', async (c) => {
       // 登记导入文章的附件引用索引(R2 对象按原 key 恢复后,可访问性判定随之恢复)
       for (let i = 0; i < created.length; i++) {
         const newId = created[i]?.meta?.last_row_id
-        if (newId) await syncArticleFiles(c.env, user.id, newId as number, insertContents[i])
+        if (newId) {
+          if (insertOldIds[i] > 0) artMap.set(insertOldIds[i], newId as number)
+          await syncArticleFiles(c.env, user.id, newId as number, insertContents[i])
+        }
       }
+    }
+
+    // 3. 评论(P12.11):按 artMap 重挂到本库文章;parent_id/root_id 要跟着重映射,
+    // 否则楼中楼会挂到别人的评论上。分两步:先按备份里的 id 升序插入拿到新 id,再回填父子关系。
+    const comments = Array.isArray(data.comments) ? data.comments : []
+    let commentsImported = 0
+    if (comments.length > 0 && artMap.size > 0) {
+      const { results: existingCms } = await c.env.DB.prepare(
+        `SELECT cm.article_id, cm.author_name, cm.content, cm.created_at
+           FROM comments cm JOIN articles a ON a.id = cm.article_id WHERE a.user_id = ?`
+      ).bind(user.id).all<{ article_id: number; author_name: string; content: string; created_at: string }>()
+      const cmKey = (aid: number, name: string, content: string, at: string) => [aid, name, content, at].join('')
+      const seenCms = new Set((existingCms ?? []).map((x) => cmKey(x.article_id, x.author_name, x.content, x.created_at)))
+
+      const cmInserts: D1PreparedStatement[] = []
+      const cmOld: any[] = []
+      for (const cm of [...comments].sort((x: any, y: any) => (x?.id || 0) - (y?.id || 0))) {
+        const aid = artMap.get(cm?.article_id)
+        if (!aid || typeof cm?.author_name !== 'string' || typeof cm?.content !== 'string') continue
+        const at = typeof cm.created_at === 'string' ? cm.created_at : ''
+        const key = cmKey(aid, cm.author_name, cm.content, at)
+        if (seenCms.has(key)) continue
+        seenCms.add(key)
+        cmInserts.push(c.env.DB.prepare(
+          `INSERT INTO comments (article_id, author_name, author_email, content, status, is_admin, ip, user_agent, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`
+        ).bind(aid, cm.author_name, cm.author_email || null, cm.content,
+          cm.status === 'approved' ? 'approved' : 'pending', cm.is_admin ? 1 : 0,
+          cm.ip || null, cm.user_agent || null, at || null))
+        cmOld.push(cm)
+      }
+      if (cmInserts.length > 0) {
+        const createdCms = await c.env.DB.batch(cmInserts)
+        const cmMap = new Map<number, number>()
+        createdCms.forEach((r: any, i: number) => {
+          const nid = r?.meta?.last_row_id
+          if (nid && typeof cmOld[i]?.id === 'number') cmMap.set(cmOld[i].id, nid as number)
+        })
+        const relinks: D1PreparedStatement[] = []
+        createdCms.forEach((r: any, i: number) => {
+          const nid = r?.meta?.last_row_id
+          const parent = cmMap.get(cmOld[i]?.parent_id)
+          const root = cmMap.get(cmOld[i]?.root_id)
+          // 父楼没跟着进来(被删过)就留空,降级成顶层楼,不要挂个悬空 id
+          if (nid && (parent || root)) {
+            relinks.push(c.env.DB.prepare('UPDATE comments SET parent_id = ?, root_id = ? WHERE id = ?')
+              .bind(parent ?? null, root ?? null, nid as number))
+          }
+        })
+        if (relinks.length > 0) await c.env.DB.batch(relinks)
+        commentsImported = cmInserts.length
+      }
+    }
+
+    // 4. 设置(P12.11):只恢复博客展示层的键,且**不覆盖已有值**——
+    // 往一个已经配好的站里导备份,不该把人家现在的主题冲掉。
+    let settingsRestored = 0
+    const incomingSettings = data.settings && typeof data.settings === 'object' ? data.settings : {}
+    const settingStmts: D1PreparedStatement[] = []
+    for (const [k, v] of Object.entries(incomingSettings)) {
+      if (typeof v !== 'string' || !isRestorableSetting(k)) continue
+      settingStmts.push(c.env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING').bind(k, v))
+    }
+    if (settingStmts.length > 0) {
+      const before = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first<{ n: number }>()
+      await c.env.DB.batch(settingStmts)
+      const after = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM settings').first<{ n: number }>()
+      settingsRestored = Math.max(0, (after?.n || 0) - (before?.n || 0))
     }
 
     logSystem(c.env, 'info', 'import', '备份导入完成', {
       notebooks_created: toCreate.length, articles_imported: inserts.length, articles_skipped: skipped,
+      comments_imported: commentsImported, settings_restored: settingsRestored,
     })
     return ok({
       notebooks_created: toCreate.length,
       articles_imported: inserts.length,
       articles_skipped: skipped,
+      comments_imported: commentsImported,
+      settings_restored: settingsRestored,
     })
   } catch (e: any) {
     return err('导入失败: ' + e.message, 500)

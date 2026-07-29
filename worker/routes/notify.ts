@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err, logSystem } from '../utils'
-import { buildRequest, type NotifyChannel, type NotifyMessage } from '../../src/lib/notifyChannels'
+import { buildRequest, mergeMaskedChannels, type NotifyChannel, type NotifyMessage } from '../../src/lib/notifyChannels'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -43,12 +43,18 @@ export async function sendToChannel(ch: NotifyChannel, msg: NotifyMessage): Prom
   }
 }
 
-// POST /api/notify/test - 用面板里填的渠道配置发一条测试消息
+// POST /api/notify/test - 用面板里填的渠道配置发一条测试消息。
+// 面板拿到的凭据字段是掩码(P12.10),原样发出去只会得到一个 401,所以这里与 PUT /api/settings
+// 走同一个合并:仍是掩码的字段取库里的真值。
 notify.post('/test', async (c) => {
   try {
     const { channel } = await c.req.json<{ channel: NotifyChannel }>()
     if (!channel?.type) return err('缺少渠道配置')
-    const res = await sendToChannel(channel, {
+    const row = await c.env.DB.prepare("SELECT value FROM settings WHERE key = 'notify_channels'").first<{ value: string }>()
+    let stored: NotifyChannel[] = []
+    try { stored = row?.value ? JSON.parse(row.value) : [] } catch { stored = [] }
+    const [merged] = mergeMaskedChannels([channel], Array.isArray(stored) ? stored : [])
+    const res = await sendToChannel(merged, {
       title: '✅ CFNote 测试消息',
       body: '如果你收到这条消息,说明该渠道已配置成功。',
     })

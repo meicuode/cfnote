@@ -69,6 +69,67 @@ export const CHANNEL_META: Record<ChannelType, { label: string; fields: ChannelF
 
 export const CHANNEL_TYPES: ChannelType[] = ['wecom', 'feishu', 'dingtalk', 'serverchan', 'telegram', 'webhook']
 
+// ---- 凭据掩码(P12.10) ----
+// settings 表本来就有掩码机制(worker/routes/system.ts),但它按**键名**匹配 /key|token|secret/,
+// 而这些渠道全挤在 `notify_channels` 这一个键里,于是整块 JSON 明文下发给了前端。
+// 更要命的是企业微信/钉钉的 Webhook 地址本身就是凭据(?key= / ?access_token= 在 URL 里),
+// 泄露等于别人能往你的群里发任意消息——所以掩码是按**字段**做的,不是只挡 token 那一个。
+// chat_id 不是凭据(拿到它也发不了消息),留着可见,否则连"配给哪个会话"都看不出来。
+export const MASK_PREFIX = '****'
+
+export const SECRET_FIELDS: Record<ChannelType, string[]> = {
+  telegram: ['token'],
+  wecom: ['webhook'],
+  feishu: ['webhook', 'secret'],
+  dingtalk: ['webhook', 'secret'],
+  serverchan: ['sendkey'],
+  webhook: ['url'],
+}
+
+export function isSecretField(type: ChannelType, key: string): boolean {
+  return (SECRET_FIELDS[type] || []).includes(key)
+}
+
+/** 掩码后的值:`****` + 后四位(与 settings 的标量掩码同一形态) */
+export function maskSecret(value: string): string {
+  if (!value) return value
+  return value.length <= 4 ? MASK_PREFIX : MASK_PREFIX + value.slice(-4)
+}
+
+export function isMaskedValue(value: unknown): boolean {
+  return typeof value === 'string' && value.startsWith(MASK_PREFIX)
+}
+
+/** 下发给前端前把凭据字段替换成掩码(GET /api/settings) */
+export function maskChannels(list: NotifyChannel[]): NotifyChannel[] {
+  return (Array.isArray(list) ? list : []).map((ch) => {
+    const config: Record<string, string> = {}
+    for (const [k, v] of Object.entries(ch?.config || {})) {
+      config[k] = isSecretField(ch.type, k) ? maskSecret(String(v ?? '')) : String(v ?? '')
+    }
+    return { ...ch, config }
+  })
+}
+
+/**
+ * 写回时把仍是掩码的字段还原成库里的旧值(PUT /api/settings 与 /api/notify/test 共用)。
+ * 标量设置可以「整键跳过」,这里不行——同一份 JSON 里还有 enabled / chat_id 等确实要保存的改动,
+ * 所以按 id 逐字段合并。找不到旧值(比如新建渠道却填了个 `****` 开头的串)一律落空串,
+ * 宁可让该渠道配置不完整(buildRequest 返回 null,不发送)也不要把掩码当真凭据发出去。
+ */
+export function mergeMaskedChannels(incoming: NotifyChannel[], stored: NotifyChannel[]): NotifyChannel[] {
+  const byId = new Map((Array.isArray(stored) ? stored : []).map((c) => [c?.id, c]))
+  return (Array.isArray(incoming) ? incoming : []).map((ch) => {
+    const old = byId.get(ch?.id)
+    const config: Record<string, string> = {}
+    for (const [k, v] of Object.entries(ch?.config || {})) {
+      const val = String(v ?? '')
+      config[k] = isMaskedValue(val) && isSecretField(ch.type, k) ? String(old?.config?.[k] ?? '') : val
+    }
+    return { ...ch, config }
+  })
+}
+
 /** 拼接消息纯文本(标题 + 正文 + 链接) */
 export function messageText(msg: NotifyMessage): string {
   return [msg.title, msg.body, msg.url].filter(Boolean).join('\n')

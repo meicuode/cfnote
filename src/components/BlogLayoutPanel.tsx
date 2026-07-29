@@ -37,8 +37,8 @@ interface Props {
   token: string
 }
 
-/** 四个页签:两个页面布局 + 导航菜单 + 主题外观 */
-type Tab = PageName | 'menu' | 'skin'
+/** 五个页签:两个页面布局 + 导航菜单 + 主题外观 + 主题库 */
+type Tab = PageName | 'menu' | 'skin' | 'library'
 
 export default function BlogLayoutPanel({ token }: Props) {
   const api = useApi(token)
@@ -49,6 +49,8 @@ export default function BlogLayoutPanel({ token }: Props) {
   const [library, setLibrary] = useState<SavedTheme[]>([])
   const [newThemeName, setNewThemeName] = useState('')
   const [themeMsg, setThemeMsg] = useState('')
+  // 待确认删除的主题 id(删除是不可逆的,而主题库没有回收站)
+  const [delTheme, setDelTheme] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
@@ -56,8 +58,8 @@ export default function BlogLayoutPanel({ token }: Props) {
   // 拖拽中的模块 id 与当前悬停的槽位(仅用于高亮)
   const [dragId, setDragId] = useState<string | null>(null)
   const [overSlot, setOverSlot] = useState<SlotName | null>(null)
-  // 菜单/主题页签下仍需要一个「当前页面」用于模块操作的类型收敛与预览
-  const page: PageName = tab === 'menu' || tab === 'skin' ? 'list' : tab
+  // 菜单/主题/主题库页签下仍需要一个「当前页面」用于模块操作的类型收敛与预览
+  const page: PageName = tab === 'menu' || tab === 'skin' || tab === 'library' ? 'list' : tab
 
   const load = useCallback(async () => {
     const res = await api.get<Record<string, string>>('/settings')
@@ -343,6 +345,143 @@ export default function BlogLayoutPanel({ token }: Props) {
     </label>
   )
 
+  // 主题库(P12.7 落地,P12.9 独立成页签):内置预设只是「一键改两个颜色」,
+  // 调顺手的整套配置(含排版与额外 CSS)存在这里,可套用 / 复制 / 重命名 / 导出 / 删除。
+  const themeLibraryEditor = () => (
+    <div className="max-w-3xl space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-gray-700">我的主题</p>
+          <p className="text-[11px] text-gray-400 mt-0.5">已存 {library.length} / {MAX_THEMES} 套</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-emerald-300 hover:text-emerald-700 cursor-pointer">
+            导入主题文件…
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                e.target.value = '' // 允许连续导入同一个文件
+                if (f) importTheme(f)
+              }}
+            />
+          </label>
+          <button
+            onClick={saveCurrentAsTheme}
+            className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+          >
+            + 保存当前配置为新主题
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          value={newThemeName}
+          onChange={(e) => setNewThemeName(e.target.value)}
+          placeholder="新主题名称(留空则叫「我的主题」)"
+          maxLength={MAX_THEME_NAME}
+          className="w-64 text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-400"
+        />
+      </div>
+
+      {themeMsg && <p className="text-xs text-emerald-600">{themeMsg}</p>}
+
+      {library.length === 0 ? (
+        <p className="text-xs text-gray-400 border border-dashed border-gray-200 rounded-xl px-3 py-6 text-center">
+          还没存过主题。到「主题外观」把配色与排版调顺手,再回来存一套下来,以后一键切回;也可以存多套换着看。
+        </p>
+      ) : (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {library.map((t) => (
+            <li key={t.id} className="rounded-xl border border-gray-200 bg-white p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="w-4 h-4 rounded-full shrink-0" style={{ background: t.skin.accent }} />
+                <span className="w-4 h-4 rounded-full shrink-0 border border-gray-200" style={{ background: t.skin.chrome }} />
+                <input
+                  value={t.name}
+                  maxLength={MAX_THEME_NAME}
+                  onChange={(e) =>
+                    // 打字时不去重,否则输到与已有主题同名的那一刻就会被自动加序号
+                    editLibrary((l) => l.map((x) => (x.id === t.id ? { ...x, name: e.target.value } : x)))
+                  }
+                  onBlur={() => editLibrary((l) => renameTheme(l, t.id, t.name))}
+                  title="直接改这里就是重命名"
+                  className="flex-1 min-w-0 text-sm border border-transparent hover:border-gray-200 focus:border-emerald-400 rounded px-1.5 py-0.5 outline-none"
+                />
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1 px-1 truncate">
+                {FONT_LABELS[t.skin.font]} · {t.skin.fontSize}px · 容器 {t.skin.width}px · 圆角 {t.skin.radius}px
+                {t.skin.css ? ' · 含额外 CSS' : ''}
+              </p>
+              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100">
+                <button
+                  onClick={() => { setSkin(t.skin); setDirty(true); setTab('skin'); flashTheme(`已套用「${t.name}」`) }}
+                  className="text-xs px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  title="把这套主题设为当前生效的配置,并切到「主题外观」"
+                >
+                  套用
+                </button>
+                <button
+                  onClick={() => { editLibrary((l) => updateTheme(l, t.id, skin)); flashTheme(`已把当前配置写回「${t.name}」`) }}
+                  className="text-xs text-gray-500 hover:text-emerald-600"
+                  title="用当前正在编辑的配置覆盖这套主题"
+                >
+                  更新
+                </button>
+                <button
+                  onClick={() => {
+                    if (library.length >= MAX_THEMES) return flashTheme(`最多保存 ${MAX_THEMES} 套主题`)
+                    // addTheme 自带重名归一,所以「墨绿」复制出来就是「墨绿 2」
+                    editLibrary((l) => addTheme(l, t.name, t.skin))
+                    flashTheme(`已复制「${t.name}」`)
+                  }}
+                  className="text-xs text-gray-500 hover:text-emerald-600"
+                  title="复制一份再改,不动原来这套"
+                >
+                  复制
+                </button>
+                <button onClick={() => downloadTheme(t)} className="text-xs text-gray-500 hover:text-emerald-600" title="导出为 JSON 文件">
+                  导出
+                </button>
+                <span className="flex-1" />
+                {/* 删除要二次确认:调半天的额外 CSS 一次误点就没了,而这里不像笔记有回收站 */}
+                {delTheme === t.id ? (
+                  <>
+                    <button
+                      onClick={() => { editLibrary((l) => removeTheme(l, t.id)); setDelTheme(null) }}
+                      className="text-xs text-red-500 hover:underline"
+                    >
+                      确定删除
+                    </button>
+                    <button onClick={() => setDelTheme(null)} className="text-xs text-gray-400 hover:text-gray-600">取消</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setDelTheme(t.id)}
+                    className="text-xs text-gray-400 hover:text-red-500"
+                    title="从主题库删除(不影响当前生效的配置)"
+                  >
+                    删除
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="text-[11px] text-gray-400 leading-relaxed">
+        主题库只存在管理端(<code>settings.blog_skin_library</code>),博客页一行都不读它——存多少套都不影响访客的加载。
+        导出的是一份配置 JSON(配色 / 排版 / 额外 CSS),不是 WordPress 那种含模板的主题包,也<b>不含任何 JS</b>。
+        导入他人的主题时会剥掉额外 CSS 里的 <code>@import</code> 并把外部地址列出来:CSS 不能执行 JS,但能把访客的 IP 与来源发给第三方。
+        改动同样要点右上角「保存」才写回。
+      </p>
+    </div>
+  )
+
   const skinEditor = (s: BlogSkin) => {
     const active = matchPreset(s)
     return (
@@ -370,97 +509,13 @@ export default function BlogLayoutPanel({ token }: Props) {
           </p>
         </div>
 
-        {/* 主题库(P12.7):内置预设只是「一键改两个颜色」,调顺手的整套配置此前没地方存 */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <p className="text-xs font-medium text-gray-600">我的主题</p>
-            <label className="text-[11px] text-emerald-600 hover:text-emerald-700 cursor-pointer">
-              导入主题文件…
-              <input
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  e.target.value = '' // 允许连续导入同一个文件
-                  if (f) importTheme(f)
-                }}
-              />
-            </label>
-          </div>
-
-          {library.length === 0 && (
-            <p className="text-[11px] text-gray-400">
-              还没存过主题。把下面的配色与排版调顺手之后存一套下来,以后一键切回;也可以存多套换着看。
-            </p>
-          )}
-
-          <ul className="space-y-1">
-            {library.map((t) => (
-              <li key={t.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white">
-                <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ background: t.skin.accent }} />
-                <span className="w-3.5 h-3.5 rounded-full shrink-0 border border-gray-200" style={{ background: t.skin.chrome }} />
-                <input
-                  value={t.name}
-                  maxLength={MAX_THEME_NAME}
-                  onChange={(e) =>
-                    // 打字时不去重,否则输到与已有主题同名的那一刻就会被自动加序号
-                    editLibrary((l) => l.map((x) => (x.id === t.id ? { ...x, name: e.target.value } : x)))
-                  }
-                  onBlur={() => editLibrary((l) => renameTheme(l, t.id, t.name))}
-                  className="flex-1 min-w-0 text-sm border border-transparent hover:border-gray-200 focus:border-emerald-400 rounded px-1.5 py-0.5 outline-none"
-                />
-                <button
-                  onClick={() => { setSkin(t.skin); setDirty(true); flashTheme(`已套用「${t.name}」`) }}
-                  className="text-xs text-gray-500 hover:text-emerald-600 shrink-0"
-                  title="把这套主题设为当前生效的配置"
-                >
-                  套用
-                </button>
-                <button
-                  onClick={() => { editLibrary((l) => updateTheme(l, t.id, skin)); flashTheme(`已把当前配置写回「${t.name}」`) }}
-                  className="text-xs text-gray-500 hover:text-emerald-600 shrink-0"
-                  title="用当前正在编辑的配置覆盖这套主题"
-                >
-                  更新
-                </button>
-                <button onClick={() => downloadTheme(t)} className="text-xs text-gray-500 hover:text-emerald-600 shrink-0" title="导出为 JSON 文件">
-                  导出
-                </button>
-                <button
-                  onClick={() => editLibrary((l) => removeTheme(l, t.id))}
-                  className="text-xs text-gray-400 hover:text-red-500 shrink-0"
-                  title="从主题库删除(不影响当前生效的配置)"
-                >
-                  ✕
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              value={newThemeName}
-              onChange={(e) => setNewThemeName(e.target.value)}
-              placeholder="新主题名称"
-              maxLength={MAX_THEME_NAME}
-              className="w-40 text-sm border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
-            />
-            <button
-              onClick={saveCurrentAsTheme}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-emerald-300 hover:text-emerald-700"
-            >
-              保存当前配置为主题
-            </button>
-          </div>
-
-          {themeMsg && <p className="text-[11px] text-emerald-600 mt-1.5">{themeMsg}</p>}
-
-          <p className="text-[11px] text-gray-400 mt-1.5">
-            主题库只存在管理端(`settings.blog_skin_library`),博客页一行都不读它——存多少套都不影响访客的加载。
-            导出的是一份配置 JSON(配色 / 排版 / 额外 CSS),不是 WordPress 那种含模板的主题包。
-            导入他人的主题时会剥掉额外 CSS 里的 `@import` 并把外部地址列出来:CSS 不能执行 JS,但能把访客的 IP 与来源发给第三方。
-          </p>
+        {/* 主题库搬到了独立页签(P12.9):这里只留一行入口。
+            整套主题的管理(套用/重命名/导出/删除)与「当前这一套的旋钮」不是一个粒度的东西,
+            挤在同一个滚动流里的结果就是没人找得到重命名和导出。 */}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-gray-600 font-medium">主题库</span>
+          <span className="text-gray-400">已存 {library.length} 套</span>
+          <button onClick={() => setTab('library')} className="text-emerald-600 hover:underline">管理主题库 →</button>
         </div>
 
         <div className="space-y-2">
@@ -774,8 +829,11 @@ export default function BlogLayoutPanel({ token }: Props) {
         <button onClick={() => { setTab('skin'); setEditing(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === 'skin' ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
           主题外观
         </button>
+        <button onClick={() => { setTab('library'); setEditing(null); setDelTheme(null) }} className={`text-xs px-2.5 py-1 rounded-lg ${tab === 'library' ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'}`}>
+          主题库{library.length > 0 ? ` (${library.length})` : ''}
+        </button>
 
-        {cur && tab !== 'menu' && tab !== 'skin' && (
+        {cur && tab !== 'menu' && tab !== 'skin' && tab !== 'library' && (
           <>
             {/* 正文剩余宽度实时提示:左右同开最容易把正文压得没法看 */}
             <span className={`text-[11px] ml-2 px-2 py-0.5 rounded ${tooNarrow ? 'bg-amber-100 text-amber-700' : 'text-gray-400'}`}>
@@ -797,18 +855,25 @@ export default function BlogLayoutPanel({ token }: Props) {
         )}
 
         {notice && <span className="text-xs text-emerald-600 ml-auto">{notice}</span>}
-        <button onClick={reset} className={`text-xs text-gray-400 hover:text-gray-700 ${notice ? '' : 'ml-auto'}`}>恢复默认</button>
+        {/* 主题库没有「默认」可恢复(清空主题库不是恢复默认,是删数据),留个占位把保存按钮顶到右边 */}
+        {tab === 'library' ? (
+          <span className={notice ? '' : 'ml-auto'} />
+        ) : (
+          <button onClick={reset} className={`text-xs text-gray-400 hover:text-gray-700 ${notice ? '' : 'ml-auto'}`}>恢复默认</button>
+        )}
         <button onClick={save} disabled={saving || !dirty} className="text-xs px-3 py-1 rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50">
           {saving ? '保存中…' : dirty ? '保存' : '已保存'}
         </button>
       </div>
 
       <div className="flex-1 flex min-h-0">
-        <div className={`overflow-y-auto p-3 ${tab === 'menu' ? 'flex-1' : 'w-full lg:w-[27rem] lg:shrink-0'}`}>
+        <div className={`overflow-y-auto p-3 ${tab === 'menu' || tab === 'library' ? 'flex-1' : 'w-full lg:w-[27rem] lg:shrink-0'}`}>
           {!cur || !layout ? (
             <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
           ) : tab === 'menu' ? (
             menuEditor(layout)
+          ) : tab === 'library' ? (
+            themeLibraryEditor()
           ) : tab === 'skin' ? (
             skinEditor(skin)
           ) : (
@@ -881,8 +946,9 @@ export default function BlogLayoutPanel({ token }: Props) {
         </div>
 
         {/* 右侧是真的博客页(iframe);管理端窗口太窄时收起,左边照常能配。
-            菜单页签不显示预览:菜单在顶栏,缩放后基本看不清,不如把编辑区放宽 */}
-        {tab !== 'menu' && layout && (
+            菜单页签不显示预览:菜单在顶栏,缩放后基本看不清,不如把编辑区放宽。
+            主题库同理:那是一堆整套配置的管理,预览的是「当前生效的那一套」,并排放会让人以为卡片选中了就变 */}
+        {tab !== 'menu' && tab !== 'library' && layout && (
           <div className="hidden lg:flex flex-1 min-w-0">
             <BlogPreview layout={layout} skin={skin} page={page} onSelect={selectWidget} />
           </div>

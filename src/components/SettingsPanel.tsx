@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
-import { CHANNEL_META, CHANNEL_TYPES, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
+import { CHANNEL_META, CHANNEL_TYPES, isSecretField, isMaskedValue, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
 import { PRERENDER_KEY, parsePrerenderMode, type PrerenderMode } from '../lib/blogSeo'
+import { CUSTOM_JS_KEY, MAX_CUSTOM_JS, describeCustomScripts } from '../lib/blogScripts'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -25,11 +26,15 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [channels, setChannels] = useState<NotifyChannel[]>([])
   // 已保存渠道快照(归一化 JSON):测试走实时表单、cron 走已存配置,用它检测「测了但没保存」
   const [savedChannels, setSavedChannels] = useState('[]')
+  // 正在改写的凭据字段 → 它原来的掩码值(用于「取消」还原);键为 `渠道id:字段名`
+  const [editSecret, setEditSecret] = useState<Record<string, string>>({})
   // P11.2 评论设置
   const [commentsEnabled, setCommentsEnabled] = useState(true)
   const [commentsAutoApprove, setCommentsAutoApprove] = useState(false)
   // P12.6 博客详情页预渲染档位
   const [prerender, setPrerender] = useState<PrerenderMode>('full')
+  // P12.12 博客自定义脚本
+  const [customJs, setCustomJs] = useState('')
   const [testing, setTesting] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -37,6 +42,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const [exporting, setExporting] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState('')
+  // 导出时是否带上文章历史版本(P12.11)
+  const [withVersions, setWithVersions] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -56,6 +63,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
         setCommentsEnabled((res.data as any).comments_enabled !== '0')
         setCommentsAutoApprove((res.data as any).comments_auto_approve === '1')
         setPrerender(parsePrerenderMode((res.data as any)[PRERENDER_KEY]))
+        setCustomJs(((res.data as any)[CUSTOM_JS_KEY] as string) || '')
       } else {
         setError(res.error || '加载失败')
       }
@@ -74,6 +82,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
       comments_enabled: commentsEnabled ? '1' : '0',
       comments_auto_approve: commentsAutoApprove ? '1' : '0',
       [PRERENDER_KEY]: prerender,
+      [CUSTOM_JS_KEY]: customJs,
       site_url: window.location.origin,
     })
     if (res.ok) {
@@ -135,9 +144,12 @@ export default function SettingsPanel({ token, onClose }: Props) {
       }
 
       setImportMsg('正在导入数据...')
-      const res = await api.post<{ notebooks_created: number; articles_imported: number; articles_skipped: number }>('/import', data)
+      const res = await api.post<{
+        notebooks_created: number; articles_imported: number; articles_skipped: number
+        comments_imported?: number; settings_restored?: number
+      }>('/import', data)
       if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
-      const { notebooks_created, articles_imported, articles_skipped } = res.data
+      const { notebooks_created, articles_imported, articles_skipped, comments_imported = 0, settings_restored = 0 } = res.data
 
       // 恢复附件(ZIP):按原 key 写回 R2,笔记中的链接保持有效
       let restored = 0
@@ -169,6 +181,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
       setImportMsg(
         `导入完成：新建笔记本 ${notebooks_created} 个，导入文章 ${articles_imported} 篇` +
         (articles_skipped > 0 ? `，跳过重复 ${articles_skipped} 篇` : '') +
+        (comments_imported > 0 ? `，恢复评论 ${comments_imported} 条` : '') +
+        (settings_restored > 0 ? `，恢复博客配置 ${settings_restored} 项` : '') +
         (zip ? `，恢复附件 ${restored} 个` + (restoreFailed > 0 ? `（${restoreFailed} 个失败）` : '') : '') +
         (vecErrors.length > 0 ? `；${vecErrors.length} 篇索引失败，可点击下方按钮重试` : '')
       )
@@ -206,6 +220,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
 
   const encodeKey = (key: string) => key.split('/').map(encodeURIComponent).join('/')
 
+  const jsInfo = describeCustomScripts(customJs)
+
   // ---- P10.3 通知渠道管理 ----
   const addChannel = (type: ChannelType) =>
     setChannels((cs) => [...cs, { id: crypto.randomUUID(), type, enabled: true, config: {} }])
@@ -216,6 +232,18 @@ export default function SettingsPanel({ token, onClose }: Props) {
   const removeChannel = (id: string) => {
     setChannels((cs) => cs.filter((c) => c.id !== id))
     setTestMsg((m) => { const n = { ...m }; delete n[id]; return n })
+  }
+  // 凭据字段(P12.10)默认只显示「已设置 ****后四位」。点「修改」才清空成可输入状态,
+  // 并把原来的掩码记下来供「取消」还原——否则误点一下再保存就把凭据清了。
+  const secretId = (id: string, key: string) => `${id}:${key}`
+  const beginEditSecret = (id: string, key: string, masked: string) => {
+    setEditSecret((m) => ({ ...m, [secretId(id, key)]: masked }))
+    updateConfig(id, key, '')
+  }
+  const cancelEditSecret = (id: string, key: string) => {
+    const masked = editSecret[secretId(id, key)]
+    if (masked !== undefined) updateConfig(id, key, masked)
+    setEditSecret((m) => { const n = { ...m }; delete n[secretId(id, key)]; return n })
   }
   const testChannel = async (ch: NotifyChannel) => {
     setTesting(ch.id)
@@ -230,13 +258,16 @@ export default function SettingsPanel({ token, onClose }: Props) {
     setTesting(null)
   }
 
+  // 版本历史体积可能比正文本身还大(每篇几十版),默认不进备份,要就勾上
+  const exportUrl = () => (withVersions ? '/api/export?versions=1' : '/api/export')
+
   // 完整备份:导出 JSON + 全部附件打包为 ZIP
   const handleExportZip = async () => {
     setExporting(true)
     setError('')
     setImportMsg('')
     try {
-      const res = await fetch('/api/export', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(exportUrl(), { headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) {
         const j = await res.json().catch(() => null) as any
         throw new Error(j?.error || `导出失败 (${res.status})`)
@@ -276,7 +307,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
     setExporting(true)
     setError('')
     try {
-      const res = await fetch('/api/export', { headers: { Authorization: `Bearer ${token}` } })
+      const res = await fetch(exportUrl(), { headers: { Authorization: `Bearer ${token}` } })
       if (!res.ok) {
         const j = await res.json().catch(() => null) as any
         throw new Error(j?.error || `导出失败 (${res.status})`)
@@ -436,15 +467,34 @@ export default function SettingsPanel({ token, onClose }: Props) {
                           </label>
                           <button onClick={() => removeChannel(ch.id)} className="text-xs text-gray-400 hover:text-red-500">删除</button>
                         </div>
-                        {meta.fields.map((f) => (
-                          <input
-                            key={f.key}
-                            value={ch.config[f.key] || ''}
-                            onChange={(e) => updateConfig(ch.id, f.key, e.target.value)}
-                            placeholder={f.placeholder || f.label + (f.optional ? '(可选)' : '')}
-                            className="w-full text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 mb-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 font-mono"
-                          />
-                        ))}
+                        {meta.fields.map((f) => {
+                          const val = ch.config[f.key] || ''
+                          const editing = editSecret[secretId(ch.id, f.key)] !== undefined
+                          // 已保存的凭据只显示「已设置」,不回显——它同时是 GET /api/settings 的返回值,
+                          // 而企业微信/钉钉的 Webhook 地址本身就是能往群里发消息的凭据。
+                          if (isSecretField(ch.type, f.key) && isMaskedValue(val) && !editing) {
+                            return (
+                              <div key={f.key} className="flex items-center gap-2 text-xs mb-1.5 px-2.5 py-1.5 border border-gray-200 rounded-lg bg-gray-50">
+                                <span className="text-gray-500 shrink-0">{f.label}</span>
+                                <span className="font-mono text-gray-400 flex-1 min-w-0 truncate">已设置 · {val}</span>
+                                <button onClick={() => beginEditSecret(ch.id, f.key, val)} className="text-emerald-600 hover:underline shrink-0">修改</button>
+                              </div>
+                            )
+                          }
+                          return (
+                            <div key={f.key} className="flex items-center gap-2 mb-1.5">
+                              <input
+                                value={val}
+                                onChange={(e) => updateConfig(ch.id, f.key, e.target.value)}
+                                placeholder={f.placeholder || f.label + (f.optional ? '(可选)' : '')}
+                                className="flex-1 min-w-0 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 font-mono"
+                              />
+                              {editing && (
+                                <button onClick={() => cancelEditSecret(ch.id, f.key)} className="text-xs text-gray-400 hover:text-gray-600 shrink-0">取消</button>
+                              )}
+                            </div>
+                          )
+                        })}
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-[11px] text-gray-400 flex-1">{meta.help}</p>
                           <button
@@ -471,7 +521,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
                     </button>
                   ))}
                 </div>
-                <p className="text-[11px] text-gray-400 mt-2">配置改动需点右下角「保存」后生效;推送消息含笔记标题与打开链接。</p>
+                <p className="text-[11px] text-gray-400 mt-2">配置改动需点右下角「保存」后生效;推送消息含笔记标题与打开链接。已保存的 Token / 密钥 / Webhook 地址只显示后四位,点「修改」可换成新值。</p>
                 {JSON.stringify(channels) !== savedChannels && (
                   <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mt-2">
                     ⚠️ 通知渠道有未保存的修改。「测试」用的是当前填写的配置,但到期推送用的是<b>已保存</b>的配置——请点右下角「保存」后才会真正生效。
@@ -527,6 +577,39 @@ export default function SettingsPanel({ token, onClose }: Props) {
                 </p>
               </div>
 
+              {/* 博客自定义脚本(P12.12) */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">博客自定义脚本</h3>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  统计代码、客服挂件之类。直接粘服务商给的 <code>&lt;script src=…&gt;</code> 片段即可，也可以写纯 JS。
+                </p>
+                <textarea
+                  value={customJs}
+                  onChange={(e) => setCustomJs(e.target.value.slice(0, MAX_CUSTOM_JS))}
+                  rows={6}
+                  spellCheck={false}
+                  placeholder={'<script async src="https://hm.baidu.com/hm.js?xxxxxx"></script>'}
+                  className="w-full text-xs font-mono border border-gray-200 rounded-lg px-2.5 py-2 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400"
+                />
+                <div className="flex items-center justify-between mt-1">
+                  <span className="text-[11px] text-gray-400">
+                    {jsInfo.external + jsInfo.inline === 0
+                      ? '未配置'
+                      : `将注入 ${jsInfo.external} 个外链脚本、${jsInfo.inline} 段内联代码`}
+                  </span>
+                  <span className="text-[11px] text-gray-400 tabular-nums">{customJs.length} / {MAX_CUSTOM_JS}</span>
+                </div>
+                <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mt-2 leading-relaxed">
+                  ⚠️ 这段代码与管理端、<code>/api/*</code> 在同一个源上，能读到你的登录凭据。危险的不是你自己写的那几行，
+                  是从别处粘来的第三方脚本——它被投毒时你的整个知识库都在它手里。只粘信得过来源的代码。
+                </p>
+                <p className="text-[11px] text-gray-400 mt-1.5 leading-relaxed">
+                  在博客列表页与详情页都会执行，在 React 挂载后注入一次（要改首屏样式请用「博客管理 → 页面布局 → 主题外观」的额外 CSS，脚本会晚一步）。
+                  这四种情况一律不注入：管理端页面、布局预览 <code>?preview=1</code>、私密分享页 <code>/blog/share/…</code>、以及带 <code>?nojs=1</code> 打开时——
+                  最后一个是逃生阀，脚本写崩了用它打开博客页再回来改。主题的导入导出不会携带这段代码。
+                </p>
+              </div>
+
               {/* 数据备份 */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">数据备份</h3>
@@ -550,8 +633,18 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   </svg>
                   <span className="text-gray-700 font-medium">{exporting ? '导出中...' : '导出完整备份 (ZIP，含图片/附件)'}</span>
                 </button>
+                <label className="flex items-center gap-2 mt-2 text-[11px] text-gray-500 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={withVersions}
+                    onChange={(e) => setWithVersions(e.target.checked)}
+                    className="accent-emerald-500"
+                  />
+                  同时导出文章历史版本（每篇可能有几十版，文件会大好几倍）
+                </label>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  包含全部笔记本、文章与对话记录，不含 API Key 等敏感配置。建议定期导出 ZIP 完整备份。
+                  含全部笔记本、文章（连同公开状态、发布时间与浏览数）、访客评论、对话记录与博客主题/布局配置；
+                  不含 API Key、通知渠道等敏感配置。评论里带有评论者邮箱与 IP，这个文件请自己收好。建议定期导出 ZIP 完整备份。
                 </p>
                 <label className={`mt-2 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 text-left hover:border-emerald-400 hover:bg-emerald-50 transition-colors flex items-center gap-2 cursor-pointer ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
                   <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -572,6 +665,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
                 </label>
                 <p className="text-[11px] text-gray-400 mt-1">
                   合并导入笔记本与文章：同名笔记本复用，重复文章自动跳过，导入后自动建立向量索引。ZIP 备份会按原路径恢复附件，笔记中的引用保持有效。
+                  评论会跟着它所属的文章一起恢复（含楼中楼的父子关系）；博客主题与布局<b>只在当前没有该项配置时才恢复</b>，不会冲掉你现在的设置。
                 </p>
                 <button
                   onClick={handleReindex}

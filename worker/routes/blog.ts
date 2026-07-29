@@ -5,6 +5,7 @@ import { parseTags } from '../../src/types'
 import { validateCommentInput, resolveThreadParent, buildThread, isHoneypotTripped, type FlatComment } from '../../src/lib/comments'
 import { parseBlogLayout, pageUsesWidget, maxWidgetOption, firstWidgetOption, BLOG_LAYOUT_KEY, type PageLayout } from '../../src/lib/blogLayout'
 import { parseBlogSkin, BLOG_SKIN_KEY } from '../../src/lib/blogSkin'
+import { CUSTOM_JS_KEY, MAX_CUSTOM_JS } from '../../src/lib/blogScripts'
 import {
   clampLimit, clampOffset, tagLikePattern, textLikePattern, buildTagCloud, scoreRelated, MAX_QUERY_LEN,
 } from '../../src/lib/blogQuery'
@@ -22,8 +23,12 @@ const PUBLIC_WHERE = 'a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS N
 // 布局决定页面骨架、皮肤决定配色,晚到都会导致首屏跳动/闪色。坏配置在各自的 parse 里回落默认。
 // 两个键一次 IN 查询取回,不多一趟 D1 往返。
 async function readAppearance(env: AppEnv['Bindings']) {
-  const s = await getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY])
-  return { layout: parseBlogLayout(s.get(BLOG_LAYOUT_KEY) || ''), skin: parseBlogSkin(s.get(BLOG_SKIN_KEY) || '') }
+  const s = await getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, CUSTOM_JS_KEY])
+  return {
+    layout: parseBlogLayout(s.get(BLOG_LAYOUT_KEY) || ''),
+    skin: parseBlogSkin(s.get(BLOG_SKIN_KEY) || ''),
+    custom_js: (s.get(CUSTOM_JS_KEY) || '').slice(0, MAX_CUSTOM_JS),
+  }
 }
 
 // ---- 按布局装配数据(P12.3)----
@@ -216,7 +221,7 @@ blog.get('/posts', async (c) => {
       ).bind(...args, limit + 1, offset).all<any>(),
       readAppearance(c.env),
     ])
-    const { layout, skin } = appearance
+    const { layout, skin, custom_js } = appearance
     const rows = results || []
     const hasMore = rows.length > limit
     return ok({
@@ -233,6 +238,7 @@ blog.get('/posts', async (c) => {
       has_more: hasMore,
       layout,
       skin,
+      custom_js,
       ...(await widgetData(c.env, layout.list)),
     })
   } catch (e: any) {
@@ -307,7 +313,7 @@ export async function loadBlogDetail(
        FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
        WHERE a.id = ? AND ${PUBLIC_WHERE}`
     ).bind(id).first<any>(),
-    getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, 'comments_enabled']),
+    getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, CUSTOM_JS_KEY, 'comments_enabled']),
   ])
   if (!a) return null
   const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
@@ -324,6 +330,7 @@ export async function loadBlogDetail(
     comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
     layout,
     skin,
+    custom_js: (settings.get(CUSTOM_JS_KEY) || '').slice(0, MAX_CUSTOM_JS),
     ...(await widgetData(env, layout.detail, seed)),
     published_at: a.published_at || a.updated_at,
     views: (a.views || 0) + (counted ? 1 : 0),
@@ -389,6 +396,7 @@ blog.get('/share/:token', async (c) => {
     if (a.share_expires_at && Date.parse(a.share_expires_at) <= Date.now()) {
       return err('分享链接已过期', 410)
     }
+    // 私密分享页刻意不下发 custom_js:unlisted 的内容不该送到第三方统计里去
     const { layout, skin } = await readAppearance(c.env)
     return ok({
       ...a,

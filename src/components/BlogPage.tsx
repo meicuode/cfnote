@@ -18,6 +18,7 @@ import {
   type BlogFilter,
 } from '../lib/blogQuery'
 import { defaultSkin, parseBlogSkin, skinVars, type BlogSkin } from '../lib/blogSkin'
+import { injectCustomScripts, shouldInjectCustomScripts } from '../lib/blogScripts'
 import { initialBlogTheme, storedBlogTheme, saveBlogTheme, type BlogTheme } from '../lib/blogTheme'
 
 // 公开博客页(IT之家风格布局,见 docs/public-blog.md):
@@ -99,6 +100,11 @@ const IS_PREVIEW = (() => {
 const postToParent = (msg: unknown) => {
   try { if (IS_PREVIEW && window.parent !== window) window.parent.postMessage(msg, window.location.origin) } catch { /* 跨源:忽略 */ }
 }
+
+// 自定义脚本只注入一次(P12.12)。放在模块级而不是组件 state:
+// 列表 → 详情走 pushState,组件不卸载但会重渲染多次,放 state 里等于每次响应都可能再插一遍
+// (统计代码被初始化两次会把 PV 记成两倍)。
+let customJsDone = false
 
 // sqlite 的 datetime('now') 是 UTC 且无时区标记,补 Z 再转本地
 const toDate = (d: string) => new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(d) ? d : d.replace(' ', 'T') + 'Z')
@@ -756,6 +762,14 @@ export default function BlogPage() {
     if (!data) return
     if (data.layout) setLayout(parseBlogLayout(JSON.stringify(data.layout)))
     if (data.skin) setSkin(parseBlogSkin(JSON.stringify(data.skin)))
+    // 自定义脚本(P12.12):随响应下发,拿到就注入,整个 SPA 生命周期只执行一次。
+    // 列表 → 详情是 pushState,页面不重新加载,所以这个 flag 必须在模块级而不是组件里。
+    if (typeof data.custom_js === 'string' && data.custom_js.trim() && !customJsDone) {
+      if (shouldInjectCustomScripts(window.location)) {
+        customJsDone = true
+        try { injectCustomScripts(data.custom_js, document) } catch { /* 博主自己的脚本坏了不该连累页面 */ }
+      }
+    }
     setSide((cur) => ({
       hot: data.hot ?? cur.hot,
       recent: data.recent ?? cur.recent,
