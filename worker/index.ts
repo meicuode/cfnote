@@ -14,6 +14,7 @@ import { stats } from './routes/stats'
 import { blog } from './routes/blog'
 import { notify, sendDueReminders } from './routes/notify'
 import { comments } from './routes/comments'
+import { pages } from './routes/pages'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -61,7 +62,17 @@ app.route('/api/blog', blog)
 app.route('/api/notify', notify)
 app.route('/api/comments', comments)
 
-app.notFound((c) => err('接口不存在: ' + c.req.path, 404))
+// 页面级路由(P12.6):/blog/:id 预渲染、/blog/feed.xml、/sitemap.xml、/robots.txt。
+// 免鉴权(上面的中间件只管 /api/*),放在 API 之后注册,互不重叠。
+app.route('/', pages)
+
+// /api/* 没匹配上就是接口不存在;其余路径说明 run_worker_first 放它进来了但没有对应页面路由
+// (例如 /blog/12/xxx),原样交还静态资源层,由 SPA 回退处理。
+app.notFound((c) => {
+  if (c.req.path.startsWith('/api/')) return err('接口不存在: ' + c.req.path, 404)
+  if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw)
+  return err('页面不存在: ' + c.req.path, 404)
+})
 
 // 静态资源由平台直接服务(wrangler.toml [assets]):
 // - run_worker_first = ["/api/*"] 保证 API 请求进入 Worker

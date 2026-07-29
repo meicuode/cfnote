@@ -17,6 +17,11 @@
   - `GET /api/blog/posts` 列表:标题、纯文本摘要(mdExcerpt 剥语法)、首图缩略图(mdFirstImage,跳过代码块)、笔记本名作 Tags、发布时间。P12.3 起支持 `?limit&offset` 分页(默认 20,上限 50,多取一行给出 `has_more`)与 `?tag&q` 筛选,并随响应下发 `layout` 与该页布局用得上的模块数据(`hot`/`recent`/`tag_cloud`)
   - `GET /api/blog/posts/:id` 详情(浏览计数 +1,waitUntil 异步);同样带 `layout` 与详情页布局要的模块数据,前端不再单独拉列表与热榜
   - `GET /api/blog/hot?range=day|week|month` 热榜:时间窗内发布的文章按累计浏览量排序(未记录浏览时间明细,窗口按发布时间)。P12.3 起页面走随响应下发的三档热榜,此端点保留供直接调用
+- 页面级路由(P12.6,`worker/routes/pages.ts`,免登录,不在 `/api` 下):
+  - `GET /blog/:id` 详情页 HTML,由 Worker 现做(见下「服务端预渲染」)
+  - `GET /blog/feed.xml` RSS 2.0(最近 20 篇,摘要非全文)
+  - `GET /sitemap.xml` 全部公开文章
+  - `GET /robots.txt` `Sitemap:` 行用请求自身的 origin,fork 的人不用配域名
 
 ## 前端
 
@@ -50,6 +55,12 @@
 - 皮肤(P12.5):配色与排版存 `settings.blog_skin`,与 `blog_layout` 一次 `IN` 查询取回(不多一趟 D1)、随三个博客端点一起下发。**旋钮刻意只有 8 个**:主色 / 顶栏色 / 圆角 / 正文字号 / 容器宽度 / 字体 / 列表样式 / 额外 CSS。为什么不把十几个 `--blog-*` 全放出来——中性色(卡片、边框、正文灰)是成对调过的明暗值,单独改一个很容易配出读不了的组合;而主色 + 顶栏色一换,logo、链接、热榜序号、按钮、顶栏页脚全跟着变,观感上就是另一套主题了。需要精细控制的场景交给「额外 CSS」(等价 WordPress 的「额外 CSS」,可覆盖任意 `--blog-*` 变量)。5 套预设(IT之家红/墨绿/深蓝/酒紫/石墨)只改这两个颜色,排版设置保留。默认皮肤逐项等于改造前的取值(圆角 8px = `rounded-lg`,容器 1400px = 原 `max-w-[1400px]`),不配置则零变化。
 - 皮肤的几处实现取舍(P12.5):① 悬浮色留空表示「跟随主色自动提亮」(`lighten(accent, 0.22)`),省得让人填两个颜色;解析时空串是**合法值**,不能走 `normalizeHex` 的回落。② 变量以**内联 style** 挂在博客根节点上,优先级高于 index.css 里的同名默认值,而默认值仍留着做兜底。③ 额外 CSS 走 React 的 `<style>` 文本节点——那是 DOM 赋值不经 HTML 解析器,本就不存在 `</style>` 逃逸;`sanitizeCss` 再做一道过滤与 8000 字符上限,是为将来万一改成拼字符串输出留的保险。④ 容器宽度可调之后,`contentWidth(page, containerMax)` 要接受宽度参数,博客页的 `max-w-[1400px]` 与目录浮层那两处 `calc((100vw-1400px)/2-…)` 全部改走 `--blog-max`,否则调宽容器后目录浮层的位置会算错。⑤ 「纯文字列表」不只是观感选项:它不出缩略图,每篇省掉一次图片请求,对免费额度是实打实的。
 - 正文 HTML 必须 `useMemo`(P11.8.1 血的教训):React 对 `dangerouslySetInnerHTML` 是**按引用**比较 prop 的,每次渲染新建 `{ __html }` 就会重设整段 innerHTML——任何一次重渲染(主题切换、热榜/评论到达、滚动、开合目录)都把正文节点整体换掉。表现是打在标题上的锚点 id 消失(目录点了不跳)、代码高亮时有时无。缓存住引用后正文节点全程稳定;`enhanceRendered` 的 MutationObserver 仍保留(mermaid 会异步替换 `pre`),但不再是遮丑用的。
+- 服务端预渲染(P12.6):详情页 HTML 不再是静态外壳,由 Worker 现做。**这不是 React SSR**——判据是「最终留在浏览器 DOM 里的是不是服务端那份」:真 SSR 用 `renderToReadableStream` + `hydrateRoot` **接管**服务端产出的 DOM,而我们客户端仍是 `createRoot`,挂载时把注入的内容**扔掉重画**。因为两边跑的是同一个 `marked` 实例与同一份配置(`src/lib/markdown.ts` 的全局 `marked.use`),输出同一个字符串,肉眼看不出替换,但确实白画了一遍。准确的名字是**预渲染**。
+- 为什么必须服务端产出(P12.6):微信/微博/Twitter/Slack 的链接预览抓取器与百度蜘蛛**都不执行 JS**,凡是异步取回的内容一律看不到。此前每篇文章分享出去都是同一张「CFNote - 私人知识库」空卡片。Google 会执行 JS,所以我们对 Google 本来就不是隐形的,只是慢和不稳——**正文预渲染的最大受益者是百度**,前提是站点有自定义域名且境内可达。
+- 哪些进 HTML、哪些只进 JSON(P12.6):body 里由 worker 产出的只有**文章那一块**(`<h1>` + 面包屑 + 元信息 + `marked` 渲染的正文)与一段**纯链接 `<nav>`**;顶栏、菜单、四个槽位里的 12 种模块、页脚、目录浮层、评论在 HTML 里没有任何标记,只有 `window.__CFNOTE_BLOG__` 里的 JSON,由 React 挂载后自己渲染。皮肤是第三类:既不是标记也不是 JSON,而是写进 `<head>` 的 `:root{--blog-*}` 与额外 CSS。**不预渲染那 12 种模块**的理由与 P12.4 拒绝「仿真画布」是同一个:那要求 worker 把每种模块的 HTML 再写一遍,加一个模块就得补一份,两份早晚走样。代价是抓取器拿不到侧栏内链,故补了「本来就没有渲染逻辑、只有一串链接」的那部分——菜单、上一篇/下一篇、相关文章、标签(`seoNavHtml`)。要整页进 HTML 而**不**复制渲染逻辑,只有真 SSR 一条路,而那要把 `BlogPage.tsx` 里所有 `window`/`localStorage`/`matchMedia`/`IntersectionObserver` 全加守卫、解决主题水合失配、并把 CPU 压进免费档的 10ms——不划算。
+- 成本模型的翻转(P12.6):`/blog/*` 加进 `run_worker_first` 之后,详情页从「静态资源(免费不限量)」变成「Worker 请求(计费)」,**这一步躲不掉**——`run_worker_first` 是部署时配置,运行时改不了。但完整预渲染把 `/api/blog/posts/:id` 那次请求省掉了(数据内联在 `window.__CFNOTE_BLOG__`),所以计费请求仍是 1 次;而「仅 meta」与「关闭」两档是 HTML + API 两次,**比改造前贵**。这就是 `blog_prerender` 默认取 `full` 的原因——它刻意违反本项目「默认逐项等于改造前」的惯例,因为默认 off 等于让所有人落在最贵的一档,而三档的视觉与内容完全一致,破例的代价是零。开关的真正用途是**出问题时不必重新部署就能恢复**的 kill switch,不是省配额。
+- 预渲染的实现细节(P12.6):① 详情取数抽成 `loadBlogDetail()` 由 HTML 与 JSON 两条路共用——`PUBLIC_WHERE` 这把尺子和「哪些字段能进公开响应」的判断只能有一处,另写一份查询迟早漏条件。② 边缘缓存 `caches.default` 60 秒,键含档位(改开关立刻生效,不必等 TTL);**命中缓存也要计浏览数**,否则 TTL 窗口内的访客全不算数(计数本身仍按 IP 每小时去重)。③ 内联 JSON 必须转义 `<`,否则正文里出现 `</script>` 就能提前闭合脚本标签——这是内联状态最经典的注入口子。④ 额外 CSS 这次是**真的拼字符串**进 `<style>`,P12.5 里那道「为将来万一改成拼字符串输出留的保险」(`sanitizeCss` 过滤 `</style>`)在这里派上用场。⑤ `<head>` 里加一段同步的防闪主题脚本:正文现在比 JS 先绘制,而主题原本要等 React 挂载才知道,暗色用户会先看到一屏白底文字;脚本把 `cfnote-blog`(+`dark`)挂到 `<html>` 上,`--blog-*` 是自定义属性会继承下去,零 CSS 改动。⑥ 预渲染块的版式用**内联 style** 而非 Tailwind 类——类名要被 Tailwind 扫到才进产物,而 worker 侧字符串不在扫描范围内;只有 `cfnote-preview` 是 index.css 里的实类可以放心用。⑦ 任何一步抛错都退回原样透传:预渲染不该有能力让博客页打不开。
+- 预渲染不覆盖的(P12.6):列表页 `/blog` 仍走静态资源(`/blog/*` 只匹配详情页),它只有摘要、SEO 价值在详情页;`?preview=1` 的布局预览保持改造前行为(客户端拉数据、不计浏览量)并带 `X-Robots-Tag: noindex`;`/blog/share/:token` 是 unlisted,透传 + `noindex, nofollow`,`robots.txt` 里也挡一道;评论不进预渲染——它有一点长尾 SEO 价值,但变化频率远高于文章,塞进首屏会让缓存频繁失效、每次还多查一次 D1。URL slug(`/blog/12-标题`)与预渲染正交,本批不含。
 - 深色样式:根节点挂 `dark cfnote-blog`,正文复用 `.cfnote-preview` 的集中深色映射,博客专属覆盖(红色链接/引用条)追加在映射之后按顺序生效。
 - Tags 显示的是所属笔记本名(笔记暂无独立标签系统;若要真标签需加表+编辑器打标 UI,列为备选需求)。
 - 浏览计数存 D1 `articles.views` 而非 Cloudflare 统计产品:Workers Analytics Engine 数据只保留 90 天且查询要走账号级 SQL API(需另存 API Token、每次页面渲染多一跳 HTTP),Web Analytics 免费版只有仪表盘无逐页 API——都无法在页面上展示"累计浏览 N"。D1 免费档每天 10 万行写入,个人博客量级下每次详情 1 行写入毫无压力,再配 Cache API 去重进一步省写。

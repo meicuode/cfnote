@@ -274,49 +274,105 @@ async function commentRateLimited(ip: string): Promise<boolean> {
   }
 }
 
+/**
+ * 浏览计数(去重后 +1)。返回是否真的计了数。
+ * 独立导出是因为 HTML 预渲染命中边缘缓存时不会走 loadBlogDetail,但那一次访问同样要计数——
+ * 否则一分钟内的缓存窗口里所有访客都不算数。
+ */
+export async function countBlogView(
+  env: AppEnv['Bindings'],
+  id: string,
+  ip: string,
+  waitUntil?: (p: Promise<unknown>) => void
+): Promise<boolean> {
+  if (!(await shouldCountView(id, ip))) return false
+  const p = env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
+  if (waitUntil) waitUntil(p)
+  else await p
+  return true
+}
+
+// 详情页取数(P12.6 抽出):HTML 预渲染与 JSON 接口共用同一份逻辑。
+// 抽出来的理由是 PUBLIC_WHERE 这把尺子和「哪些字段可以出现在公开响应里」的判断只能有一处——
+// 预渲染另写一份查询,迟早会漏掉某个条件把未公开的文章漏出去。
+// 返回值就是 GET /api/blog/posts/:id 的 data;文章不存在/未公开返回 null。
+export async function loadBlogDetail(
+  env: AppEnv['Bindings'],
+  id: string,
+  opts: { preview?: boolean; ip?: string; waitUntil?: (p: Promise<unknown>) => void } = {}
+): Promise<Record<string, any> | null> {
+  const [a, settings] = await Promise.all([
+    env.DB.prepare(
+      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id, n.name as tag
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+       WHERE a.id = ? AND ${PUBLIC_WHERE}`
+    ).bind(id).first<any>(),
+    getSettingValues(env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, 'comments_enabled']),
+  ])
+  if (!a) return null
+  const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
+  const skin = parseBlogSkin(settings.get(BLOG_SKIN_KEY) || '')
+  const counted = !opts.preview && (await countBlogView(env, id, opts.ip || '', opts.waitUntil))
+  // notebook_id 只用于「相关文章」打分,不进公开响应
+  const { notebook_id, ...pub } = a
+  const tags = parseTags(a.tags)
+  const seed = { id: a.id, notebook_id: notebook_id ?? null, tags, sortKey: a.published_at || a.updated_at }
+  return {
+    ...pub,
+    tag: a.tag || '未分类',
+    tags,
+    comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
+    layout,
+    skin,
+    ...(await widgetData(env, layout.detail, seed)),
+    published_at: a.published_at || a.updated_at,
+    views: (a.views || 0) + (counted ? 1 : 0),
+  }
+}
+
 // GET /api/blog/posts/:id - 公开文章详情(浏览计数:去重后 +1,waitUntil 不阻塞响应)
 // 详情页要的一切(布局 + 侧栏模块数据 + 评论开关)都在这一次响应里,前端不再另拉列表与热榜。
 // ?preview=1:布局配置页的 iframe 预览用,不计浏览量——否则调一次布局就给自己刷一次量。
+// 注:预渲染开启(默认)时详情页的 HTML 已内联这份数据,前端不会再打这个端点;此处保留供预览、
+// 私密分享回退以及关闭预渲染的场景使用。
 blog.get('/posts/:id', async (c) => {
-  const id = c.req.param('id')
-  const preview = c.req.query('preview') === '1'
   try {
-    const [a, settings] = await Promise.all([
-      c.env.DB.prepare(
-        `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id, n.name as tag
-         FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-         WHERE a.id = ? AND ${PUBLIC_WHERE}`
-      ).bind(id).first<any>(),
-      getSettingValues(c.env, [BLOG_LAYOUT_KEY, BLOG_SKIN_KEY, 'comments_enabled']),
-    ])
-    if (!a) return err('文章不存在或未公开', 404)
-    const layout = parseBlogLayout(settings.get(BLOG_LAYOUT_KEY) || '')
-    const skin = parseBlogSkin(settings.get(BLOG_SKIN_KEY) || '')
-    const counted = !preview && (await shouldCountView(id, c.req.header('cf-connecting-ip') || ''))
-    if (counted) {
-      c.executionCtx.waitUntil(
-        c.env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
-      )
-    }
-    // notebook_id 只用于「相关文章」打分,不进公开响应
-    const { notebook_id, ...pub } = a
-    const tags = parseTags(a.tags)
-    const seed = { id: a.id, notebook_id: notebook_id ?? null, tags, sortKey: a.published_at || a.updated_at }
-    return ok({
-      ...pub,
-      tag: a.tag || '未分类',
-      tags,
-      comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
-      layout,
-      skin,
-      ...(await widgetData(c.env, layout.detail, seed)),
-      published_at: a.published_at || a.updated_at,
-      views: (a.views || 0) + (counted ? 1 : 0),
+    const data = await loadBlogDetail(c.env, c.req.param('id'), {
+      preview: c.req.query('preview') === '1',
+      ip: c.req.header('cf-connecting-ip') || '',
+      waitUntil: (p) => c.executionCtx.waitUntil(p),
     })
+    if (!data) return err('文章不存在或未公开', 404)
+    return ok(data)
   } catch (e: any) {
     return err('获取失败: ' + e.message, 500)
   }
 })
+
+// sitemap.xml 用:全部公开文章的 id 与更新时间(只读两列,几千行也很便宜)
+export async function listSitemapPosts(env: AppEnv['Bindings'], limit = 5000) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, COALESCE(a.updated_at, a.published_at) as updated_at FROM articles a
+      WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
+  ).bind(limit).all<{ id: number; updated_at: string }>()
+  return results || []
+}
+
+// RSS 用:最近若干篇,摘要取正文前 2000 字符再剥语法(与列表页同一条路径)
+export async function listFeedPosts(env: AppEnv['Bindings'], limit = 20) {
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head, a.published_at, a.updated_at, n.name as tag
+       FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
+      WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
+  ).bind(limit).all<any>()
+  return (results || []).map((r) => ({
+    id: r.id,
+    title: r.title,
+    excerpt: mdExcerpt(r.head || '', 200),
+    published_at: r.published_at || r.updated_at,
+    tag: r.tag || '未分类',
+  }))
+}
 
 // GET /api/blog/share/:token - 私密分享的笔记(P9.3,unlisted):
 // 有 token 即可看,不出现在列表/热榜;过期 410;私有/回收站中的笔记不可达;不计浏览量

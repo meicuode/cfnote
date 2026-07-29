@@ -5,6 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CFNote - 私人知识库</title>
+    <!-- 站点级默认值。博客详情页(/blog/:id)由 Worker 逐篇覆盖这几项(见 worker/routes/pages.ts);
+         这里的默认值负责列表页与分享站点首页时的卡片。 -->
+    <meta name="description" content="CFNote 公开博客 - 来自个人知识库的公开文章" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CFNote 博客" />
+    <meta property="og:title" content="CFNote 博客" />
+    <meta property="og:description" content="CFNote 公开博客 - 来自个人知识库的公开文章" />
+    <link rel="alternate" type="application/rss+xml" title="CFNote 博客" href="/blog/feed.xml" />
   </head>
   <body>
     <div id="root"></div>

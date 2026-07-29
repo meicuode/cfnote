@@ -5,6 +5,8 @@ export interface Env {
   AI: Ai
   ANALYTICS?: AnalyticsEngineDataset
   BUCKET?: R2Bucket
+  /** 静态资源绑定(wrangler.toml [assets] binding);博客详情页预渲染要取 SPA 外壳 */
+  ASSETS?: Fetcher
   JWT_SECRET: string
   CF_API_TOKEN?: string
   CF_ACCOUNT_ID?: string

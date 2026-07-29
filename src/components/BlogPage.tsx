@@ -127,6 +127,27 @@ function renderMd(md: string): { __html: string } {
   }
 }
 
+/**
+ * 取走服务端预渲染内联的详情数据(P12.6)。
+ *
+ * 详情页 HTML 由 worker 现做,里面带一份 `window.__CFNOTE_BLOG__`,内容与 GET /api/blog/posts/:id
+ * 完全一致——首屏直接用它,那次请求就省掉了,计费请求数维持在 1 次。
+ * **读一次即销毁**:从列表页再回到同一篇时浏览数、评论开关可能已变,不该拿首屏那份顶包。
+ */
+function takeBootstrap(id: number | string | null): any {
+  try {
+    const w = window as any
+    const b = w.__CFNOTE_BLOG__
+    if (b && typeof b === 'object' && b.id === id && b.data) {
+      delete w.__CFNOTE_BLOG__
+      return b.data
+    }
+  } catch {
+    /* 没有就走正常请求 */
+  }
+  return null
+}
+
 const Spinner = () => (
   <div className="py-24 flex justify-center">
     <div className="w-6 h-6 border-2 border-[var(--blog-accent)] border-t-transparent rounded-full animate-spin" />
@@ -776,6 +797,14 @@ export default function BlogPage() {
     setDetail(null)
     setDetailErr('')
     window.scrollTo(0, 0)
+    // 预渲染已把这一篇的数据内联进 HTML:直接用,省掉一次请求
+    const boot = takeBootstrap(postId)
+    if (boot) {
+      setDetail(boot)
+      applyPayload(boot)
+      document.title = `${boot.title} - CFNote 博客`
+      return
+    }
     // 数字 id 为公开文章;字符串为私密分享 token
     fetch(typeof postId === 'string' ? `/api/blog/share/${postId}` : `/api/blog/posts/${postId}${IS_PREVIEW ? '?preview=1' : ''}`)
       .then((r) => r.json() as Promise<any>)

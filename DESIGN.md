@@ -60,7 +60,9 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
-`wrangler.toml` 中 `[assets] not_found_handling = "single-page-application"` + `run_worker_first = ["/api/*"]`：`/api/*` 优先进 Worker，其余路径由平台直出静态资源，未命中回退 SPA 入口（`/blog`、`/clip` 等前端路由由此工作）。
+`wrangler.toml` 中 `[assets] not_found_handling = "single-page-application"` + `run_worker_first = ["/api/*", "/blog/*", "/robots.txt", "/sitemap.xml"]`：这几类路径优先进 Worker，其余路径由平台直出静态资源，未命中回退 SPA 入口（`/clip`、博客列表页 `/blog` 等前端路由由此工作）。
+
+`/blog/*`（P12.6）是详情页服务端预渲染，代价要记清楚：**它把博客详情页从「静态资源请求（免费不限量）」变成了「Worker 请求（计入 10 万/天）」**，且这一步无法在运行时关闭——`run_worker_first` 是部署时配置。完整预渲染档同时省掉了 `/api/blog/posts/:id`（数据内联进 HTML），所以每次访问仍是 1 次计费请求；「仅 meta」与「关闭」两档则是 2 次。见 `docs/public-blog.md`。
 
 ### 核心流程
 
@@ -92,7 +94,7 @@
 | D1 写入 | **10万行/天** | 每日重置 |
 | D1 存储 | **5 GB** | 总量限制 |
 | R2 存储 | **10 GB** | 附件总量 |
-| Workers 请求 | **10万次/天** | 静态资源请求不计入 |
+| Workers 请求 | **10万次/天** | 静态资源请求不计入；但 `run_worker_first` 覆盖的路径计入（P12.6 起博客详情页 `/blog/:id` 在内） |
 
 ### 4.2 目标场景适配（200篇3000字文章，100次/天搜索）
 
@@ -357,6 +359,16 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | GET/POST | `/api/stats` `/stats/archive` | 统计仪表盘 / 用量归档 |
 | POST | `/api/notify/test` | 用面板填写的渠道配置发一条测试消息 |
 
+页面级路由（P12.6，`worker/routes/pages.ts`，免登录，不在 `/api` 下）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/blog/:id` | 详情页 HTML。按 `settings.blog_prerender` 三档处理：`full` 注入 `<head>`（title/description/og/twitter/canonical/JSON-LD）+ 正文 + 纯链接内链 + `window.__CFNOTE_BLOG__` 内联状态（前端因此不再打 `/api/blog/posts/:id`）；`meta` 只注入 `<head>`；`off` 原样透传。文章不存在返回真 404 + `noindex`；`?preview=1` 透传且 `noindex`；边缘缓存 60 秒（键含档位），命中缓存仍计浏览数 |
+| GET | `/blog/share/:token` | 透传 + `X-Robots-Tag: noindex, nofollow`（unlisted，不该进索引） |
+| GET | `/blog/feed.xml` | RSS 2.0，最近 20 篇，`<description>` 为摘要非全文 |
+| GET | `/sitemap.xml` | 全部公开文章 + 列表页；「加载更多」的必要配套 |
+| GET | `/robots.txt` | `Sitemap:` 用请求自身 origin；挡掉 `/api/`、`/blog/share/`、`/blog?` 筛选页 |
+
 ### 认证机制
 
 - 密码 PBKDF2-SHA256（Web Crypto，100,000 次迭代）+ 随机盐
@@ -481,8 +493,9 @@ compatibility_date = "2024-12-01"
 
 [assets]
 directory = "./dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/blog/*", "/robots.txt", "/sitemap.xml"]
 
 [triggers]
 crons = ["47 2 2 * *", "*/5 * * * *"]    # 月度用量归档+回收站清理;每 5 分钟扫描到期提醒推送

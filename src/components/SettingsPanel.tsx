@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
 import { CHANNEL_META, CHANNEL_TYPES, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
+import { PRERENDER_KEY, parsePrerenderMode, type PrerenderMode } from '../lib/blogSeo'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -27,6 +28,8 @@ export default function SettingsPanel({ token, onClose }: Props) {
   // P11.2 评论设置
   const [commentsEnabled, setCommentsEnabled] = useState(true)
   const [commentsAutoApprove, setCommentsAutoApprove] = useState(false)
+  // P12.6 博客详情页预渲染档位
+  const [prerender, setPrerender] = useState<PrerenderMode>('full')
   const [testing, setTesting] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
@@ -52,6 +55,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
         if (nc) { try { const parsed = JSON.parse(nc); setChannels(parsed); setSavedChannels(JSON.stringify(parsed)) } catch { /* 坏值忽略 */ } }
         setCommentsEnabled((res.data as any).comments_enabled !== '0')
         setCommentsAutoApprove((res.data as any).comments_auto_approve === '1')
+        setPrerender(parsePrerenderMode((res.data as any)[PRERENDER_KEY]))
       } else {
         setError(res.error || '加载失败')
       }
@@ -69,6 +73,7 @@ export default function SettingsPanel({ token, onClose }: Props) {
       notify_channels: channelsJson,
       comments_enabled: commentsEnabled ? '1' : '0',
       comments_auto_approve: commentsAutoApprove ? '1' : '0',
+      [PRERENDER_KEY]: prerender,
       site_url: window.location.origin,
     })
     if (res.ok) {
@@ -487,6 +492,39 @@ export default function SettingsPanel({ token, onClose }: Props) {
                   <span className="text-sm text-gray-800">免审核(提交后直接显示)</span>
                 </label>
                 <p className="text-[11px] text-gray-400 mt-1">默认需审核:新评论进入待审核队列,在「博客管理 → 评论」通过后才公开显示。</p>
+              </div>
+
+              {/* 博客预渲染(P12.6) */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">博客详情页预渲染</h3>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  微信/微博/Twitter 的链接预览抓取器与百度蜘蛛都不执行 JS,只有服务端产出的 HTML 它们才看得见。
+                </p>
+                <div className="space-y-1">
+                  {([
+                    ['full', '完整预渲染(推荐)', '标题/摘要/配图 + 正文都进 HTML,前端不再拉接口 —— 每次访问 1 次 Worker 请求'],
+                    ['meta', '仅 meta', '只注入标题/摘要/配图,正文仍由前端拉 —— 2 次请求。预渲染出问题时的中间落点'],
+                    ['off', '关闭', '原样发静态外壳 —— 2 次请求,且分享卡片与百度收录都会失效'],
+                  ] as const).map(([v, label, desc]) => (
+                    <label key={v} className="flex items-start gap-2 cursor-pointer py-1">
+                      <input
+                        type="radio"
+                        name="cfnote-prerender"
+                        checked={prerender === v}
+                        onChange={() => setPrerender(v)}
+                        className="accent-emerald-500 mt-0.5"
+                      />
+                      <span>
+                        <span className="text-sm text-gray-800">{label}</span>
+                        <span className="block text-[11px] text-gray-400">{desc}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1">
+                  这三档都会经过 Worker(由 wrangler.toml 的 run_worker_first 决定,运行时改不了),所以「关闭」并不会回到最省的状态——
+                  它是出问题时不用重新部署就能恢复的开关,不是省配额的开关。改动最多 1 分钟内在边缘缓存生效。
+                </p>
               </div>
 
               {/* 数据备份 */}

@@ -5,11 +5,17 @@ workers_dev = true    # 发布到 cfnote.<子域>.workers.dev
 preview_urls = false  # 不为每个版本生成预览 URL
 keep_vars = true      # 部署时保留仪表盘中手工添加的环境变量(否则每次 push 部署会清掉它们)
 
-# 静态资源:非 /api 请求直接由平台服务(免费不限量),未命中路径回退到 SPA 入口
+# 静态资源:非 /api 请求直接由平台服务(免费不限量),未命中路径回退到 SPA 入口。
+# run_worker_first 里声明的路径才会进 Worker——否则 not_found_handling = "single-page-application"
+# 会把它们直接回落成 index.html。/blog/* 是 P12.6 的详情页预渲染(见 worker/routes/pages.ts):
+# 它把这些页面从「免费静态资源」变成了「计费 Worker 请求」,完整预渲染档同时省掉了
+# /api/blog/posts/:id 那一次,所以每次访问仍是 1 次计费请求。
+# 注意 /blog/* 只匹配详情页,列表页 /blog 仍走静态资源。
 [assets]
 directory = "./dist"
+binding = "ASSETS"          # worker 里取 SPA 外壳用(env.ASSETS.fetch),绑定内部调用不是外网往返
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*"]
+run_worker_first = ["/api/*", "/blog/*", "/robots.txt", "/sitemap.xml"]
 
 # 定时任务:每月 2 日 02:47 UTC 归档上月用量 + 清理回收站;每 5 分钟扫描到期提醒并推送(见 worker/index.ts scheduled 按 cron 分支)
 [triggers]
