@@ -10,7 +10,8 @@ import {
   robotsTxt, sitemapXml, feedXml,
   type PrerenderMode,
 } from '../../src/lib/blogSeo'
-import { loadBlogDetail, listSitemapPosts, listFeedPosts, countBlogView } from './blog'
+import { loadBlogDetail, countBlogView } from './blog'
+import { listSitemapPosts, listFeedPosts } from '../repo/blogRepo'
 import { articlePartOption } from '../../src/lib/blogArticleParts'
 import type { AppEnv } from '../types'
 

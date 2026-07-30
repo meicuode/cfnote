@@ -493,6 +493,22 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 见 `README.md`「项目结构」一节（`worker/` 后端 Hono 路由 + `src/` React 前端 + `docs/` 设计文档 + `tests/` Vitest）。
 
+分层是 `src/lib/*`（纯函数、可单测）与 `worker/routes/*`（HTTP + D1 + 拼装），**没有全仓库的 repository 层**，只有一处例外：
+
+### 11.0 `worker/repo/blogRepo.ts`（P13.5）
+
+公开博客的取数集中在这一个文件里，`blog.ts` 与 `pages.ts` 只调函数、不见 SQL。抽它的理由不是「分层应该这样」，而是这块有两条**安全不变量**：
+
+- `PUBLIC_WHERE = a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL` —— 哪些文章能被公开读到；
+- `POST_WHERE = PUBLIC_WHERE AND COALESCE(a.is_page,0)=0` —— 其中哪些进文章流（P13.4）；
+- 以及「哪些列能进公开响应」（`getPublicArticle` 选出的那几列就是全部；`notebook_id` 只用于相关文章打分，由调用方摘掉）。
+
+改造前它们散在一个 400 多行文件的十来个查询点上：P12.4 加五个模块要抄一遍 WHERE，P13.4 加单页要逐个改过去，抄漏一次就是把未公开的文章漏出去。搬家时发现的实证：`GET/POST /api/blog/comments` 里「目标文章必须公开」那个条件是**手抄**的（没用 `PUBLIC_WHERE`），现在共用同一个常量——条件逐字相同，行为不变。
+
+刻意**不**扩展成全仓库 repository 层：仓库里没有 D1 的测试替身，把 `articles.ts`/`fm.ts` 的 SQL 也搬一遍不会让它们变得可测，只会多一层间接。真正让这些 SQL 可测的是 P13.6 的 Worker e2e（真 workerd + 真 D1，见 §11.1）——这次纯搬运正是靠那 27 个用例兜住的。
+
+边界：`blogRepo.ts` 只有取数与「行 → 公开响应字段」的映射；请求解析、浏览计数去重与评论限流（都用 Cache API，不碰 D1）、线程装配仍在 `blog.ts`。`blog.ts` 由 515 行降到 269 行。
+
 ### 11.1 测试分层（P13.6）
 
 两个 Vitest project（`vitest.config.ts` → `vitest.unit.config.ts` / `vitest.worker.config.ts`）：

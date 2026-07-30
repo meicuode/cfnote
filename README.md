@@ -439,6 +439,8 @@ cfnote/
 │   ├── utils.ts                # 工具函数（JWT/哈希/分块/模型/AE/Jina）
 │   ├── migrate.ts              # 应用内幂等 schema 保障（增量加列/建表，与 system.ts 同步）
 │   ├── archive.ts              # 用量归档（POST /api/stats/archive 与月度 Cron 共用）
+│   ├── repo/
+│   │   └── blogRepo.ts         # 公开博客的取数层（P13.5）：PUBLIC_WHERE / POST_WHERE 与全部博客查询集中在此，blog.ts 与 pages.ts 不见 SQL
 │   └── routes/
 │       ├── system.ts           # /api/status、/api/init（表结构唯一来源）、/api/settings、/api/system-logs
 │       ├── auth.ts             # /api/auth/register、/api/auth/login
@@ -446,7 +448,7 @@ cfnote/
 │       ├── articles.ts         # 文章增删改查/import/回收站/标签/置顶/私密分享/backlinks/titles
 │       ├── search.ts           # /api/search（混合搜索）、/api/search/ai（AI问答）
 │       ├── conversations.ts    # /api/conversations 及消息（AI 对话 + 联网搜索）
-│       ├── blog.ts             # /api/blog/*（公开博客列表/详情/热榜 + 私密分享；详情取数被预渲染复用）
+│       ├── blog.ts             # /api/blog/*（公开博客列表/详情/热榜/评论 + 私密分享；只做装配，取数在 repo/blogRepo.ts）
 │       ├── pages.ts            # 页面级路由：/blog/:id 服务端预渲染、/blog/feed.xml、/sitemap.xml、/robots.txt
 │       ├── files.ts            # /api/files/*（附件读写，免登录 GET + 访问分级）、/api/share/*（文件分享）
 │       ├── fm.ts               # /api/fm/*（文件管理：目录树、移动、批量操作、引用、私密文件夹）
