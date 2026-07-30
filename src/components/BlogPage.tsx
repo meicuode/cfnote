@@ -50,6 +50,8 @@ interface BlogDetail {
   shared?: boolean
   /** 评论开关(P11.2;仅公开详情返回) */
   comments_enabled?: boolean
+  /** 单页(P13.4):走 layout.page + layout.pageArticle,不在文章流里 */
+  is_page?: boolean
   published_at: string
   views: number
 }
@@ -435,13 +437,29 @@ const SLIDER_HEIGHT: Record<string, string> = {
   lg: 'h-64 sm:h-[26rem]',
 }
 
-/** 幻灯片:只渲染当前 ±1 张——否则 lazy 图会因为「在 DOM 里且接近视口」被浏览器提前全拉下来 */
+// 通栏形态按**宽高比**而不是固定像素高:顶部槽位横向撑满,固定高度在宽屏上会把图压扁、
+// 在窄屏上又留一大片空。侧栏那种窄容器仍然用固定高度更好控。
+const SLIDER_RATIO: Record<string, string> = {
+  sm: 'aspect-[21/9]',
+  md: 'aspect-[16/9]',
+  lg: 'aspect-[4/3] sm:aspect-[16/10]',
+}
+
+/**
+ * 幻灯片(P12.4;P13.2 加通栏形态)。三种 variant 共用同一份数据与同一套自动播放/切换逻辑:
+ * - single   单图铺满(原形态)。适合侧栏这类窄容器。
+ * - carousel 主图居中、左右各露出一截缩小的邻图。适合顶部通栏,视觉重心明确但一次只带一条标题。
+ * - spotlight 左大图 + 右侧竖排标题列表。同样的通栏宽度里能带出 4 条标题而不是 1 条,
+ *             是门户焦点图的常见形态,也最贴这个博客的调性。
+ * 三种都只渲染当前 ±1 张的图——否则 lazy 图会因为「在 DOM 里且接近视口」被浏览器提前全拉下来。
+ */
 function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record<string, string>; onOpen: (id: number) => void }) {
   const n = items.length
   const [i, setI] = useState(0)
   const [paused, setPaused] = useState(false)
   const auto = opts.auto !== '0'
   const interval = Math.max(2, Math.min(30, Number(opts.interval) || 5))
+  const variant = opts.variant === 'carousel' || opts.variant === 'spotlight' ? opts.variant : 'single'
 
   useEffect(() => {
     if (!auto || paused || n < 2) return
@@ -452,25 +470,139 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
   useEffect(() => { if (i >= n) setI(0) }, [n, i])
 
   const h = SLIDER_HEIGHT[opts.height] || SLIDER_HEIGHT.md
+  const ratio = SLIDER_RATIO[opts.height] || SLIDER_RATIO.md
+  const box = variant === 'single' ? h : ratio
   if (n === 0) {
     return <div className={`rounded-lg bg-[var(--blog-panel)] flex items-center justify-center text-sm text-[var(--blog-muted)] ${h}`}>还没有可展示的文章</div>
   }
   const near = (k: number) => n <= 1 || k === i || k === (i + 1) % n || k === (i - 1 + n) % n
+  const go = (dir: -1 | 1) => setI((x) => (x + dir + n) % n)
   const arrow = (dir: -1 | 1, path: string) => (
     <button
-      onClick={() => setI((x) => (x + dir + n) % n)}
+      onClick={() => go(dir)}
       aria-label={dir < 0 ? '上一张' : '下一张'}
-      className={`absolute top-1/2 -translate-y-1/2 ${dir < 0 ? 'left-2' : 'right-2'} w-9 h-9 rounded-full bg-black/35 hover:bg-[var(--blog-accent)] text-white flex items-center justify-center transition-colors`}
+      className={`absolute top-1/2 -translate-y-1/2 ${dir < 0 ? 'left-2' : 'right-2'} w-9 h-9 rounded-full bg-black/35 hover:bg-[var(--blog-accent)] text-white flex items-center justify-center transition-colors z-10`}
     >
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" d={path} />
       </svg>
     </button>
   )
+  const cover = (p: PostCard, eager: boolean) =>
+    p.thumb ? (
+      <img src={p.thumb} alt="" loading={eager ? 'eager' : 'lazy'} className="w-full h-full object-cover" />
+    ) : (
+      <div className="w-full h-full bg-gradient-to-br from-[var(--blog-thumb1)] to-[var(--blog-thumb2)]" />
+    )
+  const caption = (p: PostCard, big: boolean) => (
+    <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-5 ${big ? 'pt-12 pb-4' : 'pt-8 pb-3'}`}>
+      <h3 className={`text-white font-bold leading-snug line-clamp-2 ${big ? 'text-lg sm:text-2xl' : 'text-sm'}`}>{p.title}</h3>
+      {big && p.excerpt && <p className="text-white/70 text-sm mt-1.5 line-clamp-1 hidden sm:block">{p.excerpt}</p>}
+    </div>
+  )
+  const dots = (
+    <div className="absolute bottom-2 right-4 flex gap-1.5 z-10">
+      {items.map((p, k) => (
+        <button
+          key={p.id}
+          onClick={() => setI(k)}
+          aria-label={`第 ${k + 1} 张`}
+          className={`w-2 h-2 rounded-full transition-colors ${k === i ? 'bg-[var(--blog-accent)]' : 'bg-white/50 hover:bg-white/80'}`}
+        />
+      ))}
+    </div>
+  )
+
+  // 主图 + 右侧标题列表。窄屏没有并排的余地,降级成单图(列表改到图下方)
+  if (variant === 'spotlight') {
+    const side = items.filter((_, k) => k !== i).slice(0, 4)
+    return (
+      <div
+        className="flex flex-col sm:flex-row gap-2 overflow-hidden rounded-[var(--blog-radius)]"
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+      >
+        <div className={`relative sm:flex-[2] min-w-0 overflow-hidden rounded-[var(--blog-radius)] bg-[var(--blog-panel)] ${ratio} sm:aspect-auto`}>
+          {items.map((p, k) => (
+            <button
+              key={p.id}
+              onClick={() => onOpen(p.id)}
+              tabIndex={k === i ? 0 : -1}
+              aria-hidden={k !== i}
+              className={`absolute inset-0 w-full text-left transition-opacity duration-500 ${k === i ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            >
+              {near(k) && cover(p, k === 0)}
+              {caption(p, true)}
+            </button>
+          ))}
+          {n > 1 && (
+            <>
+              {arrow(-1, 'M15.75 19.5 8.25 12l7.5-7.5')}
+              {arrow(1, 'm8.25 4.5 7.5 7.5-7.5 7.5')}
+            </>
+          )}
+        </div>
+        {side.length > 0 && (
+          <ul className="sm:flex-1 sm:min-w-[13rem] flex flex-col gap-2">
+            {side.map((p) => (
+              <li key={p.id} className="flex-1">
+                <button
+                  onClick={() => onOpen(p.id)}
+                  onMouseEnter={() => setI(items.findIndex((x) => x.id === p.id))}
+                  className="w-full h-full min-h-[3.5rem] text-left flex items-center gap-2.5 px-2.5 py-2 rounded-[var(--blog-radius)] bg-[var(--blog-panel)] hover:bg-[var(--blog-hover)] transition-colors"
+                >
+                  <span className="w-14 h-11 shrink-0 overflow-hidden rounded">{cover(p, false)}</span>
+                  <span className="min-w-0 text-sm text-[var(--blog-text)] line-clamp-2 leading-snug">{p.title}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
+  // 主图居中、左右各露一截。用 translateX 整条轨道位移,邻图缩小压暗
+  if (variant === 'carousel') {
+    return (
+      <div
+        className={`relative overflow-hidden rounded-[var(--blog-radius)] ${ratio}`}
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+      >
+        <div
+          className="absolute inset-y-0 flex items-center transition-transform duration-500 ease-out"
+          style={{ width: `${n * 76}%`, transform: `translateX(${-i * 76 + 12}%)` }}
+        >
+          {items.map((p, k) => (
+            <button
+              key={p.id}
+              onClick={() => (k === i ? onOpen(p.id) : setI(k))}
+              tabIndex={k === i ? 0 : -1}
+              className={`relative h-full shrink-0 px-1.5 transition-all duration-500 ${k === i ? 'scale-100' : 'scale-[0.88] opacity-60'}`}
+              style={{ width: `${100 / n}%` }}
+            >
+              <span className="block w-full h-full overflow-hidden rounded-[var(--blog-radius)] bg-[var(--blog-panel)] relative">
+                {near(k) && cover(p, k === 0)}
+                {k === i && caption(p, true)}
+              </span>
+            </button>
+          ))}
+        </div>
+        {n > 1 && (
+          <>
+            {arrow(-1, 'M15.75 19.5 8.25 12l7.5-7.5')}
+            {arrow(1, 'm8.25 4.5 7.5 7.5-7.5 7.5')}
+            {dots}
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
-      className={`relative overflow-hidden rounded-[var(--blog-radius)] bg-[var(--blog-panel)] ${h}`}
+      className={`relative overflow-hidden rounded-[var(--blog-radius)] bg-[var(--blog-panel)] ${box}`}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
@@ -482,17 +614,8 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
           aria-hidden={k !== i}
           className={`absolute inset-0 w-full text-left transition-opacity duration-500 ${k === i ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         >
-          {near(k) &&
-            (p.thumb ? (
-              // 首图 eager:它就是首屏最大的那张,拖着不下反而更慢
-              <img src={p.thumb} alt="" loading={k === 0 ? 'eager' : 'lazy'} className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-br from-[var(--blog-thumb1)] to-[var(--blog-thumb2)]" />
-            ))}
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-5 pt-12 pb-4">
-            <h3 className="text-white text-lg sm:text-2xl font-bold leading-snug line-clamp-2">{p.title}</h3>
-            {p.excerpt && <p className="text-white/70 text-sm mt-1.5 line-clamp-1 hidden sm:block">{p.excerpt}</p>}
-          </div>
+          {near(k) && cover(p, k === 0)}
+          {caption(p, true)}
         </button>
       ))}
 
@@ -500,16 +623,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
         <>
           {arrow(-1, 'M15.75 19.5 8.25 12l7.5-7.5')}
           {arrow(1, 'm8.25 4.5 7.5 7.5-7.5 7.5')}
-          <div className="absolute bottom-2 right-4 flex gap-1.5">
-            {items.map((p, k) => (
-              <button
-                key={p.id}
-                onClick={() => setI(k)}
-                aria-label={`第 ${k + 1} 张`}
-                className={`w-2 h-2 rounded-full transition-colors ${k === i ? 'bg-[var(--blog-accent)]' : 'bg-white/50 hover:bg-white/80'}`}
-              />
-            ))}
-          </div>
+          {dots}
         </>
       )}
     </div>
@@ -665,11 +779,16 @@ export default function BlogPage() {
   // 我们打在标题上的 id 随之丢失(P11.8 目录点了不跳的根因),高亮也会被抹掉。
   const contentHtml = useMemo(() => renderMd(detail?.content || ''), [detail])
 
+  // 单页(P13.4)走 layout.page / layout.pageArticle 那一套。判据来自接口返回的 is_page,
+  // 所以列表页(还没有 detail)一律按文章处理。
+  const isPage = !!detail?.is_page
+  const articleParts = isPage ? layout.pageArticle : layout.article
+
   // 版权声明(P12.8):内容来自布局配置,变动极少;同样要缓存引用,理由同上
   const copyrightHtml = useMemo(() => {
-    const text = articlePartOption(layout.article, 'copyright', 'text', '').trim()
+    const text = articlePartOption(articleParts, 'copyright', 'text', '').trim()
     return text ? renderMd(text) : null
-  }, [layout])
+  }, [articleParts])
 
   // 详情渲染后:代码高亮 + 公式 + Mermaid(懒加载 hljs/KaTeX/mermaid),并扫 h1~h3 打稳定 id 生成目录。
   // 两件事都要在「DOM 落定后」做且必须可重跑——mermaid 会异步把 pre 换成 SVG——所以共用一个
@@ -1140,7 +1259,7 @@ export default function BlogPage() {
   }
 
   // 当前页面的配置;槽位为空时整块不占位
-  const pageLayout = postId == null ? layout.list : layout.detail
+  const pageLayout = postId == null ? layout.list : isPage ? layout.page : layout.detail
   const slot = (name: SlotName) => enabledWidgets(pageLayout, name)
   const renderSlot = (name: SlotName) => slot(name).map(renderWidget)
   // 窄屏(<xl)侧栏放不下:按配置并到顶部/底部,或干脆不显示。
@@ -1448,7 +1567,7 @@ export default function BlogPage() {
             <Spinner />
           ) : (
             <div className="pt-1">
-              {enabledArticleParts(layout.article).map((p) => renderArticlePart(p, detail))}
+              {enabledArticleParts(articleParts).map((p) => renderArticlePart(p, detail))}
             </div>
           )}
         </main>

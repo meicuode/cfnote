@@ -4,7 +4,7 @@
 //
 // 纯逻辑(默认值/容错解析/增删改排序/宽度计算),前端与 worker 复用,可单测。
 
-import { defaultArticleParts, parseArticleParts, type ArticlePart } from './blogArticleParts'
+import { defaultArticleParts, defaultPageArticleParts, parseArticleParts, type ArticlePart } from './blogArticleParts'
 
 export const BLOG_LAYOUT_KEY = 'blog_layout'
 
@@ -15,9 +15,9 @@ export const SIDE_SLOTS: SlotName[] = ['left', 'right']
 export const SLOT_LABELS: Record<SlotName, string> = { top: '顶部', left: '左侧栏', right: '右侧栏', bottom: '底部' }
 
 /** 页面:博客列表 / 文章详情,两套独立配置 */
-export type PageName = 'list' | 'detail'
-export const PAGES: PageName[] = ['list', 'detail']
-export const PAGE_LABELS: Record<PageName, string> = { list: '列表页', detail: '详情页' }
+export type PageName = 'list' | 'detail' | 'page'
+export const PAGES: PageName[] = ['list', 'detail', 'page']
+export const PAGE_LABELS: Record<PageName, string> = { list: '列表页', detail: '详情页', page: '单页' }
 
 export type WidgetType =
   | 'hot' | 'about' | 'markdown' | 'recent' | 'tags' | 'links' | 'search'
@@ -61,7 +61,11 @@ export const WIDGET_SLOT_HINT: Record<WidgetType, SlotName[]> = {
   postgrid: ['top', 'bottom'],
 }
 
-/** 只有详情页才有「当前文章」,这两个模块在列表页无从谈起 */
+/**
+ * 只有详情页才有「当前文章」,这两个模块在列表页无从谈起。
+ * 单页(P13.4)同样不算:单页不在文章流里,「上一篇/下一篇」和「相关文章」对它没有定义
+ * (loadBlogDetail 也刻意不给单页传 seed)。
+ */
 export const DETAIL_ONLY_WIDGETS: WidgetType[] = ['prevnext', 'related']
 
 export function widgetWorksOn(type: WidgetType, page: PageName): boolean {
@@ -143,9 +147,13 @@ export interface MenuItem {
 export interface BlogLayout {
   list: PageLayout
   detail: PageLayout
+  /** 单页(P13.4)的槽位。与详情页分开:「关于我」通常不要热榜侧栏、不要相关文章 */
+  page: PageLayout
   menu: MenuItem[]
   /** 详情页正文区的部件与顺序(P12.8)。跟着布局走,不单开 settings 键——每多一个键就是每次博客请求多一趟 D1 */
   article: ArticlePart[]
+  /** 单页正文区的部件与顺序(P13.4)。默认只留标题 + 正文——单页要的正是「没有元信息」 */
+  pageArticle: ArticlePart[]
 }
 
 const ABOUT_DEFAULT_TEXT =
@@ -174,8 +182,11 @@ export function defaultLayout(): BlogLayout {
       ...emptyPage(),
       right: [{ id: 'hot', type: 'hot', title: '', enabled: true, options: {} }],
     },
+    // 单页默认干干净净:没有侧栏模块。要挂什么由博主自己加
+    page: emptyPage(),
     menu: defaultMenu(),
     article: defaultArticleParts(),
+    pageArticle: defaultPageArticleParts(),
   }
 }
 
@@ -306,8 +317,11 @@ export function parseBlogLayout(raw: string | null | undefined): BlogLayout {
   return {
     list: o.list === undefined ? def.list : parsePage(o.list),
     detail: o.detail === undefined ? def.detail : parsePage(o.detail),
+    // page / pageArticle 是 P13.4 才有的,老配置里没有 → 补默认值(而不是渲染出空白单页)
+    page: o.page === undefined ? def.page : parsePage(o.page),
     menu: o.menu === undefined ? def.menu : parseMenu(o.menu),
     article: o.article === undefined ? def.article : parseArticleParts(o.article),
+    pageArticle: o.pageArticle === undefined ? def.pageArticle : parseArticleParts(o.pageArticle, 'page'),
   }
 }
 
@@ -470,8 +484,8 @@ export function locateWidget(page: PageLayout, id: string): { slot: SlotName; in
   return null
 }
 
-/** 新模块的初始配置 */
-function newWidget(id: string, type: WidgetType): Widget {
+/** 新模块的初始配置;slot 只有少数模块用得上(幻灯片按槽位选默认形态) */
+function newWidget(id: string, type: WidgetType, slot: SlotName): Widget {
   const base: Widget = { id, type, title: '', enabled: true, options: {} }
   switch (type) {
     case 'about':
@@ -489,7 +503,16 @@ function newWidget(id: string, type: WidgetType): Widget {
     case 'slider':
       // 默认 5 张、自动播放 5 秒。首图 eager 其余 lazy,且只渲染当前 ±1 张——
       // 幻灯片是这批模块里唯一有真实带宽成本的,默认值要保守。
-      return { ...base, title: '', options: { source: 'recent', count: '5', auto: '1', interval: '5', height: 'md' } }
+      // 形态(P13.2)按槽位选:顶部/底部是通栏,单图铺满会被拉得又宽又扁,故默认「主图 + 侧栏标题」;
+      // 侧栏那种窄容器仍然是单图最合适。已有配置没有 variant 字段 → 渲染时回落 single,行为不变。
+      return {
+        ...base,
+        title: '',
+        options: {
+          source: 'recent', count: '5', auto: '1', interval: '5', height: 'md',
+          variant: slot === 'left' || slot === 'right' ? 'single' : 'spotlight',
+        },
+      }
     case 'banner':
       // 「可关闭 + 小高度」就是公告条,故不再单列一个公告条模块
       return {
@@ -515,7 +538,7 @@ export function addWidget(layout: BlogLayout, page: PageName, slot: SlotName, ty
   let n = 1
   let id: string = type
   while (used.has(id)) id = `${type}-${++n}`
-  return mapPage(layout, page, (p) => ({ ...p, [slot]: [...p[slot], newWidget(id, type)] }))
+  return mapPage(layout, page, (p) => ({ ...p, [slot]: [...p[slot], newWidget(id, type, slot)] }))
 }
 
 /** 删除模块 */

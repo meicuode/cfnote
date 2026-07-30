@@ -3,7 +3,7 @@
 // 内容与原左栏一致:全部文件 / 未引用 / 笔记附件(按笔记本,派生只读)/ 我的文件夹(多级树 + 增删改移)。
 // 文件夹相关的三个弹窗随之迁来(仍是 fixed z-[80] 叠层,不受侧栏容器裁剪影响)。
 
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import { buildFolderTree, collectPrivateIds, type FolderNode } from '../lib/fmUtils'
 import type { FmView, UseFileManager } from '../hooks/useFileManager'
@@ -14,11 +14,43 @@ interface Props {
   fm: UseFileManager
 }
 
+// 拖拽载荷(P13.3):自定义 type 在 dragover 阶段读不到数据(浏览器只给 types),
+// 所以高亮判定只看 types 里有没有它,真正的 id 列表在 drop 时才取。
+const DRAG_TYPE = 'application/x-cfnote-files'
+
+function dragIdsFrom(e: React.DragEvent): number[] {
+  const raw = e.dataTransfer.getData(DRAG_TYPE) || e.dataTransfer.getData('text/plain') || ''
+  try {
+    const v = JSON.parse(raw)
+    if (Array.isArray(v)) return v.map(Number).filter(Number.isFinite)
+  } catch { /* 不是 JSON:按逗号分隔的兜底格式解析 */ }
+  return raw.split(',').map(Number).filter((n) => Number.isFinite(n) && n > 0)
+}
+
 export default function FileManagerNav({ view, onChangeView, fm }: Props) {
   const { overview } = fm
   const folderTree = buildFolderTree(overview?.folders || [])
   // 私密子树(「我的私密文件夹」及其后代):锁图标、禁改名/移动/删除
   const privateIds = collectPrivateIds(overview?.folders || [])
+  // 正在被拖到上方的落点(null 表示「移出所有文件夹」那一项用不到,这里只标目录 id)
+  const [dropOn, setDropOn] = useState<number | null>(null)
+
+  // 每个目录节点都是落点:拖着文件经过时高亮,松手即移动
+  const dropProps = (folderId: number) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move' as const
+      setDropOn(folderId)
+    },
+    onDragLeave: () => setDropOn((cur) => (cur === folderId ? null : cur)),
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault()
+      setDropOn(null)
+      const ids = dragIdsFrom(e)
+      if (ids.length > 0) fm.moveFilesToFolder(folderId, ids)
+    },
+  })
 
   const navItem = (active: boolean, onClick: () => void, content: ReactNode, extra?: ReactNode) => (
     <button
@@ -34,7 +66,11 @@ export default function FileManagerNav({ view, onChangeView, fm }: Props) {
 
   const renderFolder = (node: FolderNode, depth: number): ReactNode => (
     <div key={node.id}>
-      <div style={{ paddingLeft: depth * 12 }}>
+      <div
+        style={{ paddingLeft: depth * 12 }}
+        {...dropProps(node.id)}
+        className={dropOn === node.id ? 'rounded-lg ring-2 ring-emerald-400 ring-inset bg-emerald-50/70' : undefined}
+      >
         {navItem(
           view.kind === 'folder' && view.id === node.id,
           () => onChangeView({ kind: 'folder', id: node.id }),
@@ -151,6 +187,27 @@ export default function FileManagerNav({ view, onChangeView, fm }: Props) {
       {overview && folderTree.length === 0 && !fm.folderInput && (
         <p className="text-[11px] text-gray-400 pl-8 py-1">手工上传的文件可归入文件夹</p>
       )}
+      {/* 「移出所有文件夹」的落点:拖到这里等于把文件从目录里拿出来 */}
+      <div
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'move'
+          setDropOn(-1)
+        }}
+        onDragLeave={() => setDropOn((cur) => (cur === -1 ? null : cur))}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDropOn(null)
+          const ids = dragIdsFrom(e)
+          if (ids.length > 0) fm.moveFilesToFolder(null, ids)
+        }}
+        className={`ml-8 mr-2.5 mt-1 px-2 py-1 rounded-lg border border-dashed text-[11px] transition-colors ${
+          dropOn === -1 ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-300'
+        }`}
+      >
+        拖到此处移出文件夹
+      </div>
 
       {/* ---- 文件夹弹窗(fixed 叠层,不受侧栏容器限制)---- */}
 

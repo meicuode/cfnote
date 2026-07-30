@@ -184,20 +184,24 @@ articles.get('/private', async (c) => {
   }
 })
 
-// GET /api/articles/published - 所有已公开(博客)文章;博客管理视图用。可选 q 标题搜索 + notebook_id 过滤(须注册在 /:id 之前)
+// GET /api/articles/published - 所有已公开(博客)文章;博客管理视图用。
+// 可选 q 标题搜索 + notebook_id 过滤 + kind=post|page 过滤(P13.4)(须注册在 /:id 之前)
 articles.get('/published', async (c) => {
   const user = c.get('user')
   try {
     const q = (c.req.query('q') || '').trim()
     const nbId = Number(c.req.query('notebook_id'))
+    const kind = c.req.query('kind')
     const conds = ['a.user_id = ?', 'a.is_public = 1', 'a.is_private = 0', 'a.deleted_at IS NULL']
     const binds: any[] = [user.id]
     if (q) { conds.push('a.title LIKE ?'); binds.push(`%${q}%`) }
     if (Number.isInteger(nbId) && nbId > 0) { conds.push('a.notebook_id = ?'); binds.push(nbId) }
+    if (kind === 'page') conds.push('COALESCE(a.is_page, 0) = 1')
+    else if (kind === 'post') conds.push('COALESCE(a.is_page, 0) = 0')
     const { results } = await c.env.DB.prepare(
       `SELECT a.id, a.notebook_id, n.name AS notebook, a.title,
               SUBSTR(a.content, 1, 150) AS summary,
-              a.published_at, a.updated_at, a.views, a.tags
+              a.published_at, a.updated_at, a.views, a.tags, COALESCE(a.is_page, 0) AS is_page
          FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
         WHERE ${conds.join(' AND ')}
         ORDER BY a.updated_at DESC
@@ -516,9 +520,9 @@ articles.put('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
   try {
-    const { title, content, notebook_id, is_public, is_private, tags, pinned } = await c.req.json<{
+    const { title, content, notebook_id, is_public, is_private, is_page, tags, pinned } = await c.req.json<{
       title?: string; content?: string; notebook_id?: number
-      is_public?: number | boolean; is_private?: number | boolean
+      is_public?: number | boolean; is_private?: number | boolean; is_page?: number | boolean
       tags?: string[]; pinned?: number | boolean
     }>()
 
@@ -542,6 +546,10 @@ articles.put('/:id', async (c) => {
       if (pub) publishedAt = new Date().toISOString().slice(0, 19).replace('T', ' ')
     }
 
+    // 单页(P13.4):与 is_public 正交——它不改变「能不能访问」,只决定「是否进文章流」。
+    // 取消公开时不清 is_page:重新公开后它还该是单页,而不是悄悄变回一篇普通文章。
+    const page = is_page === undefined ? (article.is_page ? 1 : 0) : (is_page ? 1 : 0)
+
     // If moving to another notebook, verify ownership
     if (notebook_id && notebook_id !== article.notebook_id) {
       const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
@@ -561,8 +569,8 @@ articles.put('/:id', async (c) => {
     const newPinned = pinned === undefined ? (article.pinned ? 1 : 0) : (pinned ? 1 : 0)
 
     await c.env.DB.prepare(
-      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, published_at = ?, tags = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, publishedAt, newTags, newPinned, id).run()
+      "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, is_page = ?, published_at = ?, tags = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, page, publishedAt, newTags, newPinned, id).run()
 
     // 设为私有 → 撤销私密分享链接(私有笔记不可分享,不变式与文件分享一致)
     if (priv && article.share_token) {

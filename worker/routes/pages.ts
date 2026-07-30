@@ -153,14 +153,17 @@ pages.get('/blog/:id', async (c) => {
 
     let body = ''
     if (mode === 'full') {
+      // 单页(P13.4):部件表换成 pageArticle,内链块里不出「上一篇/下一篇」与「相关文章」
+      // ——单页不在文章流里,loadBlogDetail 也刻意没给它算这两份数据。
+      const isPage = !!data.is_page
       const nav = seoNavHtml({
         menu: data.layout?.menu || [],
-        prev: data.neighbors?.prev || null,
-        next: data.neighbors?.next || null,
-        related: data.related || [],
-        tags: [data.tag, ...(data.tags || [])].filter(Boolean) as string[],
+        prev: isPage ? null : (data.neighbors?.prev || null),
+        next: isPage ? null : (data.neighbors?.next || null),
+        related: isPage ? [] : (data.related || []),
+        tags: isPage ? [] : ([data.tag, ...(data.tags || [])].filter(Boolean) as string[]),
       })
-      const parts = data.layout?.article || []
+      const parts = (isPage ? data.layout?.pageArticle : data.layout?.article) || []
       const copyright = articlePartOption(parts, 'copyright', 'text', '').trim()
       body = articleBlockHtml(
         {

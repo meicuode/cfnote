@@ -20,11 +20,13 @@ interface Props {
   layout: BlogLayout
   skin: BlogSkin
   page: PageName
+  /** 单页样张 id(P13.4):公开列表接口不返回单页,只能由管理端查好传进来;null = 还没有单页 */
+  pageSampleId?: number | null
   /** 预览里点了某个模块 → 左侧面板选中它 */
   onSelect: (widgetId: string) => void
 }
 
-export default function BlogPreview({ layout, skin, page, onSelect }: Props) {
+export default function BlogPreview({ layout, skin, page, onSelect, pageSampleId }: Props) {
   const [narrow, setNarrow] = useState(false)
   // undefined = 还没查;null = 没有公开文章(详情页无从预览)
   const [sampleId, setSampleId] = useState<number | null | undefined>(undefined)
@@ -36,7 +38,13 @@ export default function BlogPreview({ layout, skin, page, onSelect }: Props) {
   const width = narrow ? NARROW : WIDE
   const scale = box.w > 0 ? box.w / width : 0
   const frameH = scale > 0 ? Math.max(500, Math.round(box.h / scale)) : 800
-  const src = page === 'detail' ? (sampleId ? `/blog/${sampleId}?preview=1` : '') : '/blog?preview=1'
+  // 单页(P13.4)的样张由外层给:公开列表接口已把单页排除在外,这里查不到它
+  const src =
+    page === 'page'
+      ? (pageSampleId ? `/blog/${pageSampleId}?preview=1` : '')
+      : page === 'detail'
+        ? (sampleId ? `/blog/${sampleId}?preview=1` : '')
+        : '/blog?preview=1'
 
   // 详情页样张:取最新一篇公开文章(公开接口,不需要鉴权),只查一次
   useEffect(() => {
@@ -105,7 +113,9 @@ export default function BlogPreview({ layout, skin, page, onSelect }: Props) {
       <div ref={boxRef} className="flex-1 min-h-0 overflow-hidden bg-gray-100 relative">
         {!src ? (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-400 px-4 text-center">
-            还没有公开文章,详情页无法预览。先在笔记里公开一篇。
+            {page === 'page'
+              ? '还没有单页,无法预览。到「博客管理 → 已公开文章」把某篇设为单页(比如一篇「关于我」)。'
+              : '还没有公开文章,详情页无法预览。先在笔记里公开一篇。'}
           </div>
         ) : scale > 0 ? (
           <iframe

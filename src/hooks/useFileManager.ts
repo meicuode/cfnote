@@ -48,6 +48,12 @@ export interface UseFileManager {
   /** 删除当前所在文件夹时,调用方需把视图回落到「全部文件」——返回被删 id 供判断 */
   submitFolderDelete: () => Promise<number | null>
   submitFolderMove: (parentId: number | null) => Promise<void>
+  /**
+   * 把一批文件移进某个文件夹(P13.3 拖拽落地)。放在这个 hook 里而不是 FileManager 里,
+   * 是因为拖起来的是右侧列表的行、落下的是侧栏的目录节点,两个组件只共享这个 hook。
+   * 成功后 bump tick,右侧列表据此重拉。
+   */
+  moveFilesToFolder: (folderId: number | null, ids: number[]) => Promise<void>
 }
 
 export function useFileManager(token: string): UseFileManager {
@@ -82,6 +88,19 @@ export function useFileManager(token: string): UseFileManager {
     setNotice(msg)
     setTimeout(() => setNotice(''), 3000)
   }, [])
+
+  const moveFilesToFolder = useCallback(async (folderId: number | null, ids: number[]) => {
+    if (ids.length === 0) return
+    const j = await api('/api/fm/files/batch', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'move', ids, folder_id: folderId }),
+    }).catch(() => null)
+    if (!j?.ok) return flash(j?.error || '移动失败')
+    const d = j.data || {}
+    flash(`已移动 ${d.moved} 个文件` + (d.revoked_shares > 0 ? `,其中 ${d.revoked_shares} 个原分享已取消` : ''))
+    setTick((t) => t + 1)
+    await reloadOverview()
+  }, [api, flash, reloadOverview])
 
   const submitFolderCreate = useCallback(async () => {
     if (!folderInput || !folderName.trim()) return
@@ -130,5 +149,6 @@ export function useFileManager(token: string): UseFileManager {
     folderRename, setFolderRename, folderRenameVal, setFolderRenameVal,
     folderDelete, setFolderDelete, folderMove, setFolderMove,
     submitFolderCreate, submitFolderRename, submitFolderDelete, submitFolderMove,
+    moveFilesToFolder,
   }
 }

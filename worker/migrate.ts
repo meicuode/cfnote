@@ -19,6 +19,9 @@ const ARTICLE_COLUMNS: Record<string, string> = {
   remind_at: 'ALTER TABLE articles ADD COLUMN remind_at TEXT',
   // P10.3:提醒已推送时间(防 cron 重发;设置/清除提醒时置 NULL 重新武装)
   reminded_at: 'ALTER TABLE articles ADD COLUMN reminded_at TEXT',
+  // P13.4:单页(对标 WordPress 的「页面」)。仍是一篇公开笔记、URL 仍是 /blog/:id,
+  // 区别只在**不进 loop**:列表、热榜、相关文章、上下篇、RSS 全部排除它。
+  is_page: 'ALTER TABLE articles ADD COLUMN is_page INTEGER DEFAULT 0',
 }
 
 // P8.1 附件体系三表(与 system.ts SCHEMA 保持一致;IF NOT EXISTS 幂等,对旧库是纯增量)

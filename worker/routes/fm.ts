@@ -3,6 +3,7 @@ import { ok, err } from '../utils'
 import { escapeLike } from './search'
 import { syncArticleFiles, getPrivateFolderIds } from './files'
 import { parseFileRefs, buildAfileUrl, categorizeFile, SIDECAR_SUFFIX } from '../../src/lib/fileRefs'
+import { copyName } from '../../src/lib/fmUtils'
 import type { AppEnv } from '../types'
 
 // 文件管理接口(P8,见 docs/file-manager.md):refcheck 为发布前置检查(P8.1),
@@ -209,6 +210,124 @@ fm.delete('/files/:id', async (c) => {
     return err('删除失败: ' + e.message, 500)
   }
 })
+
+// POST /api/fm/files/batch {op:'move'|'delete'|'copy', ids:number[], folder_id?, force?}
+// 批量操作(P13.3)。为什么不让前端循环打 N 次 PUT/DELETE:移动 20 个文件就是 20 次计费请求,
+// 而免费额度里请求数(10 万/天)比 D1 行读紧张得多——一次请求 + 一次 D1 batch 就能干完。
+const MAX_BATCH = 200            // 移动/删除:一次最多这么多,防手滑全选几千个
+const MAX_COPY = 20              // 复制要把字节读出来再写回去,单请求内不能太多
+const MAX_COPY_BYTES = 10 * 1024 * 1024
+fm.post('/files/batch', async (c) => {
+  const user = c.get('user')
+  try {
+    const body = await c.req.json<{ op: string; ids: unknown; folder_id?: number | null; force?: boolean }>()
+    const ids = (Array.isArray(body.ids) ? body.ids : [])
+      .map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0)
+    if (ids.length === 0) return err('没有选中任何文件')
+    if (ids.length > MAX_BATCH) return err(`一次最多处理 ${MAX_BATCH} 个文件`)
+
+    const ph = ids.map(() => '?').join(',')
+    const { results: rows } = await c.env.DB.prepare(
+      `SELECT * FROM files WHERE user_id = ? AND id IN (${ph})`
+    ).bind(user.id, ...ids).all<FileRow>()
+    const files = rows || []
+    if (files.length === 0) return err('文件不存在', 404)
+
+    // ---- 移动 ----
+    if (body.op === 'move') {
+      let target: number | null = null
+      if (body.folder_id != null) {
+        const fd = await c.env.DB.prepare('SELECT id FROM folders WHERE id = ? AND user_id = ?')
+          .bind(body.folder_id, user.id).first()
+        if (!fd) return err('目标文件夹不存在', 404)
+        target = Number(body.folder_id)
+      }
+      await c.env.DB.prepare(
+        `UPDATE files SET folder_id = ?, updated_at = datetime('now')
+         WHERE user_id = ? AND id IN (${files.map(() => '?').join(',')})`
+      ).bind(target, user.id, ...files.map((f) => f.id)).run()
+      const revoked = await revokePrivateShares(c.env, user.id)
+      return ok({ moved: files.length, revoked_shares: revoked })
+    }
+
+    // ---- 删除 ----
+    if (body.op === 'delete') {
+      const keys = files.map((f) => f.key)
+      const { results: refRows } = await c.env.DB.prepare(
+        `SELECT file_key, COUNT(*) AS c FROM article_files
+          WHERE file_key IN (${keys.map(() => '?').join(',')}) GROUP BY file_key`
+      ).bind(...keys).all<{ file_key: string; c: number }>()
+      const refBy = new Map((refRows || []).map((r) => [r.file_key, r.c]))
+      // 有引用的文件必须显式 force:与单个删除同一条规矩,只是这里一次把名单全给出来
+      if (!body.force) {
+        const blocked = files.filter((f) => (refBy.get(f.key) || 0) > 0)
+        if (blocked.length > 0) {
+          return ok({
+            needs_force: true,
+            referenced: blocked.map((f) => ({ id: f.id, name: f.name, refs: refBy.get(f.key) || 0 })),
+          })
+        }
+      }
+      if (c.env.BUCKET) {
+        // R2 的 delete 接受数组;缩略图边车一并删。分批避免单次列表过长
+        const all = files.flatMap((f) => [f.key, f.key + SIDECAR_SUFFIX])
+        for (let i = 0; i < all.length; i += 100) {
+          try { await c.env.BUCKET.delete(all.slice(i, i + 100)) } catch { /* 静默:D1 行已删,对象留守由 scan 兜底 */ }
+        }
+      }
+      await c.env.DB.batch([
+        c.env.DB.prepare(`DELETE FROM article_files WHERE file_key IN (${keys.map(() => '?').join(',')})`).bind(...keys),
+        c.env.DB.prepare(`DELETE FROM files WHERE user_id = ? AND id IN (${files.map(() => '?').join(',')})`)
+          .bind(user.id, ...files.map((f) => f.id)),
+      ])
+      return ok({ deleted: files.length })
+    }
+
+    // ---- 复制 ----
+    // R2 的 Workers binding **没有服务端 copy**,必须把对象读出来再写回去,字节要流经 Worker。
+    // 所以这里限死数量与单个体积,超出的跳过并原样报回去,而不是闷头把 CPU 打爆。
+    if (body.op === 'copy') {
+      if (!c.env.BUCKET) return err('未配置对象存储', 500)
+      if (files.length > MAX_COPY) return err(`复制一次最多 ${MAX_COPY} 个文件(要把内容读出来再写回去)`)
+      let target: number | null = null
+      if (body.folder_id != null) {
+        const fd = await c.env.DB.prepare('SELECT id FROM folders WHERE id = ? AND user_id = ?')
+          .bind(body.folder_id, user.id).first()
+        if (!fd) return err('目标文件夹不存在', 404)
+        target = Number(body.folder_id)
+      }
+      const skipped: { name: string; reason: string }[] = []
+      const inserts: D1PreparedStatement[] = []
+      for (const f of files) {
+        if ((f.size || 0) > MAX_COPY_BYTES) {
+          skipped.push({ name: f.name, reason: `超过 ${Math.round(MAX_COPY_BYTES / 1024 / 1024)}MB` })
+          continue
+        }
+        const obj = await c.env.BUCKET.get(f.key)
+        if (!obj) { skipped.push({ name: f.name, reason: '对象不存在' }); continue }
+        const tail = f.key.split('/').pop() || 'file'
+        const newKey = `u${user.id}/${crypto.randomUUID().replace(/-/g, '')}/${tail}`
+        await c.env.BUCKET.put(newKey, obj.body, {
+          httpMetadata: { contentType: f.content_type || 'application/octet-stream' },
+          customMetadata: { created: new Date().toISOString() },
+        })
+        inserts.push(c.env.DB.prepare(
+          'INSERT INTO files (user_id, key, name, folder_id, size, content_type, category) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(user.id, newKey, copyName(f.name), target, f.size || 0, f.content_type,
+          categorizeFile(f.name, f.content_type || '')))
+      }
+      if (inserts.length > 0) await c.env.DB.batch(inserts)
+      // 副本刻意不继承分享(分享是「这一份」的授权,复制一份就该重新决定)
+      return ok({ copied: inserts.length, skipped })
+    }
+
+    return err('不支持的操作: ' + body.op)
+  } catch (e: any) {
+    return err('批量操作失败: ' + e.message, 500)
+  }
+})
+
+/** 「报告.pdf」→「报告 副本.pdf」;重复复制不会叠成「副本 副本」而是加序号(实现见 src/lib/fmUtils.ts) */
 
 // ---- 文件分享(P8.2 增强批)----
 // 一个文件同时只有一个分享(files 表 share_token/share_expires_at 即全部状态):

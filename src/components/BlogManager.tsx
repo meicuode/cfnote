@@ -18,6 +18,8 @@ interface PublishedArticle {
   published_at: string | null
   updated_at: string
   views: number
+  /** 单页(P13.4):不进列表/热榜/RSS,走单页布局 */
+  is_page?: number
 }
 
 interface AdminComment {
@@ -64,6 +66,9 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
   // ---- 文章 tab ----
   const [q, setQ] = useState('')
   const [nbFilter, setNbFilter] = useState(0)
+  // 文章 / 单页(P13.4)。对标 WordPress 的「文章」与「页面」两个平行菜单,
+  // 但不开二级菜单——它们共用同一个列表 + 同一个编辑器,只是筛选条件不同。
+  const [kind, setKind] = useState<'all' | 'post' | 'page'>('all')
   const [items, setItems] = useState<PublishedArticle[] | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
 
@@ -80,16 +85,48 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
     const params = new URLSearchParams()
     if (q.trim()) params.set('q', q.trim())
     if (nbFilter) params.set('notebook_id', String(nbFilter))
+    if (kind !== 'all') params.set('kind', kind)
     const res = await api.get<PublishedArticle[]>(`/articles/published?${params.toString()}`)
     setItems(res.ok && res.data ? res.data : [])
-  }, [api, q, nbFilter])
+  }, [api, q, nbFilter, kind])
 
-  // 打开某篇:拉全文喂给编辑器(列表接口只带摘要)
+  /**
+   * 设为 / 取消单页(P13.4)。放在博客管理而不是 ArticleEditor 顶栏:
+   * 「是不是单页」是博客呈现层的概念,不该跑到笔记工作区的编辑器里去。
+   * 与公开状态正交——只改「是否进文章流」,不动 is_public。
+   */
+  const toggleIsPage = async (a: PublishedArticle) => {
+    setBusyId(a.id)
+    const next = a.is_page ? 0 : 1
+    const res = await api.put<Article>(`/articles/${a.id}`, { is_page: next })
+    setBusyId(null)
+    if (!res.ok) return
+    setItems((cur) => {
+      const list = (cur || []).map((x) => (x.id === a.id ? { ...x, is_page: next } : x))
+      // 正在按类型筛选时,改完就不属于当前筛选了 → 从列表里移除,免得留着一条对不上的行
+      return kind === 'all' ? list : list.filter((x) => (kind === 'page' ? x.is_page : !x.is_page))
+    })
+  }
+
+  // 打开某篇(P13.1):**立即**用列表行(标题 + 摘要)切换显示,正文异步补全。
+  // 此前是 await 完 /articles/:id 才 setSelected,于是点了 B、右边还杵着 A 转圈,
+  // 直到请求回来才换——笔记工作区(Layout.openArticle)早就改成乐观切换了,这里漏改。
+  // 列表行的形态只有一种(PublishedArticle,带 summary),不存在「不同调用方字段不一致」的问题。
   const openInEditor = async (id: number) => {
     if (selected?.id === id) return
+    const row = (items || []).find((a) => a.id === id)
+    if (row) {
+      setSelected({
+        id: row.id, notebook_id: row.notebook_id, title: row.title,
+        content: row.summary || '', tags: [],
+        is_public: 1, is_private: 0,
+        created_at: row.updated_at, updated_at: row.updated_at,
+      } as unknown as Article)
+    }
     setLoadingArticle(true)
     const res = await api.get<Article>(`/articles/${id}`)
-    if (res.ok && res.data) setSelected(res.data)
+    // 期间又点了别的条目就丢弃这次结果,否则慢请求会把新选中的覆盖回去
+    if (res.ok && res.data) setSelected((cur) => (cur && cur.id !== id ? cur : res.data!))
     setLoadingArticle(false)
   }
 
@@ -224,18 +261,40 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
           // 两栏(P11.7):左「已公开文章」列表 + 右完整编辑器,中间可拖拽分隔
           <div className="flex-1 flex min-h-0">
             <div className="flex flex-col min-h-0 shrink-0 border-r border-gray-100" style={{ width: listWidth }}>
-              <div className="px-3 py-3 border-b border-gray-100 flex items-center gap-2 shrink-0">
-                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题…" className="flex-1 min-w-0 text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400" />
-                <select value={nbFilter} onChange={(e) => setNbFilter(Number(e.target.value))} className="shrink-0 text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 outline-none focus:border-emerald-400 max-w-[120px]">
-                  <option value={0}>全部笔记本</option>
-                  {notebooks.map((n) => (<option key={n.id} value={n.id}>{n.name}</option>))}
-                </select>
+              <div className="px-3 py-3 border-b border-gray-100 flex flex-col gap-2 shrink-0">
+                <div className="flex items-center gap-2">
+                  <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题…" className="flex-1 min-w-0 text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400" />
+                  <select value={nbFilter} onChange={(e) => setNbFilter(Number(e.target.value))} className="shrink-0 text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 outline-none focus:border-emerald-400 max-w-[120px]">
+                    <option value={0}>全部笔记本</option>
+                    {notebooks.map((n) => (<option key={n.id} value={n.id}>{n.name}</option>))}
+                  </select>
+                </div>
+                {/* 文章 / 单页(P13.4):单页仍然公开可访问,只是不进列表、热榜与 RSS */}
+                <div className="flex items-center gap-1">
+                  {([['all', '全部'], ['post', '文章'], ['page', '单页']] as const).map(([v, label]) => (
+                    <button
+                      key={v}
+                      onClick={() => setKind(v)}
+                      className={`text-xs px-2 py-0.5 rounded-md transition-colors ${
+                        kind === v ? 'bg-emerald-100 text-emerald-700 font-medium' : 'text-gray-500 hover:bg-gray-100'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {items === null ? (
                   <div className="py-20 flex justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>
                 ) : items.length === 0 ? (
-                  <div className="py-20 px-4 text-center text-sm text-gray-400">{q || nbFilter ? '没有匹配的已公开文章' : '还没有公开任何文章。在编辑器里点「公开」即可发布到博客。'}</div>
+                  <div className="py-20 px-4 text-center text-sm text-gray-400">
+                    {kind === 'page' && !q && !nbFilter
+                      ? '还没有单页。把一篇已公开的笔记(比如「关于我」)设为单页,它就不再出现在文章列表里,但仍可通过菜单或链接访问。'
+                      : q || nbFilter || kind !== 'all'
+                        ? '没有匹配的已公开文章'
+                        : '还没有公开任何文章。在编辑器里点「公开」即可发布到博客。'}
+                  </div>
                 ) : (
                   <ul className="space-y-1">
                     {items.map((a) => {
@@ -248,16 +307,29 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                         >
                           <div className="flex items-start gap-2">
                             <div className="min-w-0 flex-1">
-                              <div className={`text-sm font-medium truncate ${active ? 'text-emerald-800' : 'text-gray-800'}`}>{a.title || '无标题'}</div>
+                              <div className={`text-sm font-medium truncate ${active ? 'text-emerald-800' : 'text-gray-800'}`}>
+                                {a.is_page ? (
+                                  <span className="text-[10px] px-1 py-0.5 rounded bg-sky-50 text-sky-600 mr-1.5 align-middle" title="单页:公开可访问,但不进列表/热榜/RSS">单页</span>
+                                ) : null}
+                                {a.title || '无标题'}
+                              </div>
                               <div className="text-[11px] text-gray-400 flex items-center gap-1.5 mt-0.5">
                                 <span className="truncate max-w-[100px]">{a.notebook || '—'}</span>
                                 <span className="shrink-0" title={`发布于 ${fmtTime(a.published_at)}`}>· {fmtTime(a.updated_at)}</span>
                                 <span className="shrink-0">· {a.views} 浏览</span>
                               </div>
                             </div>
-                            {/* 悬浮才出:预览↗ / 取消公开(阻止冒泡,避免顺带切换选中) */}
+                            {/* 悬浮才出:预览↗ / 设为单页 / 取消公开(阻止冒泡,避免顺带切换选中) */}
                             <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                               <a href={`/blog/${a.id}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-gray-400 hover:text-emerald-600" title="在新标签预览博客页">预览↗</a>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleIsPage(a) }}
+                                disabled={busyId === a.id}
+                                className="text-[11px] text-gray-400 hover:text-sky-600 disabled:opacity-50"
+                                title={a.is_page ? '改回普通文章(重新进入列表与 RSS)' : '设为单页:仍可通过链接访问,但不出现在列表、热榜与 RSS 里'}
+                              >
+                                {a.is_page ? '改回文章' : '设为单页'}
+                              </button>
                               <button onClick={(e) => { e.stopPropagation(); unpublish(a.id) }} disabled={busyId === a.id} className="text-[11px] text-gray-400 hover:text-red-500 disabled:opacity-50" title="从博客撤下(设为不公开)">
                                 {busyId === a.id ? '…' : '取消公开'}
                               </button>

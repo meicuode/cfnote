@@ -110,3 +110,17 @@ export function previewKind(name: string, category: string): PreviewKind {
   if (TEXT_EXT.test(name)) return 'text'
   return 'download'
 }
+
+/**
+ * 批量复制的副本名(P13.3):「报告.pdf」→「报告 副本.pdf」。
+ * 反复复制不叠成「副本 副本 副本」,而是「副本 2」「副本 3」——否则复制三次就得到一个读不出来的名字。
+ * 扩展名按最后一个点切,无扩展名的整串当主名。
+ */
+export function copyName(name: string): string {
+  const dot = name.lastIndexOf('.')
+  const base = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  const m = base.match(/^(.*) 副本(?: (\d+))?$/)
+  if (m) return `${m[1]} 副本 ${Number(m[2] || 1) + 1}${ext}`
+  return `${base} 副本${ext}`
+}

@@ -25,7 +25,7 @@ import {
 import {
   ARTICLE_PART_LABELS, ARTICLE_PART_HINTS, DEFAULT_SOURCE_TEXT, DEFAULT_DIVIDER_TEXT, MAX_PART_TEXT,
   isPartLocked, partFlag, moveArticlePart, toggleArticlePart, setArticlePartOption,
-  type ArticlePart,
+  type ArticlePart, type PartScope,
 } from '../lib/blogArticleParts'
 
 // 页面布局(P12.1 骨架;P12.2 左栏/拖拽/宽度/窄屏降级;P12.3 导航菜单;P12.4 真预览 + 顶部/底部模块):
@@ -51,6 +51,8 @@ export default function BlogLayoutPanel({ token }: Props) {
   const [themeMsg, setThemeMsg] = useState('')
   // 待确认删除的主题 id(删除是不可逆的,而主题库没有回收站)
   const [delTheme, setDelTheme] = useState<string | null>(null)
+  // 单页样张 id(P13.4):公开列表接口已把单页排除,预览只能靠管理端接口查
+  const [pageSample, setPageSample] = useState<number | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
@@ -70,6 +72,14 @@ export default function BlogLayoutPanel({ token }: Props) {
     setDirty(false)
   }, [api])
   useEffect(() => { load() }, [load])
+
+  // 单页样张:只在切到「单页」页签时查一次,平时不占请求
+  useEffect(() => {
+    if (tab !== 'page' || pageSample !== null) return
+    api.get<{ id: number }[]>('/articles/published?kind=page').then((r) => {
+      if (r.ok && r.data && r.data.length > 0) setPageSample(r.data[0].id)
+    })
+  }, [api, tab, pageSample])
 
   const edit = (fn: (l: BlogLayout) => BlogLayout) => {
     setLayout((cur) => (cur ? fn(cur) : cur))
@@ -266,13 +276,22 @@ export default function BlogLayoutPanel({ token }: Props) {
       case 'slider':
         return (
           <>
+            {optSelect(w, 'variant', '形态', [
+              ['spotlight', '主图 + 侧栏标题(通栏推荐)'],
+              ['carousel', '轮播露边(通栏)'],
+              ['single', '单图铺满(侧栏)'],
+            ], 'single')}
             {optSelect(w, 'source', '取数来源', [['recent', '最新发布'], ['hot', '浏览量最高'], ['tag', '某个标签']], 'recent')}
             {(w.options.source || 'recent') === 'tag' && optText(w, 'tag', '标签名或笔记本名', '运维')}
             {optNumber(w, 'count', '张数(1–8)', 1, 8, '5')}
-            {optSelect(w, 'height', '高度', [['sm', '矮'], ['md', '中'], ['lg', '高']], 'md')}
+            {optSelect(w, 'height', '高度 / 宽高比', [['sm', '矮(21:9)'], ['md', '中(16:9)'], ['lg', '高(16:10)']], 'md')}
             {optCheck(w, 'auto', '自动播放', '1')}
             {(w.options.auto ?? '1') === '1' && optNumber(w, 'interval', '间隔(秒,2–30)', 2, 30, '5')}
-            <p className="text-[11px] text-gray-400">只渲染当前及左右各一张,其余不会提前下载;首图优先加载。</p>
+            <p className="text-[11px] text-gray-400">
+              「单图铺满」适合侧栏这种窄容器,放到顶部通栏会把图拉得又宽又扁;两种通栏形态按**宽高比**排版,
+              其中「主图 + 侧栏标题」同样的宽度里能带出 4 条标题而不是 1 条(窄屏自动降级成上下排)。
+              三种都只渲染当前及左右各一张,其余不会提前下载;首图优先加载。
+            </p>
           </>
         )
       case 'banner':
@@ -586,20 +605,22 @@ export default function BlogLayoutPanel({ token }: Props) {
       </div>
     )
   }
-  // ---- 文章块部件(P12.8)----
+  // ---- 文章块部件(P12.8;P13.4 加单页那一套)----
   // 详情页正文区此前是写死的:面包屑 → 标题 → 元信息 → 正文 → 「· 完 ·」→ 评论。
   // 成员固定、只能排序与开关——这样「详情页由这几块组成」是个恒定的心智模型,
   // 也省掉了「配置里没有正文怎么办」这类边界。存在 blog_layout.article 里,跟着布局一起下发。
-  const editArticle = (fn: (parts: ArticlePart[]) => ArticlePart[]) =>
-    edit((l) => ({ ...l, article: fn(l.article) }))
+  // 单页用 blog_layout.pageArticle:同一份成员清单、各自的顺序与开关,默认只留标题 + 正文。
+  const editArticle = (scope: PartScope, fn: (parts: ArticlePart[]) => ArticlePart[]) =>
+    edit((l) => (scope === 'page' ? { ...l, pageArticle: fn(l.pageArticle) } : { ...l, article: fn(l.article) }))
 
-  const partOptionRows = (p: ArticlePart) => {
+  const partOptionRows = (p: ArticlePart, scope: PartScope) => {
+    const upd = (fn: (parts: ArticlePart[]) => ArticlePart[]) => editArticle(scope, fn)
     const sub = (key: string, label: string) => (
       <label key={key} className="flex items-center gap-1 text-[11px] text-gray-500">
         <input
           type="checkbox"
           checked={partFlag(p, key)}
-          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, key, e.target.checked ? '1' : '0'))}
+          onChange={(e) => upd((x) => setArticlePartOption(x, p.type, key, e.target.checked ? '1' : '0'))}
           className="accent-emerald-500"
         />
         {label}
@@ -617,7 +638,7 @@ export default function BlogLayoutPanel({ token }: Props) {
           {partFlag(p, 'source') && (
             <input
               value={p.options.sourceText ?? DEFAULT_SOURCE_TEXT}
-              onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'sourceText', e.target.value))}
+              onChange={(e) => upd((x) => setArticlePartOption(x, p.type, 'sourceText', e.target.value))}
               placeholder={DEFAULT_SOURCE_TEXT}
               className="w-full text-xs border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
             />
@@ -629,7 +650,7 @@ export default function BlogLayoutPanel({ token }: Props) {
       return (
         <input
           value={p.options.text ?? DEFAULT_DIVIDER_TEXT}
-          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
+          onChange={(e) => upd((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
           placeholder={DEFAULT_DIVIDER_TEXT}
           className="ml-6 mt-1.5 w-40 text-xs border border-gray-200 rounded px-2 py-1 outline-none focus:border-emerald-400"
         />
@@ -639,7 +660,7 @@ export default function BlogLayoutPanel({ token }: Props) {
       return (
         <textarea
           value={p.options.text ?? ''}
-          onChange={(e) => editArticle((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
+          onChange={(e) => upd((x) => setArticlePartOption(x, p.type, 'text', e.target.value))}
           rows={3}
           maxLength={MAX_PART_TEXT}
           placeholder="本文采用 [CC BY-NC-SA 4.0](https://example.com) 许可协议，转载请注明出处。"
@@ -650,40 +671,54 @@ export default function BlogLayoutPanel({ token }: Props) {
     return null
   }
 
-  const articleEditor = (l: BlogLayout) => (
-    <div className="border border-gray-100 rounded-lg p-2">
-      <div className="px-1 pb-2">
-        <span className="text-xs font-medium text-gray-600">文章块<span className="text-[11px] text-gray-400 ml-1">(正文区,只在详情页)</span></span>
-        <p className="text-[11px] text-gray-400 mt-1">
-          可排序、可开关,但不能增删——这样「详情页由这几块组成」是恒定的。
-          服务端预渲染照同一份配置产出 HTML,抓取器看到的顺序与读者一致。
-        </p>
+  const articleEditor = (l: BlogLayout, scope: PartScope) => {
+    const parts = scope === 'page' ? l.pageArticle : l.article
+    return (
+      <div className="border border-gray-100 rounded-lg p-2">
+        <div className="px-1 pb-2">
+          <span className="text-xs font-medium text-gray-600">
+            文章块
+            <span className="text-[11px] text-gray-400 ml-1">
+              {scope === 'page' ? '(单页正文区,与详情页各自一套)' : '(正文区,只在详情页)'}
+            </span>
+          </span>
+          <p className="text-[11px] text-gray-400 mt-1">
+            可排序、可开关,但不能增删——这样「这个页面由这几块组成」是恒定的。
+            服务端预渲染照同一份配置产出 HTML,抓取器看到的顺序与读者一致。
+            {scope === 'page' && ' 单页默认只留标题与正文:「关于我」不该带发布时间和浏览数。'}
+          </p>
+        </div>
+        <ul className="space-y-1">
+          {parts.map((p, i) => (
+            <li key={p.type} className="px-2 py-1.5 rounded-lg border border-gray-200 bg-white">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={p.enabled}
+                  disabled={isPartLocked(p.type, scope)}
+                  onChange={(e) => editArticle(scope, (x) => toggleArticlePart(x, p.type, e.target.checked, scope))}
+                  className="accent-emerald-500 disabled:opacity-40"
+                  title={isPartLocked(p.type, scope) ? '该部件不可停用' : ''}
+                />
+                <span className={`text-sm flex-1 min-w-0 ${p.enabled ? 'text-gray-700' : 'text-gray-400'}`}>
+                  {ARTICLE_PART_LABELS[p.type]}
+                </span>
+                <button onClick={() => editArticle(scope, (x) => moveArticlePart(x, p.type, -1))} disabled={i === 0} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="上移">↑</button>
+                <button onClick={() => editArticle(scope, (x) => moveArticlePart(x, p.type, 1))} disabled={i === parts.length - 1} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="下移">↓</button>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-0.5 ml-6">
+                {/* 单页可以关评论区:全局开关仍是唯一决定「能不能提交」的地方,这里只是不渲染 */}
+                {p.type === 'comments' && scope === 'page'
+                  ? '单页可以整块关掉(公告/关于我下面挂评论多半不合适);要彻底关闭全站评论用「设置 → 评论」'
+                  : ARTICLE_PART_HINTS[p.type]}
+              </p>
+              {p.enabled && partOptionRows(p, scope)}
+            </li>
+          ))}
+        </ul>
       </div>
-      <ul className="space-y-1">
-        {l.article.map((p, i) => (
-          <li key={p.type} className="px-2 py-1.5 rounded-lg border border-gray-200 bg-white">
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={p.enabled}
-                disabled={isPartLocked(p.type)}
-                onChange={(e) => editArticle((x) => toggleArticlePart(x, p.type, e.target.checked))}
-                className="accent-emerald-500 disabled:opacity-40"
-                title={isPartLocked(p.type) ? '该部件不可停用' : ''}
-              />
-              <span className={`text-sm flex-1 min-w-0 ${p.enabled ? 'text-gray-700' : 'text-gray-400'}`}>
-                {ARTICLE_PART_LABELS[p.type]}
-              </span>
-              <button onClick={() => editArticle((x) => moveArticlePart(x, p.type, -1))} disabled={i === 0} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="上移">↑</button>
-              <button onClick={() => editArticle((x) => moveArticlePart(x, p.type, 1))} disabled={i === l.article.length - 1} className="text-xs text-gray-400 hover:text-emerald-600 disabled:opacity-30" title="下移">↓</button>
-            </div>
-            <p className="text-[11px] text-gray-400 mt-0.5 ml-6">{ARTICLE_PART_HINTS[p.type]}</p>
-            {p.enabled && partOptionRows(p)}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
+    )
+  }
 
   const menuEditor = (l: BlogLayout) => (    <div className="max-w-3xl space-y-2">
       <p className="text-[11px] text-gray-400 leading-relaxed">
@@ -878,7 +913,8 @@ export default function BlogLayoutPanel({ token }: Props) {
             skinEditor(skin)
           ) : (
             <div className="space-y-3">
-              {tab === 'detail' && articleEditor(layout)}
+              {tab === 'detail' && articleEditor(layout, 'post')}
+              {tab === 'page' && articleEditor(layout, 'page')}
               {SLOTS.map((s) => {
                 const side = s === 'left' || s === 'right'
                 const choices = widgetChoices(s, page)
@@ -950,7 +986,7 @@ export default function BlogLayoutPanel({ token }: Props) {
             主题库同理:那是一堆整套配置的管理,预览的是「当前生效的那一套」,并排放会让人以为卡片选中了就变 */}
         {tab !== 'menu' && tab !== 'library' && layout && (
           <div className="hidden lg:flex flex-1 min-w-0">
-            <BlogPreview layout={layout} skin={skin} page={page} onSelect={selectWidget} />
+            <BlogPreview layout={layout} skin={skin} page={page} pageSampleId={pageSample} onSelect={selectWidget} />
           </div>
         )}
       </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind } from '../src/lib/fmUtils'
+import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, copyName } from '../src/lib/fmUtils'
 
 describe('buildFolderTree', () => {
   it('平铺行构建嵌套树,各层按名称排序', () => {
@@ -111,5 +111,27 @@ describe('previewKind', () => {
     expect(previewKind('script.ts', 'doc')).toBe('text')
     expect(previewKind('报表.xlsx', 'doc')).toBe('download')
     expect(previewKind('打包.zip', 'other')).toBe('download')
+  })
+})
+
+describe('copyName(P13.3 批量复制)', () => {
+  it('副本名插在扩展名之前', () => {
+    expect(copyName('报告.pdf')).toBe('报告 副本.pdf')
+    expect(copyName('archive.tar.gz')).toBe('archive.tar 副本.gz')
+  })
+
+  it('反复复制加序号而不是叠「副本 副本」', () => {
+    expect(copyName('报告 副本.pdf')).toBe('报告 副本 2.pdf')
+    expect(copyName('报告 副本 2.pdf')).toBe('报告 副本 3.pdf')
+    expect(copyName('报告 副本 9.pdf')).toBe('报告 副本 10.pdf')
+  })
+
+  it('没有扩展名的整串当主名', () => {
+    expect(copyName('README')).toBe('README 副本')
+    expect(copyName('README 副本')).toBe('README 副本 2')
+  })
+
+  it('以点开头的隐藏文件不被当成「全是扩展名」', () => {
+    expect(copyName('.gitignore')).toBe('.gitignore 副本')
   })
 })

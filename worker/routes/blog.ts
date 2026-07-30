@@ -19,6 +19,12 @@ export const blog = new Hono<AppEnv>()
 // 只读列表的公共 WHERE(所有公开查询共用同一把尺子,避免哪天漏掉一个条件把私有文章漏出去)
 const PUBLIC_WHERE = 'a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL'
 
+// 单页(P13.4)在「可公开访问」这件事上与文章完全一样,区别只在**不进 loop**:
+// 列表、热榜、相关文章、上一篇/下一篇、RSS 全部排除它——「关于我」不该出现在文章流里。
+// 详情(loadBlogDetail)与 sitemap 用 PUBLIC_WHERE:单页是真实可访问、也该被索引的 URL。
+// 老库没有 is_page 列时由 migrate 补成默认 0,所以这条件对既有数据是恒真的,行为不变。
+const POST_WHERE = `${PUBLIC_WHERE} AND COALESCE(a.is_page, 0) = 0`
+
 // 页面布局与皮肤(P12.1 / P12.5):跟着 posts / posts/:id 一起下发,不单开端点——
 // 布局决定页面骨架、皮肤决定配色,晚到都会导致首屏跳动/闪色。坏配置在各自的 parse 里回落默认。
 // 两个键一次 IN 查询取回,不多一趟 D1 往返。
@@ -41,7 +47,7 @@ const HOT_WINDOWS: Record<string, string> = { day: '-1 day', week: '-7 day', mon
 async function hotList(env: AppEnv['Bindings'], win: string) {
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.title, a.views FROM articles a
-      WHERE ${PUBLIC_WHERE} AND COALESCE(a.published_at, a.updated_at) >= datetime('now', ?)
+      WHERE ${POST_WHERE} AND COALESCE(a.published_at, a.updated_at) >= datetime('now', ?)
       ORDER BY a.views DESC, COALESCE(a.published_at, a.updated_at) DESC LIMIT 12`
   ).bind(win).all()
   return results || []
@@ -61,7 +67,7 @@ async function fetchHot(env: AppEnv['Bindings']) {
 async function fetchRecent(env: AppEnv['Bindings'], limit: number) {
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.title FROM articles a
-      WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
+      WHERE ${POST_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
   ).bind(Math.max(1, Math.min(20, limit))).all()
   return results || []
 }
@@ -70,7 +76,7 @@ async function fetchRecent(env: AppEnv['Bindings'], limit: number) {
 async function fetchTagCloud(env: AppEnv['Bindings']) {
   const { results } = await env.DB.prepare(
     `SELECT a.tags, n.name as tag FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-      WHERE ${PUBLIC_WHERE} LIMIT 1000`
+      WHERE ${POST_WHERE} LIMIT 1000`
   ).all<{ tags: string | null; tag: string | null }>()
   return buildTagCloud((results || []).map((r) => ({ tag: r.tag, tags: parseTags(r.tags) })))
 }
@@ -102,7 +108,7 @@ const clampCount = (v: unknown, def: number, max: number) => {
 
 /** 幻灯片/宫格的取数:最新 / 最热 / 某标签 */
 async function fetchCards(env: AppEnv['Bindings'], source: string, tag: string, limit: number) {
-  const cond = [PUBLIC_WHERE]
+  const cond = [POST_WHERE]
   const args: unknown[] = []
   if (source === 'tag' && tag) {
     cond.push("(n.name = ? OR a.tags LIKE ? ESCAPE '\\')")
@@ -125,7 +131,7 @@ async function fetchRelated(env: AppEnv['Bindings'], seed: { id: number; noteboo
   if (or.length === 0) return []
   const { results } = await env.DB.prepare(
     `SELECT ${CARD_COLS} FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-      WHERE ${PUBLIC_WHERE} AND a.id != ? AND (${or.join(' OR ')})
+      WHERE ${POST_WHERE} AND a.id != ? AND (${or.join(' OR ')})
       ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT 20`
   ).bind(...args).all<any>()
   return scoreRelated(seed, (results || []).map(toCard), limit)
@@ -136,7 +142,7 @@ async function fetchNeighbors(env: AppEnv['Bindings'], id: number, sortKey: stri
   const one = async (cmp: '>' | '<', dir: 'ASC' | 'DESC') => {
     const r = await env.DB.prepare(
       `SELECT ${CARD_COLS} FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-        WHERE ${PUBLIC_WHERE} AND a.id != ? AND COALESCE(a.published_at, a.updated_at) ${cmp} ?
+        WHERE ${POST_WHERE} AND a.id != ? AND COALESCE(a.published_at, a.updated_at) ${cmp} ?
         ORDER BY COALESCE(a.published_at, a.updated_at) ${dir} LIMIT 1`
     ).bind(id, sortKey).first<any>()
     return r ? toCard(r) : null
@@ -200,7 +206,7 @@ blog.get('/posts', async (c) => {
     const offset = clampOffset(c.req.query('offset'))
     const tag = (c.req.query('tag') || '').trim().slice(0, MAX_QUERY_LEN)
     const q = (c.req.query('q') || '').trim().slice(0, MAX_QUERY_LEN)
-    const cond: string[] = [PUBLIC_WHERE]
+    const cond: string[] = [POST_WHERE]
     const args: unknown[] = []
     if (tag) {
       // 笔记本名与文章标签同等对待(博客上「Tags:」本就是混着显示的)
@@ -309,7 +315,8 @@ export async function loadBlogDetail(
 ): Promise<Record<string, any> | null> {
   const [a, settings] = await Promise.all([
     env.DB.prepare(
-      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id, n.name as tag
+      `SELECT a.id, a.title, a.content, a.published_at, a.updated_at, a.views, a.tags, a.notebook_id,
+              COALESCE(a.is_page, 0) as is_page, n.name as tag
        FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
        WHERE a.id = ? AND ${PUBLIC_WHERE}`
     ).bind(id).first<any>(),
@@ -322,16 +329,20 @@ export async function loadBlogDetail(
   // notebook_id 只用于「相关文章」打分,不进公开响应
   const { notebook_id, ...pub } = a
   const tags = parseTags(a.tags)
+  const isPage = !!a.is_page
   const seed = { id: a.id, notebook_id: notebook_id ?? null, tags, sortKey: a.published_at || a.updated_at }
+  // 单页(P13.4)走自己那套槽位与部件表——「关于我」不该带面包屑、发布时间和相关文章
+  const pageLayout = isPage ? layout.page : layout.detail
   return {
     ...pub,
+    is_page: isPage,
     tag: a.tag || '未分类',
     tags,
     comments_enabled: (settings.get('comments_enabled') ?? '1') !== '0',
     layout,
     skin,
     custom_js: (settings.get(CUSTOM_JS_KEY) || '').slice(0, MAX_CUSTOM_JS),
-    ...(await widgetData(env, layout.detail, seed)),
+    ...(await widgetData(env, pageLayout, isPage ? undefined : seed)),
     published_at: a.published_at || a.updated_at,
     views: (a.views || 0) + (counted ? 1 : 0),
   }
@@ -356,7 +367,8 @@ blog.get('/posts/:id', async (c) => {
   }
 })
 
-// sitemap.xml 用:全部公开文章的 id 与更新时间(只读两列,几千行也很便宜)
+// sitemap.xml 用:全部公开文章的 id 与更新时间(只读两列,几千行也很便宜)。
+// 这里用 PUBLIC_WHERE 而不是 POST_WHERE:单页是真实可访问的 URL,该被索引。
 export async function listSitemapPosts(env: AppEnv['Bindings'], limit = 5000) {
   const { results } = await env.DB.prepare(
     `SELECT a.id, COALESCE(a.updated_at, a.published_at) as updated_at FROM articles a
@@ -365,12 +377,13 @@ export async function listSitemapPosts(env: AppEnv['Bindings'], limit = 5000) {
   return results || []
 }
 
-// RSS 用:最近若干篇,摘要取正文前 2000 字符再剥语法(与列表页同一条路径)
+// RSS 用:最近若干篇,摘要取正文前 2000 字符再剥语法(与列表页同一条路径)。
+// 用 POST_WHERE:feed 是「订阅新文章」,单页不该出现在里面。
 export async function listFeedPosts(env: AppEnv['Bindings'], limit = 20) {
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.title, SUBSTR(a.content, 1, 2000) as head, a.published_at, a.updated_at, n.name as tag
        FROM articles a LEFT JOIN notebooks n ON n.id = a.notebook_id
-      WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
+      WHERE ${POST_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
   ).bind(limit).all<any>()
   return (results || []).map((r) => ({
     id: r.id,

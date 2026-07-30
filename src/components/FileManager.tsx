@@ -87,6 +87,16 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
   const [sharePreset, setSharePreset] = useState<number | null>(604800)
   const [shareBusy, setShareBusy] = useState(false)
 
+  // 多选与批量操作(P13.3)。anchor 记住上一次点选的行,用于 Shift 连选
+  const [sel, setSel] = useState<Set<number>>(new Set())
+  const [anchor, setAnchor] = useState<number | null>(null)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchMsg, setBatchMsg] = useState('')
+  // 批量删除撞上「仍被笔记引用」时,服务端回一份名单让人确认
+  const [batchDel, setBatchDel] = useState<{ id: number; name: string; refs: number }[] | null>(null)
+  // 批量移动/复制的目标目录选择弹窗
+  const [batchMove, setBatchMove] = useState<'move' | 'copy' | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const api = useCallback(
@@ -123,6 +133,94 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
 
   // 刷新:文件列表 + overview(后者驱动侧栏二级菜单的计数与文件夹树)
   const refresh = useCallback(() => { reloadOverview(); loadFiles() }, [reloadOverview, loadFiles])
+
+  // ---- 多选与批量操作(P13.3)----
+
+  // 换视图/换筛选/搜索后清空选中:留着上一屏的选中项,批量操作会作用在看不见的文件上
+  useEffect(() => { setSel(new Set()); setAnchor(null) }, [view, category, qDebounced])
+
+  const selectedFiles = (files || []).filter((f) => sel.has(f.id))
+  const allChecked = !!files && files.length > 0 && files.every((f) => sel.has(f.id))
+
+  const toggleRow = (f: FmFile, e: React.MouseEvent | React.ChangeEvent) => {
+    const shift = (e as React.MouseEvent).shiftKey
+    const list = files || []
+    setSel((cur) => {
+      const next = new Set(cur)
+      if (shift && anchor != null) {
+        const a = list.findIndex((x) => x.id === anchor)
+        const b = list.findIndex((x) => x.id === f.id)
+        if (a >= 0 && b >= 0) {
+          const [lo, hi] = a < b ? [a, b] : [b, a]
+          // 连选一律「加入」而不是切换:Shift 拖出一段再反选整段是很反直觉的
+          for (let i = lo; i <= hi; i++) next.add(list[i].id)
+          return next
+        }
+      }
+      if (next.has(f.id)) next.delete(f.id)
+      else next.add(f.id)
+      return next
+    })
+    setAnchor(f.id)
+  }
+
+  const toggleAll = () => {
+    setSel(allChecked ? new Set() : new Set((files || []).map((f) => f.id)))
+    setAnchor(null)
+  }
+
+  const flashBatch = (msg: string) => {
+    setBatchMsg(msg)
+    setTimeout(() => setBatchMsg(''), 5000)
+  }
+
+  /** 批量操作统一入口:一次请求打完,不在前端循环打 N 次(N 个文件就是 N 次计费请求) */
+  const runBatch = async (op: 'move' | 'delete' | 'copy', opts: { ids?: number[]; folder_id?: number | null; force?: boolean } = {}) => {
+    const ids = opts.ids ?? [...sel]
+    if (ids.length === 0) return
+    setBatchBusy(true)
+    const j = await api('/api/fm/files/batch', {
+      method: 'POST',
+      body: JSON.stringify({ op, ids, folder_id: opts.folder_id, force: opts.force }),
+    }).catch(() => null)
+    setBatchBusy(false)
+    if (!j?.ok) return flashBatch(j?.error || '操作失败')
+    const d = j.data || {}
+    if (d.needs_force) { setBatchDel(d.referenced); return }
+    if (op === 'move') {
+      flashBatch(`已移动 ${d.moved} 个文件` + (d.revoked_shares > 0 ? `;其中 ${d.revoked_shares} 个移入私密文件夹,原分享已取消` : ''))
+    } else if (op === 'delete') {
+      flashBatch(`已删除 ${d.deleted} 个文件`)
+    } else {
+      const skip = (d.skipped || []) as { name: string; reason: string }[]
+      flashBatch(`已复制 ${d.copied} 个文件` + (skip.length > 0 ? `;跳过 ${skip.length} 个(${skip.map((s) => `${s.name}:${s.reason}`).join('、')})` : ''))
+    }
+    setSel(new Set())
+    setBatchDel(null)
+    setBatchMove(null)
+    refresh()
+  }
+
+  /** 批量复制链接:零成本,而且多半比复制文件本体更常用 */
+  const copySelectedLinks = async () => {
+    const urls = selectedFiles.map((f) => new URL(f.url, window.location.origin).href).join('\n')
+    try {
+      await navigator.clipboard.writeText(urls)
+      flashBatch(`已复制 ${selectedFiles.length} 条链接到剪贴板`)
+    } catch {
+      flashBatch('复制失败:浏览器拒绝了剪贴板访问')
+    }
+  }
+
+  // 拖拽:把选中的文件拖到左侧目录树。若拖的是未选中的行,则只拖那一个(与资源管理器一致)
+  const dragIds = (f: FmFile): number[] => (sel.has(f.id) ? [...sel] : [f.id])
+  const onRowDragStart = (f: FmFile, e: React.DragEvent) => {
+    const ids = dragIds(f)
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('application/x-cfnote-files', JSON.stringify(ids))
+    // 纯文本兜底:某些浏览器不给自定义 type 的 dragover 读数据,落地时以它为准
+    e.dataTransfer.setData('text/plain', ids.join(','))
+  }
 
   // ---- 操作 ----
 
@@ -326,6 +424,15 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
           {/* 左栏已上移为侧栏二级菜单(P11.6,见 FileManagerNav.tsx) */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 shrink-0 flex-wrap">
+              {files && files.length > 0 && (
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={toggleAll}
+                  title={allChecked ? '取消全选' : '全选本页'}
+                  className="accent-emerald-500 cursor-pointer"
+                />
+              )}
               <span className="text-sm font-medium text-gray-800">{viewTitle}</span>
               {files && <span className="text-xs text-gray-400">{files.length} 项</span>}
               <div className="flex items-center gap-1 ml-auto">
@@ -348,6 +455,48 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                 className="w-44 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-400"
               />
             </div>
+
+            {/* 批量操作条(P13.3):有选中才出现,不占常驻空间 */}
+            {sel.size > 0 && (
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-100 bg-emerald-50/60 shrink-0 flex-wrap">
+                <span className="text-xs text-emerald-800 font-medium">已选 {sel.size} 项</span>
+                <button onClick={() => setSel(new Set())} className="text-xs text-gray-500 hover:text-gray-700">取消选择</button>
+                <span className="w-px h-4 bg-emerald-200" />
+                <button
+                  onClick={() => setBatchMove('move')}
+                  disabled={batchBusy}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                >
+                  移动到…
+                </button>
+                <button
+                  onClick={() => setBatchMove('copy')}
+                  disabled={batchBusy}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                >
+                  复制到…
+                </button>
+                <button
+                  onClick={copySelectedLinks}
+                  disabled={batchBusy}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+                >
+                  复制链接
+                </button>
+                <button
+                  onClick={() => runBatch('delete')}
+                  disabled={batchBusy}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  删除
+                </button>
+                {batchBusy && <span className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
+                <span className="text-[11px] text-gray-500 ml-auto">也可以直接把选中的文件拖到左侧目录上</span>
+              </div>
+            )}
+            {batchMsg && (
+              <div className="px-4 py-1.5 text-[11px] text-emerald-700 bg-emerald-50/60 border-b border-emerald-100 shrink-0">{batchMsg}</div>
+            )}
 
             <div className="flex-1 overflow-y-auto">
               {files === null ? (
@@ -377,7 +526,20 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                     </div>
                   ))}
                   {files.map((f) => (
-                    <div key={f.id} className="px-4 py-2 flex items-center gap-3 hover:bg-gray-50/70 group">
+                    <div
+                      key={f.id}
+                      draggable
+                      onDragStart={(e) => onRowDragStart(f, e)}
+                      className={`px-4 py-2 flex items-center gap-3 group ${sel.has(f.id) ? 'bg-emerald-50/60' : 'hover:bg-gray-50/70'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={sel.has(f.id)}
+                        onChange={() => { /* 受 onClick 控制,这里只为消掉 React 的受控警告 */ }}
+                        onClick={(e) => toggleRow(f, e)}
+                        title="选中(按住 Shift 连选一段)"
+                        className="accent-emerald-500 shrink-0 cursor-pointer"
+                      />
                       {f.thumb ? (
                         <img
                           src={f.thumb}
@@ -546,6 +708,72 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                 ])
               })(folderTree, 0)}
               {folderTree.length === 0 && <p className="px-3 py-3 text-xs text-gray-400">还没有文件夹,先在侧栏「我的文件夹」新建一个</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量移动 / 复制到文件夹(P13.3):与单个「移动」同一份目录树,只是作用在选中集上 */}
+      {batchMove && (
+        <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setBatchMove(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-80 p-4" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">
+              {batchMove === 'move' ? '移动' : '复制'} {sel.size} 个文件到
+            </h3>
+            <p className="text-[11px] text-gray-400 mb-2">
+              {batchMove === 'move'
+                ? '目录是虚拟结构,移动不影响链接。移入 🔒 私密文件夹后禁止公开访问,已有分享会被取消。'
+                : '复制会真的多存一份到 R2(占用存储),副本是新链接、不继承分享。一次最多 20 个、单个不超过 10MB,超出的会跳过并列出来。'}
+            </p>
+            <div className="max-h-60 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+              <button
+                onClick={() => runBatch(batchMove, { folder_id: null })}
+                className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+              >
+                (不归入任何文件夹)
+              </button>
+              {(function flat(nodes: FolderNode[], depth: number): ReactNode[] {
+                return nodes.flatMap((n) => [
+                  <button
+                    key={n.id}
+                    onClick={() => runBatch(batchMove, { folder_id: n.id })}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50"
+                    style={{ paddingLeft: 12 + depth * 16 }}
+                  >
+                    {privateIds.has(n.id) ? '🔒' : '📁'} {n.name}
+                  </button>,
+                  ...flat(n.children, depth + 1),
+                ])
+              })(folderTree, 0)}
+              {folderTree.length === 0 && <p className="px-3 py-3 text-xs text-gray-400">还没有文件夹,先在侧栏「我的文件夹」新建一个</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量删除里仍被笔记引用的那些:服务端先回名单,确认后才 force 删 */}
+      {batchDel && (
+        <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => setBatchDel(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-96 max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">有 {batchDel.length} 个文件仍被笔记引用</h3>
+            <p className="text-[11px] text-gray-400 mb-2">删除后这些笔记里的链接会失效(图片显示为裂图),且无法恢复。</p>
+            <ul className="max-h-48 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50 mb-3">
+              {batchDel.map((x) => (
+                <li key={x.id} className="px-3 py-1.5 text-xs text-gray-700 flex items-center gap-2">
+                  <span className="truncate flex-1">{x.name}</span>
+                  <span className="text-gray-400 shrink-0">{x.refs} 篇</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setBatchDel(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100">取消</button>
+              <button
+                onClick={() => runBatch('delete', { force: true })}
+                disabled={batchBusy}
+                className="px-3 py-1.5 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50"
+              >
+                仍要删除全部 {sel.size} 个
+              </button>
             </div>
           </div>
         </div>

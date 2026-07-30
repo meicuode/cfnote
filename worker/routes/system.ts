@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS articles (
   is_vectorized INTEGER DEFAULT 0,
   is_public INTEGER DEFAULT 0,
   is_private INTEGER DEFAULT 0,
+  is_page INTEGER DEFAULT 0,
   published_at TEXT,
   views INTEGER DEFAULT 0,
   deleted_at TEXT,
@@ -321,7 +322,7 @@ system.get('/export', async (c) => {
     const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows, commentRows, versionRows] = await Promise.all([
       c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       // P12.11 补上博客那一层:此前只导正文,恢复之后所有文章都变回未公开、浏览数归零
-      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, COALESCE(is_page, 0) AS is_page, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
       c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
@@ -438,11 +439,11 @@ system.post('/import', async (c) => {
       const priv = a.is_private ? 1 : 0
       inserts.push(c.env.DB.prepare(
         `INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized, tags, pinned,
-                               is_public, is_private, published_at, views)
-         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
+                               is_public, is_private, is_page, published_at, views)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(nbId, user.id, a.title, content, hash,
         typeof a.tags === 'string' && a.tags ? a.tags : null, a.pinned ? 1 : 0,
-        !priv && a.is_public ? 1 : 0, priv,
+        !priv && a.is_public ? 1 : 0, priv, a.is_page ? 1 : 0,
         typeof a.published_at === 'string' ? a.published_at : null,
         Number.isFinite(a.views) ? Math.max(0, Math.trunc(a.views)) : 0))
       insertContents.push(content)

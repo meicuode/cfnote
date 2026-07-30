@@ -49,11 +49,21 @@ export const ARTICLE_PART_HINTS: Record<ArticlePartType, string> = {
  * 不可停用的部件。
  * 正文不用解释;评论区之所以只能移动不能停用,是因为它的开关已经在「设置 → 评论」里了
  * (那个开关同时会让 POST 返回 403)。同一件事有两个开关,迟早会出现「这里关了那里还能提交」的困惑。
+ *
+ * 单页(P13.4)是这条规矩的唯一例外:「公告」「关于我」下面挂一串评论是不对的,而全局开关
+ * 仍然是唯一决定「能不能提交」的地方——单页这个只是不渲染评论区,不会出现「这里关了那里还能提交」。
  */
-export const LOCKED_ARTICLE_PARTS: ArticlePartType[] = ['content', 'comments']
+export type PartScope = 'post' | 'page'
 
-export function isPartLocked(t: ArticlePartType): boolean {
-  return LOCKED_ARTICLE_PARTS.includes(t)
+export const LOCKED_ARTICLE_PARTS: ArticlePartType[] = ['content', 'comments']
+const LOCKED_PAGE_PARTS: ArticlePartType[] = ['content']
+
+export function lockedParts(scope: PartScope = 'post'): ArticlePartType[] {
+  return scope === 'page' ? LOCKED_PAGE_PARTS : LOCKED_ARTICLE_PARTS
+}
+
+export function isPartLocked(t: ArticlePartType, scope: PartScope = 'post'): boolean {
+  return lockedParts(scope).includes(t)
 }
 
 export const DEFAULT_SOURCE_TEXT = '来源：CFNote 笔记'
@@ -80,6 +90,19 @@ export function defaultArticleParts(): ArticlePart[] {
 
 const ALL_TYPES = defaultArticleParts().map((p) => p.type)
 
+/**
+ * 单页的默认部件表(P13.4):只留标题与正文,其余全关。
+ * 这正是单页存在的理由——「关于我」不该有面包屑、发布时间、浏览数和「来源:CFNote 笔记」。
+ * 顺序与文章保持一致,这样在两个页签之间来回看时心智模型是同一个。
+ */
+export function defaultPageArticleParts(): ArticlePart[] {
+  return defaultArticleParts().map((p) => ({
+    ...p,
+    enabled: p.type === 'title' || p.type === 'content',
+    options: { ...p.options },
+  }))
+}
+
 function isPartType(v: unknown): v is ArticlePartType {
   return typeof v === 'string' && (ALL_TYPES as string[]).includes(v)
 }
@@ -100,8 +123,8 @@ function parseOptions(v: unknown): Record<string, string> {
  *
  * 补齐的部件追加在末尾:将来若新增第 9 种部件,老配置里它会落在最下面,可能需要手动挪一下位置。
  */
-export function parseArticleParts(v: unknown): ArticlePart[] {
-  const def = defaultArticleParts()
+export function parseArticleParts(v: unknown, scope: PartScope = 'post'): ArticlePart[] {
+  const def = scope === 'page' ? defaultPageArticleParts() : defaultArticleParts()
   if (!Array.isArray(v)) return def
   const byType = new Map(def.map((p) => [p.type, p]))
   const out: ArticlePart[] = []
@@ -115,7 +138,7 @@ export function parseArticleParts(v: unknown): ArticlePart[] {
     out.push({
       type: o.type,
       // 锁定的部件无论配置写什么都必须启用
-      enabled: isPartLocked(o.type) ? true : o.enabled !== false,
+      enabled: isPartLocked(o.type, scope) ? true : o.enabled !== false,
       options: { ...fallback.options, ...parseOptions(o.options) },
     })
   }
@@ -158,8 +181,13 @@ export function moveArticlePart(parts: ArticlePart[], type: ArticlePartType, del
   return next
 }
 
-export function toggleArticlePart(parts: ArticlePart[], type: ArticlePartType, enabled: boolean): ArticlePart[] {
-  if (isPartLocked(type)) return parts
+export function toggleArticlePart(
+  parts: ArticlePart[],
+  type: ArticlePartType,
+  enabled: boolean,
+  scope: PartScope = 'post'
+): ArticlePart[] {
+  if (isPartLocked(type, scope)) return parts
   return parts.map((p) => (p.type === type ? { ...p, enabled } : p))
 }
 

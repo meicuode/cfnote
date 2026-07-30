@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ARTICLE_PART_LABELS, DEFAULT_DIVIDER_TEXT, DEFAULT_SOURCE_TEXT, MAX_PART_TEXT,
-  defaultArticleParts, parseArticleParts, isPartLocked, partFlag, findPart, articlePartOption,
+  defaultArticleParts, defaultPageArticleParts, parseArticleParts, isPartLocked, partFlag, findPart, articlePartOption,
   enabledArticleParts, moveArticlePart, toggleArticlePart, setArticlePartOption,
   type ArticlePartType,
 } from '../src/lib/blogArticleParts'
@@ -158,5 +158,58 @@ describe('预渲染跟着同一份配置走', () => {
     expect(articleBlockHtml(art, defaultArticleParts(), '')).not.toContain('<p>版权</p>')
     const parts = toggleArticlePart(defaultArticleParts(), 'copyright', true)
     expect(articleBlockHtml(art, parts, '')).toContain('<p>版权</p>')
+  })
+})
+
+describe('单页部件(P13.4)', () => {
+  it('默认只留标题与正文——单页要的正是「没有元信息」', () => {
+    const enabled = enabledArticleParts(defaultPageArticleParts()).map((p) => p.type)
+    expect(enabled).toEqual(['title', 'content'])
+  })
+
+  it('成员与顺序和文章一致,只是开关不同(两个页签之间心智模型相同)', () => {
+    expect(types(defaultPageArticleParts())).toEqual(types(defaultArticleParts()))
+  })
+
+  it('单页可以停用评论区,文章不行', () => {
+    expect(isPartLocked('comments', 'post')).toBe(true)
+    expect(isPartLocked('comments', 'page')).toBe(false)
+    // 正文两边都锁死
+    expect(isPartLocked('content', 'post')).toBe(true)
+    expect(isPartLocked('content', 'page')).toBe(true)
+  })
+
+  it('toggle 与 parse 都认这条 scope 差异', () => {
+    // 文章:关评论区无效(锁定)
+    expect(findPart(toggleArticlePart(defaultArticleParts(), 'comments', false), 'comments')!.enabled).toBe(true)
+    // 单页:关得掉
+    const off = toggleArticlePart(defaultPageArticleParts(), 'comments', false, 'page')
+    expect(findPart(off, 'comments')!.enabled).toBe(false)
+    // 解析时同样不会被强制拉回启用
+    expect(findPart(parseArticleParts(off, 'page'), 'comments')!.enabled).toBe(false)
+    // 但按文章解析同一份配置,评论区会被拉回启用
+    expect(findPart(parseArticleParts(off, 'post'), 'comments')!.enabled).toBe(true)
+  })
+
+  it('缺省/坏值回落到单页默认表而不是文章默认表', () => {
+    const enabled = enabledArticleParts(parseArticleParts(undefined, 'page')).map((p) => p.type)
+    expect(enabled).toEqual(['title', 'content'])
+  })
+
+  it('单页那份配置进得了布局、也回得来', () => {
+    const l = defaultLayout()
+    l.pageArticle = toggleArticlePart(l.pageArticle, 'copyright', true, 'page')
+    const back = parseBlogLayout(serializeBlogLayout(l))
+    expect(findPart(back.pageArticle, 'copyright')!.enabled).toBe(true)
+    // 文章那份不受影响
+    expect(findPart(back.article, 'copyright')!.enabled).toBe(false)
+  })
+
+  it('老配置(没有 page / pageArticle 字段)自动补默认值,不会渲染出空白单页', () => {
+    const old = JSON.stringify({ list: defaultLayout().list, detail: defaultLayout().detail, menu: [], article: defaultArticleParts() })
+    const back = parseBlogLayout(old)
+    expect(types(back.pageArticle)).toEqual(types(defaultArticleParts()))
+    expect(back.page.top).toEqual([])
+    expect(back.page.right).toEqual([])
   })
 })
