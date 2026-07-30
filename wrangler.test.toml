@@ -1,0 +1,23 @@
+# 仅供 vitest-pool-workers 使用的测试环境配置(miniflare 本地跑,与部署无关)。
+# 与 wrangler.toml 的差别是刻意的:
+#  - 不声明 Vectorize / AI / Analytics Engine:前两者没有本地实现,声明了会直接起不来;
+#    代码里对它们的调用都有守卫或 try/catch(见 worker/routes/articles.ts vectorizeArticle),
+#    绑定缺失时降级为 vectorize_error 字符串,不影响笔记与博客这条主链路。
+#  - 不声明 [assets]:env.ASSETS 缺失时 pages.ts 走 passthrough 分支,
+#    这样测试不依赖 ./dist 构建产物(否则 test 与 build 的先后顺序一变就红)。
+#  - JWT_SECRET 是测试常量,不是任何真实密钥。
+name = "cfnote-test"
+main = "worker/index.ts"
+compatibility_date = "2024-12-01"
+
+[vars]
+JWT_SECRET = "test-only-secret-not-used-anywhere-else"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cfnote-test-db"
+database_id = "cfnote-test-db"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "cfnote-test-files"

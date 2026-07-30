@@ -9,7 +9,9 @@
     "preview": "wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:unit": "vitest run --project unit",
+    "test:worker": "vitest run --project worker"
   },
   "cloudflare": {
     "bindings": {
@@ -49,6 +51,7 @@
     "turndown": "^7.2.2"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
     "@cloudflare/workers-types": "^5.20260721.1",
     "@tailwindcss/vite": "^4.2.1",
     "@types/react": "^19.2.14",

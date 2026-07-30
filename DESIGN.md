@@ -493,6 +493,20 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 见 `README.md`「项目结构」一节（`worker/` 后端 Hono 路由 + `src/` React 前端 + `docs/` 设计文档 + `tests/` Vitest）。
 
+### 11.1 测试分层（P13.6）
+
+两个 Vitest project（`vitest.config.ts` → `vitest.unit.config.ts` / `vitest.worker.config.ts`）：
+
+- **单元（node 环境）**：`src/lib/*` 与 `worker/utils.ts` 里的纯函数。这一层此前是唯一的一层，代价是 `worker/routes/*` 里的 SQL **零覆盖**——而本项目的安全不变量（哪些文章能公开、哪些字段能进公开响应）恰恰都写在 SQL 里。
+- **Worker 端到端（workerd）**：`@cloudflare/vitest-pool-workers` 在 miniflare 里跑真的 `worker/index.ts`，配真的 D1 与 R2，用 `SELF.fetch()` 打接口。
+
+几处必须记住的取舍：
+
+1. **`wrangler.test.toml` 只声明 D1 + R2**。Vectorize 与 Workers AI 没有本地实现，声明了直接起不来；能这么做是因为 `vectorizeArticle` 整个包在 try/catch 里、失败只返回 `vectorize_error` 字符串（`worker/routes/articles.ts`），绑定缺失不影响笔记与博客这条主链路。代价是 `/api/search`、`/api/conversations`、`/api/stats` 进不了 e2e。同理不声明 `[assets]`——否则测试就依赖 `dist/` 构建产物，`test` 与 `build` 的先后一变就红。
+2. **存储隔离是按测试文件的，不按 `it` 回滚**（0.19 起 `isolatedStorage` 不再是可配置项）。所以夹具里有 `dropAll()`，每个用例先把库丢干净。它必须**多轮重试**：D1 的 `foreign_keys` 常开且不允许 `PRAGMA` 关掉，先丢父表 `users` 再丢带 `REFERENCES users(id)` 的子表会报 `no such table: main.users`；与其硬编码依赖顺序（加一张表就要记得改），不如失败的留到下一轮。
+3. **`ensureSchema` 的 memo 是模块级的**（每个 isolate 只真跑一次），所以「老库迁移」这类断言一个文件里只放一个 `it`。这条测试必须**直接调** `ensureSchema` 而不是靠发请求触发——中间件里那次是 `.catch(() => {})` 吞掉的，吞掉的异常测不出来，而这正是「SCHEMA 加了列、migrate 也加了列」时 `duplicate column name` 的翻车点。
+4. **另有一道静态锁** `tests/schema.test.ts`：按文本比对 `system.ts` 的 `SCHEMA` 与 `migrate.ts` 的幂等语句（列与表两个方向）。它证明的是两份定义一致，不是 SQLite 能接受这份 DDL——后者由 e2e 在真 D1 上跑。两者都要，因为漏改任何一边都不会立刻报错。
+
 ## 12. Cloudflare 资源配置（wrangler.toml）
 
 ```toml
@@ -533,7 +547,7 @@ bucket_name = "cfnote-files"      # 需先在 Dashboard 开通 R2
 
 ## 13. 安全性与注意事项
 
-1. **开发阶段 schema 约定**：只做增量幂等（加列/建表），不写数据迁移；不兼容变更时提示线上清空重初始化（见 §5）。
+1. **开发阶段 schema 约定**：只做增量幂等（加列/建表），不写数据迁移；不兼容变更时提示线上清空重初始化（见 §5）。**这条约定现在有测试兜底（P13.6，见 §11.1）**：`tests/worker/init.test.ts` 在真 D1 上验全新建表带齐所有列、`/api/init` 可重复执行、全新库上跑 `ensureSchema` 不撞 `duplicate column`；`tests/worker/migrate.test.ts` 手工造一张早期 `articles` 表验补列后老数据不丢；`tests/schema.test.ts` 静态比对两份定义。此前这三件事全靠读代码确认，而 `migrate` 的失败在 `worker/index.ts` 里是被吞掉的——漏改一边不会有任何报错。
 2. **内容哈希去重**：仅内容实际变化才重新向量化，避免重复消耗 neurons。
 3. **搜索模式分离**：默认混合搜索仅消耗嵌入 neurons；AI 问答用户主动触发才消耗 LLM。
 4. **附件私密性**：能力 URL + 访问分级 + 私密文件夹一票否决；取消公开后新访客约 5 分钟内失效（已看过的浏览器缓存不可收回，属预期不可逆）。

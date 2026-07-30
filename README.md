@@ -406,14 +406,20 @@ npm run preview
 npx tsc --noEmit
 ```
 
-### 单元测试
+### 测试
 
 ```bash
-npm test          # 单次运行
-npm run test:watch  # 监听模式
+npm test              # 全部（单元 + Worker e2e）
+npm run test:unit     # 只跑纯函数单元测试（node 环境）
+npm run test:worker   # 只跑 Worker 端到端（workerd + 真 D1/R2）
+npm run test:watch    # 监听模式
 ```
 
-用 Vitest 覆盖后端 `worker/utils.ts` 中的纯函数（分块、JWT、密码哈希、内容哈希、think 标签清理、模型白名单、超时保护、AE 埋点结构）与前端纯逻辑（标签解析、任务勾选回写、私密文件夹判定与分享有效期、剪藏 bookmarklet 生成、URL 路由解析、评论校验与嵌套线程、待审评论本地合并、评论头像取色、章节锚点 slug、博客布局与导航菜单容错解析、博客皮肤解析与颜色派生与 CSS 清洗、博客列表筛选与 LIKE 转义与标签云聚合与相关文章打分、高亮语言别名归一、敏感扫描、图片调宽等），共 28 个测试文件、326 个用例，无需任何 Cloudflare 环境即可运行。
+分两组，`vitest.config.ts` 里是两个 project：
+
+**单元测试（33 个文件、432 个用例，无需任何 Cloudflare 环境）** —— 覆盖后端 `worker/utils.ts` 中的纯函数（分块、JWT、密码哈希、内容哈希、think 标签清理、模型白名单、超时保护、AE 埋点结构）与前端纯逻辑（标签解析、任务勾选回写、私密文件夹判定与分享有效期、剪藏 bookmarklet 生成、URL 路由解析、评论校验与嵌套线程、待审评论本地合并、评论头像取色、章节锚点 slug、博客布局与导航菜单容错解析、文章块部件与单页部件、博客皮肤解析与颜色派生与 CSS 清洗、博客列表筛选与 LIKE 转义与标签云聚合与相关文章打分、自定义脚本解析、通知渠道凭据掩码、文件副本命名、高亮语言别名归一、敏感扫描、图片调宽等）。其中 `tests/schema.test.ts` 是一道静态锁：按文本比对 `system.ts` 的 `SCHEMA` 与 `migrate.ts` 的幂等语句，防止「migrate 里加了列、全新建表忘了加」这类漏改——那种漏改不会立刻报错，因为 `migrate` 的失败在 `worker/index.ts` 里是被吞掉的。
+
+**Worker 端到端（5 个文件、27 个用例）** —— 由 `@cloudflare/vitest-pool-workers` 在 workerd（miniflare）里跑真的 `worker/index.ts`，配真的 D1 与 R2，用 `SELF.fetch()` 打接口。覆盖：全新初始化（`/api/init` 建表、逐列断言、可重复执行、`ensureSchema` 在全新库上不撞车）、老库幂等迁移（手工建一张早期 `articles` 表 → 补齐全部新列且老数据不丢）、单页不进文章流（列表/RSS 排除、详情与 sitemap 保留、标记可逆且不被误清）、文件管理批量操作（真的往 R2 写副本、删对象、引用清单确认、越权 id 打不动）、备份导出导入往返（公开状态与单页标记、评论父子关系、设置白名单、重复导入不翻倍）。配置见 `wrangler.test.toml`：**只声明 D1 + R2**，不声明 Vectorize/AI（无本地实现）也不声明 `[assets]`（否则测试就依赖 `dist/` 构建产物）。
 
 ### 构建
 
@@ -481,9 +487,12 @@ cfnote/
 │   ├── main.tsx               # React 挂载
 │   └── index.css              # Tailwind 入口 + 深色映射
 ├── docs/                       # 需求与设计文档（roadmap、evernote-gap、file-manager、public-blog、wysiwyg-editor、notifications）
-├── tests/                      # Vitest 单元测试
+├── tests/                      # Vitest 单元测试（纯函数，node 环境）
+│   └── worker/                 # Worker 端到端（workerd + 真 D1/R2，见 wrangler.test.toml）
 ├── wrangler.toml               # Worker 入口 + 静态资源 + Cron + 绑定（D1/Vectorize/AI/R2/AE）
+├── wrangler.test.toml          # 测试专用绑定（只有 D1 + R2，不含 Vectorize/AI/assets）
 ├── vite.config.ts
+├── vitest.config.ts            # 两个 project：unit + worker
 ├── tsconfig.json
 └── package.json
 ```
