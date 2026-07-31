@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
-import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS, type FolderNode } from '../lib/fmUtils'
+import {
+  buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS,
+  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, FM_CHECKBOX_KEY,
+  type FolderNode,
+} from '../lib/fmUtils'
 import type { FmView, UseFileManager } from '../hooks/useFileManager'
 
 const XmindViewer = lazy(() => import('./XmindViewer'))
@@ -18,6 +22,8 @@ interface Props {
   onChangeView: (v: FmView) => void
   /** 与侧栏二级菜单共享的 overview / 文件夹操作 */
   fm: UseFileManager
+  /** 打开设置面板并定位到「文件」那一节(P13.7 的复选框开关在那里) */
+  onOpenSettings?: () => void
 }
 
 interface FmFile {
@@ -61,7 +67,7 @@ const fmtDateTime = (s: string) => {
 
 let uploadUid = 0
 
-export default function FileManager({ token, onClose, view, onChangeView, fm }: Props) {
+export default function FileManager({ token, onClose, view, onChangeView, fm, onOpenSettings }: Props) {
   const { overview, reloadOverview, notice, flash } = fm
   const [category, setCategory] = useState<'all' | 'image' | 'doc' | 'other'>('all')
   const [q, setQ] = useState('')
@@ -87,7 +93,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
   const [sharePreset, setSharePreset] = useState<number | null>(604800)
   const [shareBusy, setShareBusy] = useState(false)
 
-  // 多选与批量操作(P13.3)。anchor 记住上一次点选的行,用于 Shift 连选
+  // 多选与批量操作(P13.3;P13.7 改为资源管理器语义)。anchor 是 Shift 连选的起点
   const [sel, setSel] = useState<Set<number>>(new Set())
   const [anchor, setAnchor] = useState<number | null>(null)
   const [batchBusy, setBatchBusy] = useState(false)
@@ -141,22 +147,33 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
 
   const selectedFiles = (files || []).filter((f) => sel.has(f.id))
   const allChecked = !!files && files.length > 0 && files.every((f) => sel.has(f.id))
+  const summary = selectionSummary(files || [], sel)
 
-  const toggleRow = (f: FmFile, e: React.MouseEvent | React.ChangeEvent) => {
-    const shift = (e as React.MouseEvent).shiftKey
-    const list = files || []
+  // 复选框显示模式(P13.7):存本机,开关在「设置 → 文件管理」。
+  // 触屏设备默认给复选框——那里没有 Ctrl/Shift,没有它就完全没法多选。
+  const [cbMode, setCbMode] = useState(() =>
+    parseCheckboxMode(typeof localStorage !== 'undefined' ? localStorage.getItem(FM_CHECKBOX_KEY) : null))
+  const coarse = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches
+  const withCheckbox = showCheckbox(cbMode, coarse)
+  // 从设置面板改完切回来时同步(两个面板不同时挂载,重挂载即重读;storage 事件管跨标签页)
+  useEffect(() => {
+    const sync = () => setCbMode(parseCheckboxMode(localStorage.getItem(FM_CHECKBOX_KEY)))
+    window.addEventListener('storage', sync)
+    return () => window.removeEventListener('storage', sync)
+  }, [])
+
+  /** 点某一行:单击独选、Ctrl 切换、Shift 连选一段、Ctrl+Shift 追加一段(逻辑在 fmUtils 里可单测) */
+  const clickRow = (f: FmFile, e: React.MouseEvent) => {
+    const ids = (files || []).map((x) => x.id)
+    const next = nextSelection(ids, { sel, anchor }, f.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })
+    setSel(next.sel)
+    setAnchor(next.anchor)
+  }
+
+  /** 复选框那一列(触屏 / 手工开启时):点它永远只切换这一个,不受修饰键影响 */
+  const toggleOne = (f: FmFile) => {
     setSel((cur) => {
       const next = new Set(cur)
-      if (shift && anchor != null) {
-        const a = list.findIndex((x) => x.id === anchor)
-        const b = list.findIndex((x) => x.id === f.id)
-        if (a >= 0 && b >= 0) {
-          const [lo, hi] = a < b ? [a, b] : [b, a]
-          // 连选一律「加入」而不是切换:Shift 拖出一段再反选整段是很反直觉的
-          for (let i = lo; i <= hi; i++) next.add(list[i].id)
-          return next
-        }
-      }
       if (next.has(f.id)) next.delete(f.id)
       else next.add(f.id)
       return next
@@ -168,6 +185,26 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
     setSel(allChecked ? new Set() : new Set((files || []).map((f) => f.id)))
     setAnchor(null)
   }
+
+  // Ctrl/⌘+A 全选、Esc 清空。输入框里不拦截——那时候用户要选的是文字
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+      if (typing) return
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        if (!files || files.length === 0) return
+        e.preventDefault()
+        setSel(new Set(files.map((f) => f.id)))
+        setAnchor(null)
+      } else if (e.key === 'Escape' && sel.size > 0) {
+        setSel(new Set())
+        setAnchor(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [files, sel.size])
 
   const flashBatch = (msg: string) => {
     setBatchMsg(msg)
@@ -212,15 +249,19 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
     }
   }
 
-  // 拖拽:把选中的文件拖到左侧目录树。若拖的是未选中的行,则只拖那一个(与资源管理器一致)
+  // 拖拽:把选中的文件拖到左侧目录树。若拖的是未选中的行,则先选中它再拖(与资源管理器一致)
   const dragIds = (f: FmFile): number[] => (sel.has(f.id) ? [...sel] : [f.id])
   const onRowDragStart = (f: FmFile, e: React.DragEvent) => {
     const ids = dragIds(f)
+    if (!sel.has(f.id)) { setSel(new Set([f.id])); setAnchor(f.id) }
+    fm.setDraggingFiles(true)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('application/x-cfnote-files', JSON.stringify(ids))
     // 纯文本兜底:某些浏览器不给自定义 type 的 dragover 读数据,落地时以它为准
     e.dataTransfer.setData('text/plain', ids.join(','))
   }
+  // 松手或按 Esc 放弃都会触发 dragend,侧栏那块虚线落点据此收起
+  const onRowDragEnd = () => fm.setDraggingFiles(false)
 
   // ---- 操作 ----
 
@@ -414,6 +455,18 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
               ) : '上传文件'}
             </button>
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { handleUpload(e.target.files); e.target.value = '' }} />
+            {onOpenSettings && (
+              <button
+                onClick={onOpenSettings}
+                title="文件管理设置(列表复选框等)"
+                className="p-1.5 rounded-lg text-gray-400 hover:text-emerald-600 hover:bg-gray-100 transition-colors shrink-0"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.3 4.3a1 1 0 011-.8h1.4a1 1 0 011 .8l.2 1.2a6.6 6.6 0 011.6.9l1.1-.4a1 1 0 011.2.4l.7 1.2a1 1 0 01-.2 1.3l-.9.8a6.7 6.7 0 010 1.8l.9.8a1 1 0 01.2 1.3l-.7 1.2a1 1 0 01-1.2.4l-1.1-.4a6.6 6.6 0 01-1.6.9l-.2 1.2a1 1 0 01-1 .8h-1.4a1 1 0 01-1-.8l-.2-1.2a6.6 6.6 0 01-1.6-.9l-1.1.4a1 1 0 01-1.2-.4l-.7-1.2a1 1 0 01.2-1.3l.9-.8a6.7 6.7 0 010-1.8l-.9-.8a1 1 0 01-.2-1.3l.7-1.2a1 1 0 011.2-.4l1.1.4a6.6 6.6 0 011.6-.9l.2-1.2z" />
+                  <circle cx="12" cy="12" r="2.5" />
+                </svg>
+              </button>
+            )}
             <button onClick={onClose} className="text-xs text-gray-400 hover:text-emerald-600 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors shrink-0" title="返回笔记工作区">
               返回笔记
             </button>
@@ -424,7 +477,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
           {/* 左栏已上移为侧栏二级菜单(P11.6,见 FileManagerNav.tsx) */}
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 shrink-0 flex-wrap">
-              {files && files.length > 0 && (
+              {withCheckbox && files && files.length > 0 && (
                 <input
                   type="checkbox"
                   checked={allChecked}
@@ -456,49 +509,16 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
               />
             </div>
 
-            {/* 批量操作条(P13.3):有选中才出现,不占常驻空间 */}
-            {sel.size > 0 && (
-              <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-100 bg-emerald-50/60 shrink-0 flex-wrap">
-                <span className="text-xs text-emerald-800 font-medium">已选 {sel.size} 项</span>
-                <button onClick={() => setSel(new Set())} className="text-xs text-gray-500 hover:text-gray-700">取消选择</button>
-                <span className="w-px h-4 bg-emerald-200" />
-                <button
-                  onClick={() => setBatchMove('move')}
-                  disabled={batchBusy}
-                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                >
-                  移动到…
-                </button>
-                <button
-                  onClick={() => setBatchMove('copy')}
-                  disabled={batchBusy}
-                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                >
-                  复制到…
-                </button>
-                <button
-                  onClick={copySelectedLinks}
-                  disabled={batchBusy}
-                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50"
-                >
-                  复制链接
-                </button>
-                <button
-                  onClick={() => runBatch('delete')}
-                  disabled={batchBusy}
-                  className="text-xs px-2.5 py-1 rounded-lg bg-white border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                >
-                  删除
-                </button>
-                {batchBusy && <span className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
-                <span className="text-[11px] text-gray-500 ml-auto">也可以直接把选中的文件拖到左侧目录上</span>
-              </div>
-            )}
+            {/* 批量操作已下移到底部状态栏(P13.7):选择状态只在一个地方显示 */}
             {batchMsg && (
               <div className="px-4 py-1.5 text-[11px] text-emerald-700 bg-emerald-50/60 border-b border-emerald-100 shrink-0">{batchMsg}</div>
             )}
 
-            <div className="flex-1 overflow-y-auto">
+            {/* 点列表空白处清空选择(与资源管理器一致);行自己会 stopPropagation 之外的冒泡到这里 */}
+            <div
+              className="flex-1 overflow-y-auto"
+              onClick={(e) => { if (e.target === e.currentTarget && sel.size > 0) { setSel(new Set()); setAnchor(null) } }}
+            >
               {files === null ? (
                 <div className="py-20 flex justify-center">
                   <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -530,42 +550,43 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                       key={f.id}
                       draggable
                       onDragStart={(e) => onRowDragStart(f, e)}
-                      className={`px-4 py-2 flex items-center gap-3 group ${sel.has(f.id) ? 'bg-emerald-50/60' : 'hover:bg-gray-50/70'}`}
+                      onDragEnd={onRowDragEnd}
+                      onClick={(e) => clickRow(f, e)}
+                      onDoubleClick={() => openPreview(f)}
+                      className={`px-4 py-2 flex items-center gap-3 group select-none cursor-default ${
+                        sel.has(f.id) ? 'bg-emerald-100/70' : 'hover:bg-gray-50/70'
+                      }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={sel.has(f.id)}
-                        onChange={() => { /* 受 onClick 控制,这里只为消掉 React 的受控警告 */ }}
-                        onClick={(e) => toggleRow(f, e)}
-                        title="选中(按住 Shift 连选一段)"
-                        className="accent-emerald-500 shrink-0 cursor-pointer"
-                      />
+                      {withCheckbox && (
+                        <input
+                          type="checkbox"
+                          checked={sel.has(f.id)}
+                          onChange={() => toggleOne(f)}
+                          onClick={(e) => e.stopPropagation()}
+                          title="选中"
+                          className="accent-emerald-500 shrink-0 cursor-pointer"
+                        />
+                      )}
                       {f.thumb ? (
                         <img
                           src={f.thumb}
                           alt=""
                           loading="lazy"
-                          className="w-10 h-10 rounded-md object-cover border border-gray-100 shrink-0 cursor-zoom-in bg-gray-50"
-                          onClick={() => openPreview(f)}
+                          className="w-10 h-10 rounded-md object-cover border border-gray-100 shrink-0 bg-gray-50"
                           onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }}
                         />
                       ) : (
-                        <button
-                          onClick={() => openPreview(f)}
-                          className="w-10 h-10 rounded-md bg-gray-50 border border-gray-100 flex items-center justify-center text-lg shrink-0"
-                        >
+                        <div className="w-10 h-10 rounded-md bg-gray-50 border border-gray-100 flex items-center justify-center text-lg shrink-0">
                           {f.category === 'doc' ? '📄' : '📦'}
-                        </button>
+                        </div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <button onClick={() => openPreview(f)} className="block max-w-full text-left" title={f.name}>
-                          <span className="text-sm text-gray-800 truncate block hover:text-emerald-600 transition-colors">{f.name}</span>
-                        </button>
+                        <span className="text-sm text-gray-800 truncate block" title={`${f.name}(双击打开)`}>{f.name}</span>
                         <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2">
                           <span>{fmtSize(f.size)}</span>
                           <span>{CATE_LABEL[f.category] || f.category}</span>
                           <button
-                            onClick={async () => setRefsDialog({ file: f, refs: await fetchRefs(f) })}
+                            onClick={async (e) => { e.stopPropagation(); setRefsDialog({ file: f, refs: await fetchRefs(f) }) }}
                             className={`hover:underline ${f.ref_count > 0 ? 'text-gray-500' : 'text-gray-300'}`}
                             title="查看引用这个文件的笔记"
                           >
@@ -596,12 +617,13 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                             fmtRemaining(f.share_expires_at) === '已过期' ? 'bg-gray-100 text-gray-400' : 'bg-sky-50 text-sky-600'
                           }`}
                           title={fmtRemaining(f.share_expires_at) === '已过期' ? '分享已过期,点击重新生成' : '已分享,点击查看/复制链接'}
-                          onClick={() => { setShareDialog(f); setSharePreset(604800) }}
+                          onClick={(e) => { e.stopPropagation(); setShareDialog(f); setSharePreset(604800) }}
                         >
                           🔗 {fmtRemaining(f.share_expires_at)}
                         </span>
                       )}
-                      <div className="hidden group-hover:flex items-center gap-0.5 shrink-0 text-gray-400">
+                      {/* 行内动作:一律 stopPropagation,点它们不该改变选择 */}
+                      <div className="hidden group-hover:flex items-center gap-0.5 shrink-0 text-gray-400" onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => copyLink(f)} title="复制链接" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">📋</button>
                         {!f.is_private_file && (
                           <button
@@ -612,6 +634,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                             🔗
                           </button>
                         )}
+                        <button onClick={() => openPreview(f)} title="打开预览(或双击整行)" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">👁</button>
                         <button onClick={() => { setRenameTarget(f); setRenameVal(f.name) }} title="重命名" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">✏️</button>
                         <button onClick={() => setMoveTarget(f)} title="移动到文件夹" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">📁</button>
                         <button
@@ -625,6 +648,59 @@ export default function FileManager({ token, onClose, view, onChangeView, fm }: 
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+
+            {/* 底部状态栏(P13.7):没选中显示当前视图合计,选中后显示选中合计 + 批量操作。
+                取代了原来顶部那条批量条——选择状态在两个地方显示迟早会对不上 */}
+            <div className="flex items-center gap-2 px-4 py-2 border-t border-gray-100 bg-gray-50/80 shrink-0 flex-wrap text-xs">
+              {sel.size > 0 ? (
+                <>
+                  <span className="text-emerald-800 font-medium">
+                    已选 {summary.count} 个 · 共 {fmtSize(summary.size)}
+                  </span>
+                  <button onClick={() => { setSel(new Set()); setAnchor(null) }} className="text-gray-500 hover:text-gray-700">取消选择</button>
+                  <span className="w-px h-4 bg-gray-200" />
+                  <button
+                    onClick={() => setBatchMove('move')}
+                    disabled={batchBusy}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                  >
+                    移动到…
+                  </button>
+                  <button
+                    onClick={() => setBatchMove('copy')}
+                    disabled={batchBusy}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                  >
+                    复制到…
+                  </button>
+                  <button
+                    onClick={copySelectedLinks}
+                    disabled={batchBusy}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+                  >
+                    复制链接
+                  </button>
+                  <button
+                    onClick={() => runBatch('delete')}
+                    disabled={batchBusy}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    删除
+                  </button>
+                  {batchBusy && <span className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
+                  <span className="text-[11px] text-gray-400 ml-auto">也可以直接把选中的文件拖到左侧目录上</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-gray-500">
+                    {files ? `${files.length} 个文件 · 共 ${fmtSize(files.reduce((s, f) => s + (Number(f.size) || 0), 0))}` : '加载中…'}
+                  </span>
+                  <span className="text-[11px] text-gray-400 ml-auto">
+                    {withCheckbox ? '勾选多个文件后可批量操作' : '单击选中 · Ctrl 点选 · Shift 连选 · Ctrl+A 全选 · 双击打开'}
+                  </span>
+                </>
               )}
             </div>
           </div>

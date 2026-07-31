@@ -54,6 +54,13 @@ export interface UseFileManager {
    * 成功后 bump tick,右侧列表据此重拉。
    */
   moveFilesToFolder: (folderId: number | null, ids: number[]) => Promise<void>
+  /**
+   * 正在拖文件(P13.7)。侧栏的「拖到此处移出文件夹」落点据此显示——
+   * 它此前是常驻的,于是不拖的时候、切到别的目录之后都还挂在树下面。
+   * 和 moveFilesToFolder 同一个理由放在 hook 里:拖起来的行在 FileManager、落点在 FileManagerNav。
+   */
+  draggingFiles: boolean
+  setDraggingFiles: (v: boolean) => void
 }
 
 export function useFileManager(token: string): UseFileManager {
@@ -67,6 +74,7 @@ export function useFileManager(token: string): UseFileManager {
   const [folderRenameVal, setFolderRenameVal] = useState('')
   const [folderDelete, setFolderDelete] = useState<FolderRow | null>(null)
   const [folderMove, setFolderMove] = useState<FolderNode | null>(null)
+  const [draggingFiles, setDraggingFiles] = useState(false)
 
   const api = useCallback(
     async (path: string, init?: RequestInit): Promise<any> => {
@@ -150,5 +158,6 @@ export function useFileManager(token: string): UseFileManager {
     folderDelete, setFolderDelete, folderMove, setFolderMove,
     submitFolderCreate, submitFolderRename, submitFolderDelete, submitFolderMove,
     moveFilesToFolder,
+    draggingFiles, setDraggingFiles,
   }
 }

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, copyName } from '../src/lib/fmUtils'
+import {
+  buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, copyName,
+  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode,
+} from '../src/lib/fmUtils'
 
 describe('buildFolderTree', () => {
   it('平铺行构建嵌套树,各层按名称排序', () => {
@@ -133,5 +136,72 @@ describe('copyName(P13.3 批量复制)', () => {
 
   it('以点开头的隐藏文件不被当成「全是扩展名」', () => {
     expect(copyName('.gitignore')).toBe('.gitignore 副本')
+  })
+})
+
+describe('多选:资源管理器语义(P13.7)', () => {
+  const ids = [10, 20, 30, 40, 50]
+  const S = (arr: number[], anchor: number | null = null) => ({ sel: new Set(arr), anchor })
+  const plain = { ctrl: false, shift: false }
+  const ctrl = { ctrl: true, shift: false }
+  const shift = { ctrl: false, shift: true }
+  const both = { ctrl: true, shift: true }
+  const out = (r: { sel: Set<number> }) => [...r.sel].sort((a, b) => a - b)
+
+  it('单击只选这一行,清掉其他', () => {
+    const r = nextSelection(ids, S([10, 20, 30]), 40, plain)
+    expect(out(r)).toEqual([40])
+    expect(r.anchor).toBe(40)
+  })
+
+  it('Ctrl 单击切换当前行,其余不动', () => {
+    expect(out(nextSelection(ids, S([10, 30]), 20, ctrl))).toEqual([10, 20, 30])
+    expect(out(nextSelection(ids, S([10, 20, 30]), 20, ctrl))).toEqual([10, 30])
+  })
+
+  it('Shift 连选一段并替换原选择,锚点不动', () => {
+    const r = nextSelection(ids, S([50], 20), 40, shift)
+    expect(out(r)).toEqual([20, 30, 40])
+    // 锚点保持在 20,才能反复调整这一段的另一端
+    expect(r.anchor).toBe(20)
+    // 回头点更小的一端,取的是 10..20 而不是空段
+    expect(out(nextSelection(ids, S([20, 30, 40], 20), 10, shift))).toEqual([10, 20])
+  })
+
+  it('Ctrl+Shift 把这一段追加进原选择', () => {
+    expect(out(nextSelection(ids, S([50], 20), 40, both))).toEqual([20, 30, 40, 50])
+  })
+
+  it('没有锚点时的 Shift 退化为单击', () => {
+    const r = nextSelection(ids, S([10, 20], null), 40, shift)
+    expect(out(r)).toEqual([40])
+    expect(r.anchor).toBe(40)
+  })
+
+  it('锚点已不在当前列表(筛选变了)时也退化为单击,不会选出空集', () => {
+    const r = nextSelection(ids, S([10], 999), 30, shift)
+    expect(out(r)).toEqual([30])
+  })
+
+  it('选中合计只算当前列表里的行', () => {
+    const files = [{ id: 10, size: 100 }, { id: 20, size: 250 }, { id: 30, size: 0 }]
+    expect(selectionSummary(files, new Set([10, 20, 999]))).toEqual({ count: 2, size: 350 })
+    expect(selectionSummary(files, new Set())).toEqual({ count: 0, size: 0 })
+  })
+})
+
+describe('复选框显示模式(P13.7)', () => {
+  it('坏值与缺省一律回落 auto', () => {
+    expect(parseCheckboxMode(null)).toBe('auto')
+    expect(parseCheckboxMode('nope')).toBe('auto')
+    expect(parseCheckboxMode('on')).toBe('on')
+    expect(parseCheckboxMode('off')).toBe('off')
+  })
+
+  it('auto 只在触屏显示,on/off 一票决定', () => {
+    expect(showCheckbox('auto', true)).toBe(true)
+    expect(showCheckbox('auto', false)).toBe(false)
+    expect(showCheckbox('on', false)).toBe(true)
+    expect(showCheckbox('off', true)).toBe(false)
   })
 })

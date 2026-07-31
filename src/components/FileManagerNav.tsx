@@ -3,7 +3,7 @@
 // 内容与原左栏一致:全部文件 / 未引用 / 笔记附件(按笔记本,派生只读)/ 我的文件夹(多级树 + 增删改移)。
 // 文件夹相关的三个弹窗随之迁来(仍是 fixed z-[80] 叠层,不受侧栏容器裁剪影响)。
 
-import { useState, type ReactNode } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import { buildFolderTree, collectPrivateIds, type FolderNode } from '../lib/fmUtils'
 import type { FmView, UseFileManager } from '../hooks/useFileManager'
@@ -34,6 +34,10 @@ export default function FileManagerNav({ view, onChangeView, fm }: Props) {
   const privateIds = collectPrivateIds(overview?.folders || [])
   // 正在被拖到上方的落点(null 表示「移出所有文件夹」那一项用不到,这里只标目录 id)
   const [dropOn, setDropOn] = useState<number | null>(null)
+
+  // 拖拽结束(松手或按 Esc 放弃)时清掉高亮:dragleave 不保证成对触发,
+  // 落在非落点区域松手就不会有 leave,高亮会一直挂着
+  useEffect(() => { if (!fm.draggingFiles) setDropOn(null) }, [fm.draggingFiles])
 
   // 每个目录节点都是落点:拖着文件经过时高亮,松手即移动
   const dropProps = (folderId: number) => ({
@@ -187,27 +191,30 @@ export default function FileManagerNav({ view, onChangeView, fm }: Props) {
       {overview && folderTree.length === 0 && !fm.folderInput && (
         <p className="text-[11px] text-gray-400 pl-8 py-1">手工上传的文件可归入文件夹</p>
       )}
-      {/* 「移出所有文件夹」的落点:拖到这里等于把文件从目录里拿出来 */}
-      <div
-        onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
-          e.preventDefault()
-          e.dataTransfer.dropEffect = 'move'
-          setDropOn(-1)
-        }}
-        onDragLeave={() => setDropOn((cur) => (cur === -1 ? null : cur))}
-        onDrop={(e) => {
-          e.preventDefault()
-          setDropOn(null)
-          const ids = dragIdsFrom(e)
-          if (ids.length > 0) fm.moveFilesToFolder(null, ids)
-        }}
-        className={`ml-8 mr-2.5 mt-1 px-2 py-1 rounded-lg border border-dashed text-[11px] transition-colors ${
-          dropOn === -1 ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-300'
-        }`}
-      >
-        拖到此处移出文件夹
-      </div>
+      {/* 「移出所有文件夹」的落点:拖到这里等于把文件从目录里拿出来。
+          只在拖拽进行中出现(P13.7)——常驻的话,不拖的时候、切到别的目录之后它都还挂在树下面 */}
+      {fm.draggingFiles && (
+        <div
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes(DRAG_TYPE)) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'move'
+            setDropOn(-1)
+          }}
+          onDragLeave={() => setDropOn((cur) => (cur === -1 ? null : cur))}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDropOn(null)
+            const ids = dragIdsFrom(e)
+            if (ids.length > 0) fm.moveFilesToFolder(null, ids)
+          }}
+          className={`ml-8 mr-2.5 mt-1 px-2 py-1 rounded-lg border border-dashed text-[11px] transition-colors ${
+            dropOn === -1 ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-gray-300 text-gray-400'
+          }`}
+        >
+          拖到此处移出文件夹
+        </div>
+      )}
 
       {/* ---- 文件夹弹窗(fixed 叠层,不受侧栏容器限制)---- */}
 

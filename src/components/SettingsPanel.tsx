@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useApi } from '../hooks/useApi'
 import { CHANNEL_META, CHANNEL_TYPES, isSecretField, isMaskedValue, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
 import { PRERENDER_KEY, parsePrerenderMode, type PrerenderMode } from '../lib/blogSeo'
 import { CUSTOM_JS_KEY, MAX_CUSTOM_JS, describeCustomScripts } from '../lib/blogScripts'
+import { FM_CHECKBOX_KEY, parseCheckboxMode, type CheckboxMode } from '../lib/fmUtils'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -15,9 +16,11 @@ const MODELS: ModelInfo[] = [
 interface Props {
   token: string
   onClose: () => void
+  /** 打开时滚到并高亮某一节(目前只有 'files',由文件管理右上角的齿轮传进来) */
+  focus?: 'files' | null
 }
 
-export default function SettingsPanel({ token, onClose }: Props) {
+export default function SettingsPanel({ token, onClose, focus }: Props) {
   const api = useApi(token)
   const [selected, setSelected] = useState('')
   const [jinaKey, setJinaKey] = useState('')
@@ -45,6 +48,28 @@ export default function SettingsPanel({ token, onClose }: Props) {
   // 导出时是否带上文章历史版本(P12.11)
   const [withVersions, setWithVersions] = useState(false)
   const [error, setError] = useState('')
+
+  // 文件管理的列表复选框(P13.7):存 localStorage(每台设备各自的显示偏好,见 fmUtils 里的论证),
+  // 不进 /api/settings ——否则每次打开文件管理都要多打一次请求。
+  const [fmCheckbox, setFmCheckbox] = useState<CheckboxMode>(() =>
+    parseCheckboxMode(typeof localStorage !== 'undefined' ? localStorage.getItem(FM_CHECKBOX_KEY) : null))
+  const filesRef = useRef<HTMLDivElement | null>(null)
+
+  const applyFmCheckbox = (m: CheckboxMode) => {
+    setFmCheckbox(m)
+    localStorage.setItem(FM_CHECKBOX_KEY, m)
+  }
+
+  // 从文件管理的齿轮进来时滚到「文件管理」那一节并短暂高亮(复用 index.css 的 .cfnote-highlight)
+  useEffect(() => {
+    if (focus !== 'files' || loading) return
+    const el = filesRef.current
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('cfnote-highlight')
+    const t = setTimeout(() => el.classList.remove('cfnote-highlight'), 6000)
+    return () => clearTimeout(t)
+  }, [focus, loading])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -527,6 +552,35 @@ export default function SettingsPanel({ token, onClose }: Props) {
                     ⚠️ 通知渠道有未保存的修改。「测试」用的是当前填写的配置,但到期推送用的是<b>已保存</b>的配置——请点右下角「保存」后才会真正生效。
                   </p>
                 )}
+              </div>
+
+              {/* 文件管理(P13.7) */}
+              <div ref={filesRef} className="rounded-xl">
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">文件管理</h3>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  文件列表默认按 Windows 资源管理器的方式多选:单击选中、Ctrl/⌘ 点选、Shift 连选、Ctrl/⌘+A 全选、双击打开。
+                  触屏没有这些修饰键,所以默认会自动显示复选框。
+                </p>
+                {([
+                  { v: 'auto', label: '自动(推荐)', hint: '触屏设备显示复选框,鼠标设备不显示' },
+                  { v: 'on', label: '总是显示', hint: '桌面也显示复选框' },
+                  { v: 'off', label: '从不显示', hint: '触屏上将无法多选' },
+                ] as const).map((o) => (
+                  <label key={o.v} className="flex items-start gap-2 cursor-pointer py-1">
+                    <input
+                      type="radio"
+                      name="fm-checkbox"
+                      checked={fmCheckbox === o.v}
+                      onChange={() => applyFmCheckbox(o.v)}
+                      className="accent-emerald-500 mt-0.5"
+                    />
+                    <span>
+                      <span className="text-sm text-gray-800">{o.label}</span>
+                      <span className="block text-[11px] text-gray-400">{o.hint}</span>
+                    </span>
+                  </label>
+                ))}
+                <p className="text-[11px] text-gray-400 mt-1">该选项只影响这台设备,改完立即生效(不用点保存)。</p>
               </div>
 
               {/* 评论(P11.2) */}

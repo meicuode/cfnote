@@ -41,6 +41,8 @@ export default function Layout({ token, username, onLogout }: Props) {
   const [showImport, setShowImport] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // 设置面板打开后要滚到哪一节(目前只有文件管理右上角的齿轮会用到)
+  const [settingsFocus, setSettingsFocus] = useState<'files' | null>(null)
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
   // 文件管理子视图(P11.6):与 URL 的 ?fm= 同步,侧栏二级菜单与右侧列表共用
@@ -599,7 +601,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             </svg>
           </button>
           <button
-            onClick={() => setShowSettings(!showSettings)}
+            onClick={() => { setSettingsFocus(null); setShowSettings(!showSettings) }}
             className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title="设置"
           >
@@ -671,7 +673,14 @@ export default function Layout({ token, username, onLogout }: Props) {
           /* 文件管理(P11.5):同样内联展示,不再弹窗 */
           <div className="flex-1 overflow-hidden">
             <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
-              <FileManager token={token} onClose={closeFiles} view={fmView} onChangeView={setFmView} fm={fm} />
+              <FileManager
+                token={token}
+                onClose={closeFiles}
+                view={fmView}
+                onChangeView={setFmView}
+                fm={fm}
+                onOpenSettings={() => { setSettingsFocus('files'); setShowSettings(true) }}
+              />
             </Suspense>
           </div>
         ) : (
@@ -759,7 +768,11 @@ export default function Layout({ token, username, onLogout }: Props) {
       )}
 
       {showSettings && (
-        <SettingsPanel token={token} onClose={() => setShowSettings(false)} />
+        <SettingsPanel
+          token={token}
+          focus={settingsFocus}
+          onClose={() => { setShowSettings(false); setSettingsFocus(null) }}
+        />
       )}
 
       {showLogs && (
