@@ -390,7 +390,14 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                   {comments.map((cm) => {
                     const av = commentAvatar(cm.author_name)
                     return (
-                    <li key={cm.id} className="px-3 py-2.5 rounded-lg border border-gray-100">
+                    <li
+                      key={cm.id}
+                      className={`px-3 py-2.5 rounded-lg border transition-colors ${
+                        replyId === cm.id
+                          ? 'bg-emerald-50/60 border-emerald-200'
+                          : 'border-gray-100 hover:bg-gray-50/70 hover:border-gray-200'
+                      }`}
+                    >
                       <div className="flex items-center gap-2 text-sm flex-wrap">
                         {/* 头像占位:与博客页同一套取色(博主固定 emerald) */}
                         <span aria-hidden className="w-6 h-6 shrink-0 rounded-full flex items-center justify-center text-white text-[10px] font-semibold select-none" style={{ backgroundColor: cm.is_admin ? '#10b981' : av.color }}>{av.char}</span>

@@ -3,6 +3,7 @@ import { marked } from '../lib/markdown'
 import { enhanceRendered } from '../lib/renderEnhance'
 import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey, type PendingComment } from '../lib/pendingComments'
 import { commentAvatar } from '../lib/comments'
+import { parseCommentMarkup, type Inline } from '../lib/commentMarkup'
 import { slugifyHeading, tocIndent, MIN_TOC_HEADINGS, type TocItem } from '../lib/toc'
 import {
   defaultLayout, parseBlogLayout, enabledWidgets, hasSide, parseLinks, usableMenu, parseBannerBg,
@@ -193,7 +194,10 @@ function SearchBox({ initial, placeholder, onSubmit }: { initial: string; placeh
 }
 
 // ---- 评论(P11.2)----
-// 正文一律纯文本渲染({c.content} 由 React 自动转义 + whitespace-pre-wrap),不解析 markdown/HTML,杜绝 XSS。
+// 正文走 parseCommentMarkup 的极小 Markdown 子集(P13.9),渲染成**白名单 React 元素**:
+// 文本节点由 React 自动转义,标签集合在 commentMarkup.ts 的 token 类型里枚举死。
+// 永不经过 marked、永不 dangerouslySetInnerHTML——仓库没有 HTML 消毒库。
+// 管理端(BlogManager)刻意仍是纯文本:审核时要看到访客写的原始字符,渲染过的反而藏起了意图。
 interface CommentRowData {
   id: number
   parent_id: number | null
@@ -207,6 +211,66 @@ interface CommentRowData {
 }
 interface CommentThread extends CommentRowData {
   replies: CommentRowData[]
+}
+
+/**
+ * 行内 token → React 元素。这里是白名单的**唯一**出口:能出现的标签就这几个,
+ * 值一律作为文本子节点交给 React(自动转义),href 已在 safeHref 里限死 http/https。
+ */
+function CommentInline({ items }: { items: Inline[] }) {
+  return (
+    <>
+      {items.map((x, i) => {
+        if (x.t === 'strong') return <strong key={i} className="font-semibold">{x.v}</strong>
+        if (x.t === 'em') return <em key={i}>{x.v}</em>
+        if (x.t === 'del') return <del key={i} className="opacity-70">{x.v}</del>
+        if (x.t === 'code') {
+          return (
+            <code key={i} className="px-1 py-0.5 mx-0.5 rounded bg-[var(--blog-panel)] border border-[var(--blog-border)] text-[0.9em] font-mono break-all">
+              {x.v}
+            </code>
+          )
+        }
+        if (x.t === 'link') {
+          // nofollow ugc:访客提交的链接不给权重;noopener noreferrer:不把来源页交出去
+          return (
+            <a key={i} href={x.href} target="_blank" rel="nofollow ugc noopener noreferrer" className="text-[var(--blog-accent-hover)] hover:underline break-all">
+              {x.v}
+            </a>
+          )
+        }
+        return <span key={i}>{x.v}</span>
+      })}
+    </>
+  )
+}
+
+/** 评论正文。useMemo 缓存解析结果:线程重渲染(展开回复、提交新评论)时不重复解析每一条 */
+function CommentBody({ text }: { text: string }) {
+  const blocks = useMemo(() => parseCommentMarkup(text), [text])
+  return (
+    <div className="text-sm text-[var(--blog-text)] mt-1 break-words space-y-1.5">
+      {blocks.map((b, i) => {
+        if (b.t === 'plain') return <p key={i} className="whitespace-pre-wrap">{b.v}</p>
+        if (b.t === 'quote') {
+          return (
+            <blockquote key={i} className="border-l-2 border-[var(--blog-border)] pl-3 text-[var(--blog-muted)] whitespace-pre-wrap">
+              <CommentInline items={b.c} />
+            </blockquote>
+          )
+        }
+        if (b.t === 'ul') {
+          return (
+            <ul key={i} className="list-disc pl-5 space-y-0.5">
+              {b.items.map((it, j) => <li key={j}><CommentInline items={it} /></li>)}
+            </ul>
+          )
+        }
+        // 段落内的单个换行照旧保留(pre-wrap),与改造前逐字一致
+        return <p key={i} className="whitespace-pre-wrap"><CommentInline items={b.c} /></p>
+      })}
+    </div>
+  )
 }
 
 function CommentRow({ c, enabled, onReply, parentName }: {
@@ -235,7 +299,7 @@ function CommentRow({ c, enabled, onReply, parentName }: {
           {parentName && <span className="text-xs text-[var(--blog-muted)]">回复 @{parentName}</span>}
           <span className="text-xs text-[var(--blog-muted)] ml-auto">{fmtFull(c.created_at)}</span>
         </div>
-        <div className="text-sm text-[var(--blog-text)] mt-1 whitespace-pre-wrap break-words">{c.content}</div>
+        <CommentBody text={c.content} />
         {c.pending ? (
           <p className="text-xs text-[var(--blog-muted)] mt-1 italic">你的评论已提交,待博主审核后对其他人可见。</p>
         ) : enabled ? (
@@ -252,6 +316,19 @@ function replyParentName(top: CommentThread, r: CommentRowData): string | undefi
   return top.replies.find((x) => x.id === r.parent_id)?.author_name
 }
 
+// 表情面板(P13.9):emoji 本来就是普通 Unicode 字符,渲染从来就没问题,缺的只是输入方便。
+// 不引第三方 emoji 库——那些动辄几十上百 KB(还常常带一份表情元数据),为一个评论框不值。
+const COMMENT_EMOJI = [
+  '😀', '😄', '😁', '😂', '🤣', '😊', '😍', '🥰',
+  '😘', '😎', '🤔', '😅', '😢', '😭', '😡', '😱',
+  '🤯', '🥲', '😴', '🤗', '🙃', '😏', '🤐', '🥳',
+  '👍', '👎', '👏', '🙏', '💪', '🤝', '✌️', '👌',
+  '❤️', '💔', '💯', '🔥', '✨', '🎉', '🎊', '🌟',
+  '☀️', '🌙', '🌈', '☕', '🍺', '🍰', '🎂', '🍎',
+  '🐱', '🐶', '🦊', '🐼', '🌸', '🌹', '🍀', '🌵',
+  '📌', '📖', '✏️', '💡', '⚡', '🚀', '🎯', '✅',
+]
+
 function CommentsSection({ articleId, enabled }: { articleId: number; enabled: boolean }) {
   const [threads, setThreads] = useState<CommentThread[] | null>(null)
   const [name, setName] = useState(() => localStorage.getItem('cfnote-cmt-name') || '')
@@ -261,6 +338,8 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
   const [replyTo, setReplyTo] = useState<{ id: number; name: string } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [msg, setMsg] = useState('')
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const taRef = useRef<HTMLTextAreaElement>(null)
   // 懒加载(P12.3):评论区永远在正文之后,首屏看不到。滚到附近才拉,
   // 大多数只看文章的读者由此省掉一次 Worker 请求。带 #comment-<id> 锚点进来时必须立即拉,否则锚点无从定位。
   const [wake, setWake] = useState(() => /^#comment-\d+$/.test(window.location.hash))
@@ -321,6 +400,21 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
   const count = threads
     ? threads.reduce((n, t) => n + (t.pending ? 0 : 1) + t.replies.filter((r) => !r.pending).length, 0)
     : 0
+
+  // 插到光标处而不是追加到末尾——想在句中间加个表情是常态。插完把光标放回表情之后
+  const insertEmoji = (em: string) => {
+    const ta = taRef.current
+    const s = ta ? ta.selectionStart : content.length
+    const e = ta ? ta.selectionEnd : content.length
+    const next = content.slice(0, s) + em + content.slice(e)
+    if (next.length > 2000) return
+    setContent(next)
+    setEmojiOpen(false)
+    requestAnimationFrame(() => {
+      ta?.focus()
+      ta?.setSelectionRange(s + em.length, s + em.length)
+    })
+  }
 
   const submit = async () => {
     if (submitting) return
@@ -390,12 +484,42 @@ function CommentsSection({ articleId, enabled }: { articleId: number; enabled: b
             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder="昵称(必填)" className="flex-1 text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[var(--blog-accent)]" />
             <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="邮箱(可选,不公开)" className="flex-1 text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[var(--blog-accent)]" />
           </div>
-          <textarea value={content} onChange={(e) => setContent(e.target.value)} maxLength={2000} rows={3} placeholder="写下你的评论…" className="w-full text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[var(--blog-accent)] resize-y" />
+          <textarea
+            ref={taRef}
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            onFocus={() => setEmojiOpen(false)}
+            maxLength={2000}
+            rows={3}
+            placeholder="写下你的评论…"
+            className="w-full text-sm rounded border border-[var(--blog-border)] bg-[var(--blog-bg)] text-[var(--blog-text)] px-3 py-2 outline-none focus:border-[var(--blog-accent)] resize-y"
+          />
           {/* 蜜罐:视觉移出屏幕,真人看不见;机器人常自动填充 → 后端静默丢弃 */}
           <input value={website} onChange={(e) => setWebsite(e.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" className="absolute -left-[9999px] w-px h-px overflow-hidden" />
-          <div className="flex items-center justify-between mt-2">
-            <span className="text-xs text-[var(--blog-muted)]">{msg}</span>
-            <button onClick={submit} disabled={submitting} className="px-4 py-1.5 rounded bg-[var(--blog-accent)] text-white text-sm hover:bg-[var(--blog-accent-hover)] disabled:opacity-50">
+          <div className="flex items-center justify-between mt-2 gap-2">
+            <div className="relative flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={() => setEmojiOpen((v) => !v)}
+                title="插入表情"
+                className="shrink-0 px-1.5 py-0.5 rounded border border-[var(--blog-border)] hover:bg-[var(--blog-panel)] leading-none"
+              >
+                😊
+              </button>
+              {emojiOpen && (
+                <div className="absolute bottom-full left-0 mb-2 z-10 w-[17rem] max-h-44 overflow-y-auto p-2 grid grid-cols-8 gap-0.5 rounded border border-[var(--blog-border)] bg-[var(--blog-card)] shadow-lg">
+                  {COMMENT_EMOJI.map((em) => (
+                    <button key={em} type="button" onClick={() => insertEmoji(em)} className="text-lg leading-none p-1 rounded hover:bg-[var(--blog-panel)]">
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <span className="text-xs text-[var(--blog-muted)] truncate">
+                {msg || <span className="hidden sm:inline">支持 **粗体** *斜体* ~~删除线~~ `代码` &gt; 引用 - 列表 [文字](链接)</span>}
+              </span>
+            </div>
+            <button onClick={submit} disabled={submitting} className="shrink-0 px-4 py-1.5 rounded bg-[var(--blog-accent)] text-white text-sm hover:bg-[var(--blog-accent-hover)] disabled:opacity-50">
               {submitting ? '提交中…' : replyTo ? '回复' : '发表评论'}
             </button>
           </div>

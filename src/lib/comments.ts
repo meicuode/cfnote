@@ -1,5 +1,7 @@
 // 评论(P11.2)纯逻辑:校验、2 层嵌套夹取、线程组装、蜜罐判定。
-// 前端表单、管理端与 worker 复用;可单测(tests/comments.test.ts)。评论正文一律纯文本展示(不解析 markdown/HTML)。
+// 前端表单、管理端与 worker 复用;可单测(tests/comments.test.ts)。
+// 正文渲染见 commentMarkup.ts(P13.9):博客页走极小 Markdown 子集 → 白名单 React 元素,
+// 管理端仍是纯文本(审核要看原始字符)。两边都永不经过 marked、永不 dangerouslySetInnerHTML。
 
 export type CommentStatus = 'pending' | 'approved' | 'rejected'
 
