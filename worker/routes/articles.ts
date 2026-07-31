@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
-import { syncArticleFiles, purgeUnreferencedAttachments } from './files'
+import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
 import type { AppEnv } from '../types'
@@ -46,24 +46,32 @@ function normalizeTags(input: unknown): string | null {
 
 // 回收站 30 天自动清理(P9):打开回收站时懒执行 + cron 兜底。
 // 附件按引用计数清理(与彻底删除同管线),失败静默下次重试。
+// P14.1:同时清理超期的**笔记本**——先把它名下还在回收站的笔记连同附件清掉,
+// 再删笔记本行。若这本已被恢复(deleted_at 为空)或名下还有活着的笔记,则一律不动。
 export async function purgeExpiredTrash(env: Env): Promise<number> {
   try {
     const { results } = await env.DB.prepare(
       "SELECT id, user_id, content FROM articles WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')"
     ).all<{ id: number; user_id: number; content: string }>()
-    if (!results || results.length === 0) return 0
-    const byUser = new Map<number, { ids: number[]; contents: string[] }>()
-    for (const r of results) {
-      const g = byUser.get(r.user_id) || { ids: [], contents: [] }
-      g.ids.push(r.id)
-      g.contents.push(r.content || '')
-      byUser.set(r.user_id, g)
+    if (results && results.length > 0) {
+      const byUser = new Map<number, { ids: number[]; contents: string[] }>()
+      for (const r of results) {
+        const g = byUser.get(r.user_id) || { ids: [], contents: [] }
+        g.ids.push(r.id)
+        g.contents.push(r.content || '')
+        byUser.set(r.user_id, g)
+      }
+      for (const [uid, g] of byUser) await purgeUnreferencedAttachments(env, uid, g.ids, g.contents)
+      await env.DB.prepare(
+        `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
+      ).bind(...results.map((r) => r.id)).run()
     }
-    for (const [uid, g] of byUser) await purgeUnreferencedAttachments(env, uid, g.ids, g.contents)
+    // 超期且名下已无任何文章的笔记本(此时外键 CASCADE 无事可做)
     await env.DB.prepare(
-      `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
-    ).bind(...results.map((r) => r.id)).run()
-    return results.length
+      `DELETE FROM notebooks WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')
+         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)`
+    ).run()
+    return results ? results.length : 0
   } catch {
     return 0
   }
@@ -78,7 +86,7 @@ articles.post('/', async (c) => {
     }>()
     if (!notebook_id || !title?.trim()) return err('笔记本ID和标题不能为空')
 
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
+    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
       .bind(notebook_id, user.id).first()
     if (!nb) return err('笔记本不存在', 404)
 
@@ -117,7 +125,7 @@ articles.post('/import', async (c) => {
     if (!notebook_id) return err('请选择笔记本')
 
     // Verify notebook belongs to user
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
+    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
       .bind(notebook_id, user.id).first()
     if (!nb) return err('笔记本不存在', 404)
 
@@ -286,6 +294,27 @@ articles.get('/trash', async (c) => {
   }
 })
 
+// GET /api/articles/trash/impact - 清空回收站会连带清掉多少附件(P14.1,只读预检)
+//
+// 只在用户真的点了「清空」、确认框弹出时才请求一次——不占首屏,也不为此常驻一个统计。
+// 「附件跟着一起删」这件事必须在按下不可逆按钮之前看得见,不能等按完了才发现图没了。
+articles.get('/trash/impact', async (c) => {
+  const user = c.get('user')
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT id, content FROM articles WHERE user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(user.id).all<{ id: number; content: string }>()
+    const rows = results || []
+    const impact = await previewPurgeImpact(c.env, user.id, rows.map((r) => r.id), rows.map((r) => r.content || ''))
+    const nb = await c.env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM notebooks WHERE user_id = ? AND deleted_at IS NOT NULL'
+    ).bind(user.id).first<{ c: number }>()
+    return ok({ articles: rows.length, notebooks: nb?.c || 0, files: impact.files, bytes: impact.bytes })
+  } catch (e: any) {
+    return err('预检失败: ' + e.message, 500)
+  }
+})
+
 // POST /api/articles/trash/empty - 清空回收站(彻底删除全部,附件按引用计数清理)
 articles.post('/trash/empty', async (c) => {
   const user = c.get('user')
@@ -293,12 +322,19 @@ articles.post('/trash/empty', async (c) => {
     const { results } = await c.env.DB.prepare(
       'SELECT id, content FROM articles WHERE user_id = ? AND deleted_at IS NOT NULL'
     ).bind(user.id).all<{ id: number; content: string }>()
-    if (!results || results.length === 0) return ok({ purged: 0 })
-    await purgeUnreferencedAttachments(c.env, user.id, results.map((r) => r.id), results.map((r) => r.content || ''))
-    await c.env.DB.prepare(
-      `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
-    ).bind(...results.map((r) => r.id)).run()
-    return ok({ purged: results.length })
+    const rows = results || []
+    if (rows.length > 0) {
+      await purgeUnreferencedAttachments(c.env, user.id, rows.map((r) => r.id), rows.map((r) => r.content || ''))
+      await c.env.DB.prepare(
+        `DELETE FROM articles WHERE id IN (${rows.map(() => '?').join(',')})`
+      ).bind(...rows.map((r) => r.id)).run()
+    }
+    // P14.1:回收站里的笔记本一并清掉(此时名下已无文章,CASCADE 无事可做)
+    const nb = await c.env.DB.prepare(
+      `DELETE FROM notebooks WHERE user_id = ? AND deleted_at IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)`
+    ).bind(user.id).run()
+    return ok({ purged: rows.length, notebooks: nb.meta?.changes ?? 0 })
   } catch (e: any) {
     return err('清空失败: ' + e.message, 500)
   }
@@ -314,23 +350,30 @@ articles.post('/:id/restore', async (c) => {
     ).bind(id, user.id).first<any>()
     if (!article) return err('笔记不在回收站中', 404)
 
-    // 原笔记本因外键级联通常仍在;防御性兜底:不在则落到最近使用的笔记本
+    // 原笔记本可能也在回收站里(P14.1 整本删除)——那就**连带把它一起恢复**。
+    // 否则会出现「笔记本已删、里面却有活笔记」的矛盾态:侧栏看不到这本,笔记也就无处可去。
+    // 笔记本被彻底删掉(旧数据/极端情况)才落到最近使用的那本。
     let targetNb = article.notebook_id
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
-      .bind(targetNb, user.id).first()
+    let restoredNotebook: string | null = null
+    const nb = await c.env.DB.prepare('SELECT id, name, deleted_at FROM notebooks WHERE id = ? AND user_id = ?')
+      .bind(targetNb, user.id).first<{ id: number; name: string; deleted_at: string | null }>()
     if (!nb) {
       const first = await c.env.DB.prepare(
-        'SELECT id FROM notebooks WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1'
+        'SELECT id FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1'
       ).bind(user.id).first<{ id: number }>()
       if (!first) return err('请先创建一个笔记本再恢复')
       targetNb = first.id
+    } else if (nb.deleted_at) {
+      await c.env.DB.prepare("UPDATE notebooks SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?")
+        .bind(nb.id).run()
+      restoredNotebook = nb.name
     }
 
     await c.env.DB.batch([
       c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, notebook_id = ?, updated_at = datetime('now') WHERE id = ?")
         .bind(targetNb, article.id),
-      c.env.DB.prepare("UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime('now') WHERE id = ?")
-        .bind(targetNb),
+      c.env.DB.prepare('UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL) WHERE id = ?')
+        .bind(targetNb, targetNb),
     ])
 
     // 重建向量索引(软删除时已清):失败不阻塞恢复,可由 reindex 补
@@ -339,7 +382,7 @@ articles.post('/:id/restore', async (c) => {
       vectorize_error = await vectorizeArticle(c.env, article.id, user.id, targetNb, article.title, article.content)
     }
     const updated = await c.env.DB.prepare('SELECT * FROM articles WHERE id = ?').bind(article.id).first()
-    return ok({ ...updated as any, vectorize_error })
+    return ok({ ...updated as any, vectorize_error, restored_notebook: restoredNotebook })
   } catch (e: any) {
     return err('恢复失败: ' + e.message, 500)
   }
@@ -552,7 +595,7 @@ articles.put('/:id', async (c) => {
 
     // If moving to another notebook, verify ownership
     if (notebook_id && notebook_id !== article.notebook_id) {
-      const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ?')
+      const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
         .bind(notebook_id, user.id).first()
       if (!nb) return err('目标笔记本不存在', 404)
       await c.env.DB.batch([

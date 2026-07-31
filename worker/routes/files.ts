@@ -99,38 +99,108 @@ export async function anonReadable(env: AppEnv['Bindings'], key: string): Promis
 }
 
 /**
- * 删除文章(或整本笔记本)时的引用计数清理:先删这些文章的索引行,
- * 引用归零且未被收入文件管理目录(folder_id 为空)的附件,连同边车缩略图一起清 R2。
- * 修复旧行为的两个问题:共用附件被误删、xmind 边车缩略图残留。
+ * 一批文章被**彻底删除**后,哪些附件会变成孤儿(可以从 R2 清掉)。
+ *
+ * 三档判定,与 P8 定下的语义一致:
+ *  1. 还被别的文章引用(**包括回收站里的**,它们可能被恢复)→ 留
+ *  2. 引用归零但已归入文件管理目录(`folder_id` 非空)→ 留。一旦你把文件收进了文件夹,
+ *     它就从「某篇笔记的附身之物」变成了「你主动收藏的资产」,删笔记不该带走它;
+ *     它会落到「未引用」视图里等你自己处置。
+ *  3. 引用归零且从没归过文件夹(随手粘进笔记的那张图)→ 可清
+ *
+ * 集合查询而不是逐 key 循环:清空一个 200 篇 × 5 附件的回收站,老写法是约 3000 次
+ * 串行 D1 往返,很容易撞上 Worker 的挂钟上限。占位符按 200 分片,避免撞 SQLite 的绑定参数上限。
+ */
+const IN_CHUNK = 200
+
+function chunked<T>(list: T[], size = IN_CHUNK): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
+  return out
+}
+
+export async function orphanKeysAfterPurge(
+  env: AppEnv['Bindings'], userId: number, articleIds: number[], contents: string[],
+): Promise<string[]> {
+  const candidates = new Set<string>()
+  for (const ct of contents) {
+    for (const k of parseFileRefs(ct || '', userId).keys) candidates.add(k)
+  }
+  for (const ids of chunked(articleIds)) {
+    const { results } = await env.DB.prepare(
+      `SELECT DISTINCT file_key FROM article_files WHERE article_id IN (${ids.map(() => '?').join(',')})`
+    ).bind(...ids).all<{ file_key: string }>()
+    for (const r of results || []) candidates.add(r.file_key)
+  }
+  if (candidates.size === 0) return []
+
+  // ① 这些 key 里,还被「不在本次删除集合内」的文章引用的,一律留下
+  const doomed = new Set(articleIds)
+  const keys = [...candidates]
+  const survivors = new Set<string>()
+  for (const part of chunked(keys)) {
+    const { results } = await env.DB.prepare(
+      `SELECT file_key, article_id FROM article_files WHERE file_key IN (${part.map(() => '?').join(',')})`
+    ).bind(...part).all<{ file_key: string; article_id: number }>()
+    for (const r of results || []) {
+      if (!doomed.has(r.article_id)) survivors.add(r.file_key)
+    }
+  }
+  // ② 已归入文件夹的也留下
+  for (const part of chunked(keys)) {
+    const { results } = await env.DB.prepare(
+      `SELECT key FROM files WHERE folder_id IS NOT NULL AND key IN (${part.map(() => '?').join(',')})`
+    ).bind(...part).all<{ key: string }>()
+    for (const r of results || []) survivors.add(r.key)
+  }
+  return keys.filter((k) => !survivors.has(k))
+}
+
+/** 清空回收站/彻底删除前的影响预览:会清掉几个附件、共多大(不改任何数据) */
+export async function previewPurgeImpact(
+  env: AppEnv['Bindings'], userId: number, articleIds: number[], contents: string[],
+): Promise<{ files: number; bytes: number }> {
+  try {
+    const keys = await orphanKeysAfterPurge(env, userId, articleIds, contents)
+    if (keys.length === 0) return { files: 0, bytes: 0 }
+    let bytes = 0
+    for (const part of chunked(keys)) {
+      const { results } = await env.DB.prepare(
+        `SELECT size FROM files WHERE key IN (${part.map(() => '?').join(',')})`
+      ).bind(...part).all<{ size: number }>()
+      for (const r of results || []) bytes += Number(r.size) || 0
+    }
+    return { files: keys.length, bytes }
+  } catch {
+    return { files: 0, bytes: 0 }
+  }
+}
+
+/**
+ * 彻底删除文章时的引用计数清理:先算出孤儿 key,删掉这些文章的索引行与 files 登记,
+ * 再连同 xmind 边车缩略图一起清 R2。判定规则见 orphanKeysAfterPurge。
+ *
+ * 注意:**软删除(移入回收站)不走这里**——回收站里的笔记算活着的引用,
+ * 它的附件在文件管理里照常存在,否则「可逆」的回收站会把还活着的笔记弄成死链。
  */
 export async function purgeUnreferencedAttachments(
   env: AppEnv['Bindings'], userId: number, articleIds: number[], contents: string[],
 ): Promise<void> {
   try {
-    const candidates = new Set<string>()
-    for (const ct of contents) {
-      for (const k of parseFileRefs(ct || '', userId).keys) candidates.add(k)
+    const orphans = await orphanKeysAfterPurge(env, userId, articleIds, contents)
+    for (const ids of chunked(articleIds)) {
+      await env.DB.prepare(
+        `DELETE FROM article_files WHERE article_id IN (${ids.map(() => '?').join(',')})`
+      ).bind(...ids).run()
     }
-    if (articleIds.length > 0) {
-      const ph = articleIds.map(() => '?').join(',')
-      const { results } = await env.DB.prepare(
-        `SELECT DISTINCT file_key FROM article_files WHERE article_id IN (${ph})`
-      ).bind(...articleIds).all<{ file_key: string }>()
-      for (const r of results || []) candidates.add(r.file_key)
-      await env.DB.prepare(`DELETE FROM article_files WHERE article_id IN (${ph})`).bind(...articleIds).run()
-    }
-    if (candidates.size === 0) return
-
-    const toDelete: string[] = []
-    for (const key of candidates) {
-      const stillRef = await env.DB.prepare('SELECT 1 FROM article_files WHERE file_key = ? LIMIT 1').bind(key).first()
-      if (stillRef) continue
-      const row = await env.DB.prepare('SELECT id, folder_id FROM files WHERE key = ?').bind(key).first<{ id: number; folder_id: number | null }>()
-      if (row && row.folder_id != null) continue // 已收入文件管理目录:视为独立资产,不随文清理
-      toDelete.push(key, key + SIDECAR_SUFFIX)
-      if (row) await env.DB.prepare('DELETE FROM files WHERE id = ?').bind(row.id).run()
+    if (orphans.length === 0) return
+    for (const part of chunked(orphans)) {
+      await env.DB.prepare(
+        `DELETE FROM files WHERE key IN (${part.map(() => '?').join(',')})`
+      ).bind(...part).run()
     }
     if (env.BUCKET) {
+      const toDelete = orphans.flatMap((k) => [k, k + SIDECAR_SUFFIX])
       for (let i = 0; i < toDelete.length; i += 500) {
         try { await env.BUCKET.delete(toDelete.slice(i, i + 500)) } catch { /* 静默:残留只占容量 */ }
       }

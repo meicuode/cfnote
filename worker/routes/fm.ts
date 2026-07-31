@@ -134,12 +134,15 @@ fm.get('/files/:id/refs', async (c) => {
     const f = await c.env.DB.prepare('SELECT key FROM files WHERE id = ? AND user_id = ?')
       .bind(c.req.param('id'), user.id).first<{ key: string }>()
     if (!f) return err('文件不存在', 404)
+    // P14.1:**包含回收站里的笔记**。它们本来就计进上面那个 ref_count(也正是它们让这个文件
+    // 不被自动清理),此前这里却把它们滤掉了——于是会出现「显示 1 篇笔记引用,点开却说没有引用」。
+    // 回收站里的引用带 deleted_at,由前端标一个徽标说明它为什么还占着。
     const { results } = await c.env.DB.prepare(
-      `SELECT a.id, a.title, a.is_public, a.is_private, a.updated_at, n.name AS notebook
+      `SELECT a.id, a.title, a.is_public, a.is_private, a.deleted_at, a.updated_at, n.name AS notebook
        FROM article_files af
        JOIN articles a ON a.id = af.article_id
        LEFT JOIN notebooks n ON n.id = a.notebook_id
-       WHERE af.file_key = ? AND a.deleted_at IS NULL ORDER BY a.updated_at DESC LIMIT 50`
+       WHERE af.file_key = ? ORDER BY a.deleted_at IS NOT NULL, a.updated_at DESC LIMIT 50`
     ).bind(f.key).all()
     return ok({ refs: results || [] })
   } catch (e: any) {

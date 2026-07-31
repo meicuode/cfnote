@@ -16,7 +16,7 @@ stats.get('/', async (c) => {
   try {
     // 1. D1 counts
     const [notebookRow, articleRow, vectorizedRow] = await Promise.all([
-      env.DB.prepare('SELECT COUNT(*) as c FROM notebooks').first<{ c: number }>(),
+      env.DB.prepare('SELECT COUNT(*) as c FROM notebooks WHERE deleted_at IS NULL').first<{ c: number }>(),
       env.DB.prepare('SELECT COUNT(*) as c FROM articles WHERE deleted_at IS NULL').first<{ c: number }>(),
       env.DB.prepare('SELECT COUNT(*) as c FROM articles WHERE is_vectorized = 1').first<{ c: number }>(),
     ])

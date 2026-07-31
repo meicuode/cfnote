@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run --project unit",
-    "test:worker": "vitest run --project worker"
+    "test:worker": "vitest run --project worker",
+    "typecheck": "tsc --noEmit -p tsconfig.tests.json"
   },
   "cloudflare": {
     "bindings": {
@@ -56,6 +57,7 @@
     "@tailwindcss/vite": "^4.2.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@types/node": "^22.19.0",
     "@types/turndown": "^5.0.6",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.1",

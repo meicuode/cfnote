@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useApi } from '../hooks/useApi'
 import Sidebar from './Sidebar'
-import ArticleList from './ArticleList'
+import ArticleList, { type TrashNotebook, type TrashImpact } from './ArticleList'
 import ArticleEditor from './ArticleEditor'
 import SearchPanel from './SearchPanel'
 import StatsPanel from './StatsPanel'
@@ -430,7 +430,21 @@ export default function Layout({ token, username, onLogout }: Props) {
     }
   }
 
-  // ---- P9 回收站与置顶 ----
+  // ---- P9 回收站与置顶(P14.1 加入笔记本)----
+
+  // 回收站里的笔记本:只在回收站视图里用,进入该视图时拉一次
+  const [trashNotebooks, setTrashNotebooks] = useState<TrashNotebook[]>([])
+  const inTrash = activeNotebook?.id === TRASH_NOTEBOOK.id
+
+  const loadTrashNotebooks = useCallback(async () => {
+    const res = await get('/notebooks/trash')
+    setTrashNotebooks(res.ok && Array.isArray(res.data) ? res.data as TrashNotebook[] : [])
+  }, [get])
+
+  useEffect(() => {
+    if (inTrash) loadTrashNotebooks()
+    else setTrashNotebooks([])
+  }, [inTrash, loadTrashNotebooks])
 
   const restoreArticle = async (id: number) => {
     const res = await post(`/articles/${id}/restore`, {})
@@ -439,6 +453,8 @@ export default function Layout({ token, username, onLogout }: Props) {
       if (activeNotebook) loadArticles(activeNotebook)
       loadNotebooks()
       loadTags()
+      // 原笔记本可能被连带恢复了,回收站里那一行要跟着消失
+      if (inTrash) loadTrashNotebooks()
     }
     return res
   }
@@ -459,9 +475,37 @@ export default function Layout({ token, username, onLogout }: Props) {
       setActiveArticle(null)
       if (activeNotebook) loadArticles(activeNotebook)
       loadTags()
+      loadTrashNotebooks()
     }
     return res
   }
+
+  const restoreNotebook = async (id: number) => {
+    const res = await post(`/notebooks/${id}/restore`, {})
+    if (res.ok) {
+      if (activeNotebook) loadArticles(activeNotebook)
+      loadNotebooks()
+      loadTags()
+      loadTrashNotebooks()
+    }
+    return res
+  }
+
+  const purgeNotebook = async (id: number) => {
+    const res = await del(`/notebooks/${id}/purge`)
+    if (res.ok) {
+      setActiveArticle(null)
+      if (activeNotebook) loadArticles(activeNotebook)
+      loadTags()
+      loadTrashNotebooks()
+    }
+    return res
+  }
+
+  const trashImpact = useCallback(async (): Promise<TrashImpact | null> => {
+    const res = await get('/articles/trash/impact')
+    return res.ok ? (res.data as TrashImpact) : null
+  }, [get])
 
   const togglePin = async (a: Article) => {
     const res = await put(`/articles/${a.id}`, { pinned: a.pinned ? 0 : 1 })
@@ -691,7 +735,8 @@ export default function Layout({ token, username, onLogout }: Props) {
             activeArticle={activeArticle}
             notebookName={activeNotebook?.name}
             virtual={!!activeNotebook && activeNotebook.id < 0}
-            trash={activeNotebook?.id === TRASH_NOTEBOOK.id}
+            trash={inTrash}
+            trashNotebooks={trashNotebooks}
             deletingId={deletingArticleId}
             onSelect={openArticle}
             onCreate={createArticle}
@@ -701,6 +746,9 @@ export default function Layout({ token, username, onLogout }: Props) {
             onPurge={purgeArticle}
             onEmptyTrash={emptyTrash}
             onTogglePin={togglePin}
+            onRestoreNotebook={restoreNotebook}
+            onPurgeNotebook={purgeNotebook}
+            onTrashImpact={trashImpact}
           />
           {/* 列表右缘拖拽条:调整列表/正文分配 */}
           <div

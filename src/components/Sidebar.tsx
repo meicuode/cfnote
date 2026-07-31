@@ -301,8 +301,9 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
 
       {confirmId !== null && (
         <ConfirmDialog
-          title="删除此笔记本？"
-          message="其中的所有文章及其向量索引、附件引用将被彻底删除(不进入回收站),此操作不可撤销。"
+          title="把此笔记本移入回收站？"
+          message="其中的笔记会一并移入回收站,30 天内可整本恢复(向量索引即时移除,公开与置顶取消)。附件不会被删除——要等彻底清除时才按引用计数清理。"
+          confirmText="移入回收站"
           onConfirm={() => { const id = confirmId; setConfirmId(null); onDelete(id) }}
           onCancel={() => setConfirmId(null)}
         />

@@ -133,6 +133,7 @@ CREATE TABLE notebooks (
   description TEXT DEFAULT '',
   color TEXT DEFAULT '#10B981',
   article_count INTEGER DEFAULT 0,
+  deleted_at TEXT,                    -- P14.1 回收站软删除时间戳（30 天后清理）；非空即从侧栏隐藏
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -315,12 +316,14 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET/POST/PUT/DELETE | `/api/notebooks[/:id]` | 笔记本 CRUD（删除级联文章+向量） |
+| GET/POST/PUT/DELETE | `/api/notebooks[/:id]` | 笔记本 CRUD（DELETE 为**软删除**，连同其中笔记一起进回收站，P14.1） |
+| GET | `/api/notebooks/trash`、POST `/:id/restore`、DELETE `/:id/purge` | 回收站中的笔记本 / 整本恢复（连带其中笔记）/ 彻底删除（附件走引用计数） |
 | GET | `/api/notebooks/:id/articles` | 笔记本下文章列表（置顶优先） |
 | POST | `/api/articles` | 创建（自动向量化） |
 | GET/PUT/DELETE | `/api/articles/:id` | 详情 / 更新（内容变则重向量化）/ 软删除入回收站 |
 | POST | `/api/articles/import` | URL 导入（Jina Reader） |
 | GET | `/api/articles/private` `/published` `/tags` `/by-tag` `/trash` | 私有 / 已公开(博客管理,按 updated_at 降序) / 标签聚合 / 按标签 / 回收站视图 |
+| GET | `/api/articles/trash/impact` | 清空回收站的只读预检：会连带清掉几个附件、共多大（P14.1） |
 | POST | `/api/articles/trash/empty`、`/:id/restore`、DELETE `/:id/purge` | 清空/恢复/彻底删除 |
 | GET | `/api/articles/titles?q=`、`/:id/backlinks` | 笔记链接标题搜索 / 反向链接 |
 | GET | `/api/articles/:id/versions[/:vid]` | 版本历史列表（元信息）/ 单版本全文 |
@@ -525,6 +528,8 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 2. **存储隔离是按测试文件的，不按 `it` 回滚**（0.19 起 `isolatedStorage` 不再是可配置项）。所以夹具里有 `dropAll()`，每个用例先把库丢干净。它必须**多轮重试**：D1 的 `foreign_keys` 常开且不允许 `PRAGMA` 关掉，先丢父表 `users` 再丢带 `REFERENCES users(id)` 的子表会报 `no such table: main.users`；与其硬编码依赖顺序（加一张表就要记得改），不如失败的留到下一轮。
 3. **`ensureSchema` 的 memo 是模块级的**（每个 isolate 只真跑一次），所以「老库迁移」这类断言一个文件里只放一个 `it`。这条测试必须**直接调** `ensureSchema` 而不是靠发请求触发——中间件里那次是 `.catch(() => {})` 吞掉的，吞掉的异常测不出来，而这正是「SCHEMA 加了列、migrate 也加了列」时 `duplicate column name` 的翻车点。
 4. **另有一道静态锁** `tests/schema.test.ts`：按文本比对 `system.ts` 的 `SCHEMA` 与 `migrate.ts` 的幂等语句（列与表两个方向）。它证明的是两份定义一致，不是 SQLite 能接受这份 DDL——后者由 e2e 在真 D1 上跑。两者都要，因为漏改任何一边都不会立刻报错。
+5. **类型检查此前不覆盖 `tests/`**（`tsconfig.json` 的 `include` 只有 `src`/`worker`），改了函数签名时类型检查一声不吭、要跑到 vitest 才炸。现在多一份 `tsconfig.tests.json`（`npm run typecheck`）把 `tests` 也纳入，`cloudflare:test` 的类型走 `@cloudflare/vitest-pool-workers/types` 子路径。**主 `tsconfig.json` 保持不变**——`npm run build` 用的是它，不该让生产构建依赖测试文件能否编译。绑定类型要自己声明（`tests/env.d.ts`），而 **0.19 起 `env` 的类型是 `Cloudflare.Env` 而不是旧文档里的 `ProvidedEnv`**：照抄旧写法 `declare module 'cloudflare:test' { interface ProvidedEnv … }` 不会报错、但完全不生效，`env.DB` 照旧是类型错误。文件里有 `import` 就是模块，所以增强全局命名空间必须包一层 `declare global`。顺带这道检查一开就抓出一处：应用里 `BUCKET?` 是可选的（生产可能没配 R2），测试代码却直接用——在测试的 Env 里收窄为必填，而不是到处加判空（那会把「真的没拿到 bucket」和「类型上可能没有」混成一件事）。
+6. **`PRAGMA table_info` 对不存在的表返回 0 行而不报错**（P14.1 踩到）。给已有表补列前必须判空，否则 `ALTER TABLE` 直接撞 `no such table`；而 `ensureSchema` 的异常在 `worker/index.ts` 里被吞掉，抛在中途会让它**后面所有迁移步骤静默不执行**。`migrate.ts` 从不建 `notebooks`（那是 `/api/init` 的事），只给已存在的表补列。
 
 ## 12. Cloudflare 资源配置（wrangler.toml）
 
@@ -570,8 +575,9 @@ bucket_name = "cfnote-files"      # 需先在 Dashboard 开通 R2
 2. **内容哈希去重**：仅内容实际变化才重新向量化，避免重复消耗 neurons。
 3. **搜索模式分离**：默认混合搜索仅消耗嵌入 neurons；AI 问答用户主动触发才消耗 LLM。
 4. **附件私密性**：能力 URL + 访问分级 + 私密文件夹一票否决；取消公开后新访客约 5 分钟内失效（已看过的浏览器缓存不可收回，属预期不可逆）。
-5. **删除语义**：单篇删除进回收站（软删除，30 天可恢复）；删除整本笔记本因 `ON DELETE CASCADE` 外键仍为彻底删除（弹窗注明）。
-6. **版本历史保留**：内容变更保存时快照提交版本；「同小时合并」在 SQL 侧判定（每篇每小时至多一版），保留策略（最近若干版全留 + 更早每自然日一版 + 硬上限）由 `src/lib/versionRetention.ts` 纯函数算出待删 id，控制 D1 占用；文章硬删除时版本随 `ON DELETE CASCADE` 清除。
-7. **提醒推送渠道**：Telegram / 企业微信 / 飞书 / 钉钉 / Server酱 / 自定义 Webhook 统一为「一个 URL + 一段 JSON」，纯逻辑（类型/字段/请求构造/**凭据掩码与合并**）在 `src/lib/notifyChannels.ts`（前端表单与单测复用），实际 fetch 与钉钉/飞书 HMAC 加签在 `worker/routes/notify.ts`。配置以 JSON 存 `settings.notify_channels`（含 token/webhook，**不导出**）；`*/5` cron 扫 `datetime(remind_at) <= now AND reminded_at IS NULL` 的笔记逐条推送后置 `reminded_at` 防重发，`scheduled` 按 `event.cron` 分支（高频跑提醒、月度跑归档/清理）。**凭据不回显（P12.10）**：settings 表的掩码是按**键名**匹配 `/key|token|secret/` 的，而这些渠道全挤在 `notify_channels` 一个键里，此前整块 JSON 明文下发；现在按**字段**掩码——token/sendkey/加签密钥，以及企业微信、钉钉的 Webhook 地址（`?key=` / `?access_token=` 就在 URL 里，那串地址本身就是凭据），`chat_id` 不遮（拿到也发不了消息，遮了反而看不出配给哪个会话）。写回不能像标量那样「整键跳过」——同一份 JSON 里还有 `enabled` 等要保存的改动，故 `mergeMaskedChannels` 按 id 逐字段合并；`/api/notify/test` 走同一个合并，否则测试会把 `****` 当 token 发出去。
-8. **安全基线**：密码 PBKDF2 + 随机盐；`JWT_SECRET` 存 Secret 不硬编码；除免登录项外所有 API 经中间件验证 JWT；导出文件排除 `*_api_key`、`notify_channels` 等敏感项。**博客自定义脚本（P12.12）是个例外**：它明确允许博主注入任意 JS，安全性由博主自负、我们只做提醒——但边界是硬的（不注入管理端/预览/私密分享页、有 `?nojs=1` 逃生阀、主题导入导出永不携带 JS），因为博客与 `/api/*` 同源，一段被投毒的第三方脚本能带着登录 cookie 读走整个知识库。
-9. **Workers CPU 限制**：AI/DB 调用为 I/O 等待不计 CPU；实际 CPU 操作（JSON/字符串处理）远低于限额。
+5. **删除语义（P14.1 起全部可逆）**：单篇与**整本笔记本**都是软删除，30 天内可恢复。笔记本此前是硬删——清向量 → **立即**清 R2 附件 → `DELETE FROM notebooks` 靠外键 CASCADE 带走全部文章，一次误点两百篇笔记连同图片一起消失，回收站里什么都不留；这是整个知识库里唯一一处不可逆的破坏性操作。改法是给 `notebooks` 加 `deleted_at`：**只要永远不 DELETE 那一行，CASCADE 就永远不会触发**，因此不必去改外键约束（那要重建表，违反「只做增量幂等」）。附件的三档判定见下一条。
+6. **附件与回收站的关系**：软删除（进回收站）**完全不碰附件**——`article_files` 行保留、R2 一个字节不动。附件是多对多的：同一张图可能被三篇笔记引用而只有一篇进了回收站，「附件跟着进回收站」要么让文件在文件管理里消失（另外两篇活着的笔记当场变死链，可逆的回收站反而把活着的东西弄坏了），要么只是个不影响任何行为的装饰标记。正确语义是**附件的生死只看还有没有活着的引用，而回收站里的笔记算活着的引用**（它可能被恢复）。彻底删除时（单篇 purge / 清空回收站 / 30 天 cron / 笔记本 purge，同一条管线）按三档判定：① 还被别的文章引用 → 留；② 引用归零但 `folder_id` 非空 → 留，落到「未引用」视图（一旦收进文件夹它就从「某篇笔记的附身之物」变成「你主动收藏的资产」）；③ 引用归零且从没归过文件夹 → 连同 xmind 边车一起清 R2。判定抽成 `orphanKeysAfterPurge()`，**清空前的只读预检 `GET /api/articles/trash/impact` 与真正的清理共用它**，确认框里那句「将清理 N 个附件（共 X）」因此不会和实际结果对不上。该函数同时从逐 key 循环改成集合查询：清空一个 200 篇 × 5 附件的回收站，老写法是约 3000 次串行 D1 往返，很容易撞上 Worker 的挂钟上限。
+7. **版本历史保留**：内容变更保存时快照提交版本；「同小时合并」在 SQL 侧判定（每篇每小时至多一版），保留策略（最近若干版全留 + 更早每自然日一版 + 硬上限）由 `src/lib/versionRetention.ts` 纯函数算出待删 id，控制 D1 占用；文章硬删除时版本随 `ON DELETE CASCADE` 清除。
+8. **提醒推送渠道**：Telegram / 企业微信 / 飞书 / 钉钉 / Server酱 / 自定义 Webhook 统一为「一个 URL + 一段 JSON」，纯逻辑（类型/字段/请求构造/**凭据掩码与合并**）在 `src/lib/notifyChannels.ts`（前端表单与单测复用），实际 fetch 与钉钉/飞书 HMAC 加签在 `worker/routes/notify.ts`。配置以 JSON 存 `settings.notify_channels`（含 token/webhook，**不导出**）；`*/5` cron 扫 `datetime(remind_at) <= now AND reminded_at IS NULL` 的笔记逐条推送后置 `reminded_at` 防重发，`scheduled` 按 `event.cron` 分支（高频跑提醒、月度跑归档/清理）。**凭据不回显（P12.10）**：settings 表的掩码是按**键名**匹配 `/key|token|secret/` 的，而这些渠道全挤在 `notify_channels` 一个键里，此前整块 JSON 明文下发；现在按**字段**掩码——token/sendkey/加签密钥，以及企业微信、钉钉的 Webhook 地址（`?key=` / `?access_token=` 就在 URL 里，那串地址本身就是凭据），`chat_id` 不遮（拿到也发不了消息，遮了反而看不出配给哪个会话）。写回不能像标量那样「整键跳过」——同一份 JSON 里还有 `enabled` 等要保存的改动，故 `mergeMaskedChannels` 按 id 逐字段合并；`/api/notify/test` 走同一个合并，否则测试会把 `****` 当 token 发出去。
+9. **安全基线**：密码 PBKDF2 + 随机盐；`JWT_SECRET` 存 Secret 不硬编码；除免登录项外所有 API 经中间件验证 JWT；导出文件排除 `*_api_key`、`notify_channels` 等敏感项。**博客自定义脚本（P12.12）是个例外**：它明确允许博主注入任意 JS，安全性由博主自负、我们只做提醒——但边界是硬的（不注入管理端/预览/私密分享页、有 `?nojs=1` 逃生阀、主题导入导出永不携带 JS），因为博客与 `/api/*` 同源，一段被投毒的第三方脚本能带着登录 cookie 读走整个知识库。
+10. **Workers CPU 限制**：AI/DB 调用为 I/O 等待不计 CPU；实际 CPU 操作（JSON/字符串处理）远低于限额。

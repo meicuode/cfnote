@@ -51,6 +51,8 @@ interface RefItem {
   title: string
   is_public: number
   is_private: number
+  /** 非空表示这篇笔记在回收站里(P14.1)。它仍然算一个引用——正因如此这个文件不会被自动清理 */
+  deleted_at: string | null
   updated_at: string
   notebook: string | null
 }
@@ -1017,12 +1019,19 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => window.open(`/?article=${r.id}`, '_blank', 'noopener')}
-                        className="truncate flex-1 text-left text-sm text-gray-700 hover:text-emerald-600 hover:underline"
+                        className={`truncate flex-1 text-left text-sm hover:text-emerald-600 hover:underline ${r.deleted_at ? 'text-gray-400 line-through' : 'text-gray-700'}`}
                         title="在新窗口打开这篇笔记"
                       >
                         {r.title}
                       </button>
-                      {r.is_private ? (
+                      {r.deleted_at ? (
+                        <span
+                          className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 shrink-0"
+                          title="这篇笔记在回收站里,但它仍然算一个引用——所以这个文件不会被自动清理。等它被彻底删除后才会重新判定"
+                        >
+                          🗑 回收站
+                        </span>
+                      ) : r.is_private ? (
                         <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 shrink-0">私有</span>
                       ) : r.is_public ? (
                         <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">公开</span>
@@ -1116,7 +1125,8 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
           title={`删除「${deleteTarget.file.name}」？`}
           message={
             deleteTarget.refs.length > 0
-              ? `该文件仍被 ${deleteTarget.refs.length} 篇笔记引用(${deleteTarget.refs.slice(0, 3).map((r) => `《${r.title}》`).join('、')}${deleteTarget.refs.length > 3 ? ' 等' : ''}),删除后这些笔记中的链接将失效,且不可恢复。`
+              ? `该文件仍被 ${deleteTarget.refs.length} 篇笔记引用(${deleteTarget.refs.slice(0, 3).map((r) => `《${r.title}》`).join('、')}${deleteTarget.refs.length > 3 ? ' 等' : ''}),删除后这些笔记中的链接将失效,且不可恢复。` +
+                (deleteTarget.refs.some((r) => r.deleted_at) ? '其中含回收站里的笔记——它们恢复后同样会变成死链。' : '')
               : '文件将从存储中删除,不可恢复。'
           }
           confirmText={deleteTarget.refs.length > 0 ? '仍要删除' : '删除'}

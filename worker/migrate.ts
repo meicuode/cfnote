@@ -102,6 +102,14 @@ const COMMENT_COLUMNS: Record<string, string> = {
   user_agent: 'ALTER TABLE comments ADD COLUMN user_agent TEXT',
 }
 
+// P14.1 笔记本软删除。此前删笔记本是硬删 + 外键 CASCADE,连带把 R2 上的附件也当场清了,
+// 回收站里什么都留不下——整个知识库里唯一一处不可逆的破坏性操作。
+// 加这一列之后就不必去动 articles 对 notebooks 的 ON DELETE CASCADE 外键(那要重建表,
+// 违反「只做增量幂等」的约定):只要永远不 DELETE notebooks 那一行,CASCADE 就永远不会触发。
+const NOTEBOOK_COLUMNS: Record<string, string> = {
+  deleted_at: 'ALTER TABLE notebooks ADD COLUMN deleted_at TEXT',
+}
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -143,5 +151,16 @@ async function doEnsure(env: Env): Promise<void> {
   const cmtHave = new Set((cmtCols || []).map((r) => r.name))
   for (const [col, sql] of Object.entries(COMMENT_COLUMNS)) {
     if (!cmtHave.has(col)) await env.DB.prepare(sql).run()
+  }
+  // P14.1 笔记本软删除列(旧库补;全新库由 system.ts SCHEMA 直接带出)。
+  // migrate.ts 从不建 notebooks 表(那是 /api/init 的事),只给已存在的表补列——
+  // PRAGMA 对不存在的表返回 0 行而**不报错**,不判空就会直接撞上 "no such table";
+  // 而 ensureSchema 的异常在 index.ts 里是被吞掉的,抛在这里会让它后面的步骤全部不执行。
+  const { results: nbCols } = await env.DB.prepare('PRAGMA table_info(notebooks)').all<{ name: string }>()
+  if (nbCols && nbCols.length > 0) {
+    const nbHave = new Set(nbCols.map((r) => r.name))
+    for (const [col, sql] of Object.entries(NOTEBOOK_COLUMNS)) {
+      if (!nbHave.has(col)) await env.DB.prepare(sql).run()
+    }
   }
 }

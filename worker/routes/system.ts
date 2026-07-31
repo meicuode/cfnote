@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS notebooks (
   description TEXT DEFAULT '',
   color TEXT DEFAULT '#10B981',
   article_count INTEGER DEFAULT 0,
+  deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -320,7 +321,7 @@ system.get('/export', async (c) => {
   const withVersions = c.req.query('versions') === '1'
   try {
     const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows, commentRows, versionRows] = await Promise.all([
-      c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? ORDER BY id').bind(user.id).all(),
+      c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
       // P12.11 补上博客那一层:此前只导正文,恢复之后所有文章都变回未公开、浏览数归零
       c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, COALESCE(is_page, 0) AS is_page, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
       c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
@@ -413,7 +414,7 @@ system.post('/import', async (c) => {
     ).bind(user.id).all<{ id: number; title: string; content_hash: string }>()
     // 值是本库文章 id:评论要按「备份里的 article_id → 本库 id」重挂;
     // 跳过的重复文章同样要进这张表,否则它们的评论会全丢
-    const existingKeys = new Map(existingArts.map((a) => [`${a.title} ${a.content_hash}`, a.id]))
+    const existingKeys = new Map(existingArts.map((a) => [`${a.title}${a.content_hash}`, a.id]))
 
     const artMap = new Map<number, number>() // 备份中的文章 id -> 本库 id
 
@@ -426,7 +427,7 @@ system.post('/import', async (c) => {
       if (!nbId || typeof a?.title !== 'string' || !a.title) { skipped++; continue }
       const content = typeof a.content === 'string' ? a.content : ''
       const hash = await contentHash(content)
-      const key = `${a.title} ${hash}`
+      const key = `${a.title}${hash}`
       if (existingKeys.has(key)) {
         const dup = existingKeys.get(key)
         if (dup !== undefined && dup > 0 && typeof a.id === 'number') artMap.set(a.id, dup)

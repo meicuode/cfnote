@@ -22,6 +22,18 @@ const OLD_ARTICLES = `CREATE TABLE articles (
   updated_at TEXT DEFAULT (datetime('now'))
 )`
 
+// P14.1 之前的 notebooks:没有 deleted_at
+const OLD_NOTEBOOKS = `CREATE TABLE notebooks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  color TEXT DEFAULT '#10B981',
+  article_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`
+
 async function columnsOf(table: string): Promise<Set<string>> {
   const { results } = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>()
   return new Set((results || []).map((r) => r.name))
@@ -30,8 +42,10 @@ async function columnsOf(table: string): Promise<Set<string>> {
 describe('老库幂等迁移', () => {
   beforeEach(dropAll)
 
-  it('老 articles 表补齐全部新列,已有数据不丢且 is_page 默认 0', async () => {
+  it('老 articles/notebooks 表补齐全部新列,已有数据不丢且 is_page 默认 0', async () => {
     await env.DB.prepare(OLD_ARTICLES).run()
+    await env.DB.prepare(OLD_NOTEBOOKS).run()
+    await env.DB.prepare("INSERT INTO notebooks (user_id, name) VALUES (1, '老笔记本')").run()
     await env.DB.prepare(
       "INSERT INTO articles (notebook_id, user_id, title, content) VALUES (1, 1, '老文章', '老正文')",
     ).run()
@@ -43,6 +57,14 @@ describe('老库幂等迁移', () => {
     for (const c of ['is_public', 'is_private', 'is_page', 'published_at', 'views', 'deleted_at', 'tags', 'pinned', 'share_token', 'share_expires_at', 'remind_at', 'reminded_at']) {
       expect(cols.has(c), `迁移后 articles 仍缺列: ${c}`).toBe(true)
     }
+
+    // P14.1:笔记本软删除列。老库里的笔记本必须补上且**默认为 NULL**(不是 0/空串),
+    // 否则全部现存笔记本会被当成「在回收站里」而从侧栏消失
+    const nbCols = await columnsOf('notebooks')
+    expect(nbCols.has('deleted_at'), '迁移后 notebooks 仍缺 deleted_at').toBe(true)
+    const nb = await env.DB.prepare('SELECT name, deleted_at FROM notebooks WHERE id = 1').first<any>()
+    expect(nb.name).toBe('老笔记本')
+    expect(nb.deleted_at).toBeNull()
 
     // 老数据必须原样在,且新列取默认值——ADD COLUMN ... DEFAULT 0 会把已有行填成 0 而不是 NULL,
     // 这是「老文章不会突然变成单页」的依据(POST_WHERE 用的是 COALESCE(is_page,0)=0)
