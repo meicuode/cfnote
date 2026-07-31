@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNod
 import ConfirmDialog from './ConfirmDialog'
 import {
   buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS,
-  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, FM_CHECKBOX_KEY,
+  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, FM_CHECKBOX_KEY, menuPosition,
   type FolderNode,
 } from '../lib/fmUtils'
 import type { FmView, UseFileManager } from '../hooks/useFileManager'
@@ -13,6 +13,7 @@ const XmindViewer = lazy(() => import('./XmindViewer'))
 // P11.5 起内联展示;P11.6 起左栏(全部/未引用/笔记附件/我的文件夹)上移为应用侧栏二级菜单
 // (见 FileManagerNav.tsx),本组件只负责右侧:分类筛选+名称搜索+列表(预览/复制链接/重命名/移动/删除),
 // 顶部统计与扫描登记/上传。overview 与文件夹增删改由 useFileManager 共享。
+// 选择语义与右键菜单见 P13.7 / P13.8(判定与落点在 src/lib/fmUtils.ts,可单测)。
 
 interface Props {
   token: string
@@ -56,6 +57,18 @@ interface RefItem {
 
 const CATE_LABEL: Record<string, string> = { image: '图片', doc: '文档', other: '其他' }
 const R2_FREE = 10 * 1024 * 1024 * 1024
+
+// 右键菜单(P13.8)。高度按条目估算而不是渲染后测量:估算够准就能定出翻转方向,
+// 而「先渲染再量再挪」会闪一帧。数字对应下面的 py-1 / py-1.5 / my-1 三个类。
+const MENU_W = 184
+const MENU_PAD = 8
+const MENU_ITEM_H = 32
+const MENU_SEP_H = 9
+const MENU_HEAD_H = 28
+
+type MenuItem =
+  | { key: string; sep: true }
+  | { key: string; icon: string; label: string; danger?: boolean; onClick: () => void }
 
 // 服务端时间统一 UTC(datetime('now') 无时区尾巴),补 Z 再按本地时区展示
 const fmtDateTime = (s: string) => {
@@ -102,6 +115,8 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   const [batchDel, setBatchDel] = useState<{ id: number; name: string; refs: number }[] | null>(null)
   // 批量移动/复制的目标目录选择弹窗
   const [batchMove, setBatchMove] = useState<'move' | 'copy' | null>(null)
+  // 右键菜单(P13.8):file 为 null 表示在列表空白处右键
+  const [menu, setMenu] = useState<{ x: number; y: number; file: FmFile | null } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -143,7 +158,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   // ---- 多选与批量操作(P13.3)----
 
   // 换视图/换筛选/搜索后清空选中:留着上一屏的选中项,批量操作会作用在看不见的文件上
-  useEffect(() => { setSel(new Set()); setAnchor(null) }, [view, category, qDebounced])
+  useEffect(() => { setSel(new Set()); setAnchor(null); setMenu(null) }, [view, category, qDebounced])
 
   const selectedFiles = (files || []).filter((f) => sel.has(f.id))
   const allChecked = !!files && files.length > 0 && files.every((f) => sel.has(f.id))
@@ -189,6 +204,9 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   // Ctrl/⌘+A 全选、Esc 清空。输入框里不拦截——那时候用户要选的是文字
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // 菜单开着时 Esc 只关菜单、不清选择;这一条放在输入框判断之前——
+      // 在搜索框里打字时右键了某一行,焦点仍在输入框,那时候 Esc 也该先把菜单收掉
+      if (e.key === 'Escape' && menu) { setMenu(null); return }
       const el = e.target as HTMLElement | null
       const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
       if (typing) return
@@ -204,7 +222,21 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [files, sel.size])
+  }, [files, sel.size, menu])
+
+  // 菜单开着时窗口尺寸变化/失焦就收起。「点别处关闭」交给下面那块透明遮罩,
+  // 不用全局监听:mousedown 和 click 是两个独立事件,在捕获阶段吞掉前者并不能阻止后者
+  // 落到某一行上顺手改掉选择,而补一个一次性的 click 拦截又会和 effect 的清理时机赛跑。
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('resize', close)
+    window.addEventListener('blur', close)
+    return () => {
+      window.removeEventListener('resize', close)
+      window.removeEventListener('blur', close)
+    }
+  }, [menu])
 
   const flashBatch = (msg: string) => {
     setBatchMsg(msg)
@@ -263,7 +295,30 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   // 松手或按 Esc 放弃都会触发 dragend,侧栏那块虚线落点据此收起
   const onRowDragEnd = () => fm.setDraggingFiles(false)
 
+  // ---- 右键菜单(P13.8)----
+  // 右键一个**未选中**的行:先把选择替换成它(资源管理器就是这样);右键选中集里的行则整段保持。
+  // 这样菜单永远作用在 sel 上,不必再引入一个「右键目标」的平行状态去和拖拽、底部状态栏同步。
+  const onRowContextMenu = (f: FmFile, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!sel.has(f.id)) { setSel(new Set([f.id])); setAnchor(f.id) }
+    setMenu({ x: e.clientX, y: e.clientY, file: f })
+  }
+
+  // 行会 stopPropagation,所以能冒泡到列表容器的一律算空白处
+  const onEmptyContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY, file: null })
+  }
+
   // ---- 操作 ----
+
+  const downloadFile = (f: FmFile) => {
+    const a = document.createElement('a')
+    a.href = f.url
+    a.download = f.name
+    a.click()
+  }
 
   const openPreview = async (f: FmFile) => {
     const kind = previewKind(f.name, f.category)
@@ -279,10 +334,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
         flash('读取文件失败')
       }
     } else {
-      const a = document.createElement('a')
-      a.href = f.url
-      a.download = f.name
-      a.click()
+      downloadFile(f)
     }
   }
 
@@ -411,6 +463,47 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
 
   // ---- 渲染 ----
 
+  /**
+   * 菜单条目。每一项都调**已有的**处理函数,不新开代码路径:
+   * 单选走和悬浮按钮完全一样的单文件弹窗(移动/删除都带那份更详细的引用提示),
+   * 多选与「复制到…」走 POST /api/fm/files/batch,与底部状态栏同一条路径。
+   */
+  const buildMenuItems = (f: FmFile | null): MenuItem[] => {
+    const items: MenuItem[] = []
+    if (!f) {
+      items.push({ key: 'upload', icon: '⬆', label: '上传文件', onClick: () => fileInputRef.current?.click() })
+      if (files && files.length > 0) {
+        items.push({ key: 'all', icon: '☑', label: '全选', onClick: () => { setSel(new Set(files.map((x) => x.id))); setAnchor(null) } })
+      }
+      items.push({ key: 'refresh', icon: '↻', label: '刷新', onClick: refresh })
+      return items
+    }
+    if (sel.size > 1) {
+      items.push({ key: 'move', icon: '📁', label: '移动到…', onClick: () => setBatchMove('move') })
+      items.push({ key: 'copy', icon: '📑', label: '复制到…', onClick: () => setBatchMove('copy') })
+      items.push({ key: 'link', icon: '📋', label: '复制链接', onClick: copySelectedLinks })
+      items.push({ key: 's1', sep: true })
+      items.push({ key: 'del', icon: '🗑', label: `删除这 ${sel.size} 个`, danger: true, onClick: () => runBatch('delete') })
+      return items
+    }
+    items.push({ key: 'open', icon: '👁', label: '打开', onClick: () => openPreview(f) })
+    items.push({ key: 'download', icon: '⬇', label: '下载', onClick: () => downloadFile(f) })
+    items.push({ key: 's1', sep: true })
+    items.push({ key: 'link', icon: '📋', label: '复制链接', onClick: () => copyLink(f) })
+    // 私密文件夹里的文件禁止分享(服务端也会拒),这里干脆不给入口
+    if (!f.is_private_file) {
+      items.push({ key: 'share', icon: '🔗', label: '分享…', onClick: () => { setShareDialog(f); setSharePreset(604800) } })
+    }
+    items.push({ key: 's2', sep: true })
+    items.push({ key: 'rename', icon: '✏', label: '重命名', onClick: () => { setRenameTarget(f); setRenameVal(f.name) } })
+    items.push({ key: 'move', icon: '📁', label: '移动到…', onClick: () => setMoveTarget(f) })
+    items.push({ key: 'copyto', icon: '📑', label: '复制到…', onClick: () => setBatchMove('copy') })
+    items.push({ key: 'refs', icon: '🔎', label: f.ref_count > 0 ? `引用:${f.ref_count} 篇笔记` : '引用:无', onClick: async () => setRefsDialog({ file: f, refs: await fetchRefs(f) }) })
+    items.push({ key: 's3', sep: true })
+    items.push({ key: 'del', icon: '🗑', label: '删除', danger: true, onClick: async () => setDeleteTarget({ file: f, refs: await fetchRefs(f) }) })
+    return items
+  }
+
   const folderTree = buildFolderTree(overview?.folders || [])
   // 私密子树(「我的私密文件夹」及其后代):锁图标、禁分享、移入撤销分享的判定都用它
   const privateIds = collectPrivateIds(overview?.folders || [])
@@ -514,10 +607,13 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
               <div className="px-4 py-1.5 text-[11px] text-emerald-700 bg-emerald-50/60 border-b border-emerald-100 shrink-0">{batchMsg}</div>
             )}
 
-            {/* 点列表空白处清空选择(与资源管理器一致);行自己会 stopPropagation 之外的冒泡到这里 */}
+            {/* 点列表空白处清空选择(与资源管理器一致);行自己会 stopPropagation 之外的冒泡到这里。
+                滚动时收起右键菜单——菜单是按视口坐标定位的,不跟着列表走 */}
             <div
               className="flex-1 overflow-y-auto"
               onClick={(e) => { if (e.target === e.currentTarget && sel.size > 0) { setSel(new Set()); setAnchor(null) } }}
+              onContextMenu={onEmptyContextMenu}
+              onScroll={() => { if (menu) setMenu(null) }}
             >
               {files === null ? (
                 <div className="py-20 flex justify-center">
@@ -553,6 +649,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                       onDragEnd={onRowDragEnd}
                       onClick={(e) => clickRow(f, e)}
                       onDoubleClick={() => openPreview(f)}
+                      onContextMenu={(e) => onRowContextMenu(f, e)}
                       className={`px-4 py-2 flex items-center gap-3 group select-none cursor-default ${
                         sel.has(f.id) ? 'bg-emerald-100/70' : 'hover:bg-gray-50/70'
                       }`}
@@ -698,13 +795,64 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                     {files ? `${files.length} 个文件 · 共 ${fmtSize(files.reduce((s, f) => s + (Number(f.size) || 0), 0))}` : '加载中…'}
                   </span>
                   <span className="text-[11px] text-gray-400 ml-auto">
-                    {withCheckbox ? '勾选多个文件后可批量操作' : '单击选中 · Ctrl 点选 · Shift 连选 · Ctrl+A 全选 · 双击打开'}
+                    {withCheckbox ? '勾选多个文件后可批量操作 · 右键打开菜单' : '单击选中 · Ctrl 点选 · Shift 连选 · Ctrl+A 全选 · 双击打开 · 右键菜单'}
                   </span>
                 </>
               )}
             </div>
           </div>
         </div>
+
+      {/* 右键菜单(P13.8)。z-85:压住列表,同时低于它自己弹出的那些对话框之上的遮罩没有冲突
+          (点条目会先 setMenu(null) 再开对话框,两者不会同屏) */}
+      {menu && (() => {
+        const items = buildMenuItems(menu.file)
+        const many = !!menu.file && sel.size > 1
+        const h = MENU_PAD * 2 + (many ? MENU_HEAD_H : 0) +
+          items.reduce((s, it) => s + ('sep' in it ? MENU_SEP_H : MENU_ITEM_H), 0)
+        const pos = menuPosition(menu.x, menu.y, MENU_W, h, window.innerWidth, window.innerHeight)
+        return (
+          <>
+            {/* 透明遮罩:接住「点别处关闭」的那一次点击,顺便挡住它落到某一行上改变选择。
+                关在 click 而不是 mousedown——遮罩要一直活到这次点击走完,否则 mouseup 时
+                它已经不在了,click 会改派到底下的元素身上。代价是在别处右键要按两次
+                (第一次关菜单),换来的是行为确定,不依赖 React 什么时候把卸载刷出去 */}
+            <div
+              className="fixed inset-0 z-[84]"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setMenu(null)}
+              onContextMenu={(e) => { e.preventDefault(); setMenu(null) }}
+            />
+            <div
+              style={{ left: pos.x, top: pos.y, width: MENU_W }}
+              className="fixed z-[85] py-1 rounded-xl bg-white border border-gray-100 shadow-2xl"
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              {many && (
+                <div className="px-3 pb-1 mb-1 text-[11px] text-gray-400 border-b border-gray-50 truncate">
+                  已选 {summary.count} 个 · 共 {fmtSize(summary.size)}
+                </div>
+              )}
+              {items.map((it) =>
+                'sep' in it ? (
+                  <div key={it.key} className="my-1 h-px bg-gray-100" />
+                ) : (
+                  <button
+                    key={it.key}
+                    onClick={() => { setMenu(null); it.onClick() }}
+                    className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors ${
+                      it.danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-emerald-50'
+                    }`}
+                  >
+                    <span className="w-4 shrink-0 text-xs text-center">{it.icon}</span>
+                    <span className="truncate">{it.label}</span>
+                  </button>
+                )
+              )}
+            </div>
+          </>
+        )
+      })()}
 
       {/* 图片预览 */}
       {preview?.type === 'image' && (

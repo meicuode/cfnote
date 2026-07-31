@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, copyName,
-  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode,
+  nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, menuPosition,
 } from '../src/lib/fmUtils'
 
 describe('buildFolderTree', () => {
@@ -203,5 +203,42 @@ describe('复选框显示模式(P13.7)', () => {
     expect(showCheckbox('auto', false)).toBe(false)
     expect(showCheckbox('on', false)).toBe(true)
     expect(showCheckbox('off', true)).toBe(false)
+  })
+})
+
+describe('右键菜单落点(P13.8)', () => {
+  // 视口 1000×800,菜单 184×300
+  const W = 184
+  const H = 300
+  const VW = 1000
+  const VH = 800
+
+  it('屏幕中间:直接从光标向右下展开', () => {
+    expect(menuPosition(300, 200, W, H, VW, VH)).toEqual({ x: 300, y: 200 })
+  })
+
+  it('贴右边缘翻向左、贴下边缘翻向上(不越界)', () => {
+    expect(menuPosition(950, 200, W, H, VW, VH)).toEqual({ x: 950 - W, y: 200 })
+    expect(menuPosition(300, 700, W, H, VW, VH)).toEqual({ x: 300, y: 700 - H })
+    // 右下角:两个方向同时翻
+    expect(menuPosition(980, 780, W, H, VW, VH)).toEqual({ x: 980 - W, y: 780 - H })
+  })
+
+  it('翻过去也放不下(靠近左上角的窄视口)就贴边,不出负数', () => {
+    const p = menuPosition(100, 60, W, H, 250, 200)
+    expect(p.x).toBe(250 - W - 8)
+    expect(p.y).toBe(8)
+    expect(p.x).toBeGreaterThanOrEqual(8)
+  })
+
+  it('菜单比视口还大时贴左上,不会被推到屏幕外', () => {
+    expect(menuPosition(50, 50, 400, 600, 300, 400)).toEqual({ x: 8, y: 8 })
+  })
+
+  it('留出 margin:正好差一点放不下也要翻', () => {
+    // x + w + margin 恰好等于视口宽 → 仍算放得下
+    expect(menuPosition(VW - W - 8, 10, W, H, VW, VH).x).toBe(VW - W - 8)
+    // 再往右一像素就翻
+    expect(menuPosition(VW - W - 7, 10, W, H, VW, VH).x).toBe(VW - W - 7 - W)
   })
 })

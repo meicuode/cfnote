@@ -209,3 +209,24 @@ export function showCheckbox(mode: CheckboxMode, coarsePointer: boolean): boolea
   if (mode === 'off') return false
   return coarsePointer
 }
+
+// ---- 右键菜单落点(P13.8)----
+
+/**
+ * 菜单左上角坐标:默认从光标向右下展开,贴到右/下边缘时翻向左/上,
+ * 翻过去仍放不下(菜单比视口还大)就贴边。
+ *
+ * 抽成纯函数的理由和 nextSelection 一样:四条边界各自只错一次就极难手工复现
+ * (要正好在某个角上右键才看得见),而错了的表现是「菜单一半在屏幕外、点不到删除」。
+ */
+export function menuPosition(
+  x: number, y: number, w: number, h: number, vw: number, vh: number, margin = 8,
+): { x: number; y: number } {
+  const fit = (pos: number, size: number, viewport: number) => {
+    if (pos + size + margin <= viewport) return pos          // 向右/下放得下
+    const flipped = pos - size                                // 翻向左/上
+    if (flipped >= margin) return flipped
+    return Math.max(margin, viewport - size - margin)         // 两边都放不下就贴边
+  }
+  return { x: fit(x, w, vw), y: fit(y, h, vh) }
+}
