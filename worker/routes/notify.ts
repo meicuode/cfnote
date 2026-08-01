@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { ok, err, logSystem } from '../utils'
 import { buildRequest, mergeMaskedChannels, type NotifyChannel, type NotifyMessage } from '../../src/lib/notifyChannels'
+import { postPath } from '../../src/lib/blogSlug'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -116,7 +117,7 @@ export async function notifyPendingComment(
     const msg: NotifyMessage = {
       title: `💬 新评论待审核:${info.articleTitle || '(无标题)'}`,
       body: `${info.author}:${snippet}`,
-      url: site ? `${site}/blog/${info.articleId}` : undefined,
+      url: site ? `${site}${postPath(info.articleId, info.articleTitle)}` : undefined,
     }
     for (const ch of enabled) {
       const r = await sendToChannel(ch, msg)

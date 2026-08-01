@@ -11,6 +11,7 @@ import { toggleTaskItem, enableTaskCheckboxes } from '../lib/markdownTasks'
 import { enhanceRendered } from '../lib/renderEnhance'
 import { EXPIRY_PRESETS, fmtRemaining } from '../lib/fmUtils'
 import { formatRemindTime } from '../lib/reminders'
+import { postPath } from '../lib/blogSlug'
 import type { Article } from '../types'
 
 // 按需加载(jszip + simple-mind-map 体积较大,仅在点击 .xmind 附件时加载)
@@ -914,7 +915,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
                     已公开
                   </button>
                   <a
-                    href={`/blog/${article.id}`}
+                    href={postPath(article.id, title || article.title)}
                     target="_blank"
                     rel="noreferrer"
                     className="p-1.5 rounded text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 transition-colors"

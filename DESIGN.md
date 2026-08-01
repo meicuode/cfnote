@@ -392,7 +392,7 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 
 | 路径 | 页面 | 鉴权 |
 |------|------|------|
-| `/blog`、`/blog/:id`、`/blog/share/:token` | 公开博客（独立 chunk，不进应用壳；自带 pushState/popstate） | 免登录 |
+| `/blog`、`/blog/:id`、`/blog/:id/:slug`、`/blog/share/:token` | 公开博客（独立 chunk，不进应用壳；自带 pushState/popstate）。slug 段（P15.2）纯属装饰，判定视图的正则只取 `:id` | 免登录 |
 | `/clip` | 网页剪藏接收页（独立 chunk） | 需登录 |
 | 其余全部 | 主应用 `MainApp`（setup/login/app 三态自动切换） | 需登录 |
 
@@ -524,6 +524,14 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
   - AI 对话在窄屏改为顶栏之下的全屏覆盖层（桌面仍是可拖宽的第四栏）；编辑器在移动端**默认进预览**（复用既有的 `IS_MOBILE`，与 P6.4 富文本降级只读同一个判据）——手机上多数时候是看，一进来就是等宽字体的源码没有意义，要写点「源码」即可。
   - **悬浮才出的操作在触屏上等于不存在**：文章列表的置顶／删除、博客管理行的预览／设为单页／取消公开改为窄屏常驻；文件管理那六个挤在一起的 emoji 换成一个「⋯」，开的就是 P13.8 那份右键菜单本身（判据用 `matchMedia('(pointer: coarse)')` 指针类型而不是视口宽度，与 P13.7 的复选框同一把尺子）——长按能不能触发 `contextmenu` 各家浏览器并不一致，不能作为唯一入口。
   - 顶栏窄屏塞不下八个入口：留搜索／提醒／AI，其余（主题、统计、设置、日志、用户名、退出）收进一个「⋯」溢出菜单。**没有做的**：离线、PWA、Service Worker、冲突合并；`BlogLayoutPanel` 早已是 `w-full lg:w-[27rem]` + 预览区 `hidden lg:flex`，本批未动；各弹窗本就带 `max-w-[92vw]`／`w-full max-w-lg`，同样未动。无 schema、无端点、worker 零改动。
+- 博客 URL slug（P15.2）：`/blog/12` → `/blog/12/部署-cloudflare-workers`。
+  - **id 在前、slug 装饰**，不是 `/blog/部署-cloudflare-workers`。这个形态的红利是决定性的：查表永远只认 id，`:slug` 一行代码都不读，所以**改标题不会断链**、不需要唯一约束、不需要冲突处理、不需要迁移；`run_worker_first = /blog/*` 照样匹配；客户端那条 `^/blog/(\d+)` 是前缀匹配，多一段本来就能解析。
+  - **slug 从标题现算，不存库**：id-first 之下 slug 纯属装饰，存一列就要配套「什么时候生成、改标题动不动、能不能手改」三个状态和一套 UI，换不来任何稳定性收益。零 schema 改动。
+  - **不复用 `toc.ts` 的 `slugifyHeading`**：两者规则眼下几乎一样，但诉求不同——URL slug 要长度上限（60 字，中文 percent-encode 后每字 9 字节）、要 percent-encode、**空标题要退回「没有 slug 段」而不是回落成 `section`**（`/blog/12/section` 谁也看不懂）；章节锚点要的是同名去重。耦合在一起改一边就会伤另一边。
+  - **不做 301**：开发阶段没有需要照顾的存量外链，而 301 要花一次额外的计费请求。老地址照常出内容，`<link rel="canonical">` 指向规范形态即可——这一条本来就有，零成本。
+  - **站内一律直发规范地址**，所以正常浏览不会出现非规范 URL：列表／热榜／最新／相关／上下篇／幻灯片／宫格／sitemap／RSS／预渲染内链／博客管理「预览↗」与评论「查看↗」／编辑器「在博客中查看」／评论待审推送。`listSitemapPosts` 因此多取一列 `title`。**唯一的例外是导航菜单的 `page` 项**——它的配置值是手填的文章 id，那里根本没有标题可算，要修就得让配置页存一份 slug，不值当；它照常打得开，只是地址栏不好看。
+  - `openPost` 的入参从 `id: number` 改成了 `{id, title}`，几个模块部件的 `onOpen` 跟着改——只给 id 就只能发裸地址。预渲染的边缘缓存键**仍只按 id + 档位**：同一篇文章不管从哪个地址进来产出的 HTML 完全一样，slug 进缓存键只会把同一份内容缓存成好几份。
+  - 测试的边界要说清楚：算法在 `tests/blogSlug.test.ts` 单测；路由注册与 sitemap 在 `tests/worker/blogSlug.test.ts` e2e。**预渲染出来的 HTML 与 canonical 测不到**——`wrangler.test.toml` 刻意不声明 `[assets]`（否则测试就依赖 `./dist` 的构建产物），详情页一律走 passthrough。这反倒给了「路由是否注册」一个干净的判据：命中详情路由是 passthrough 的 `Not found`，没有任何路由是 `app.notFound` 的 `页面不存在: …`，两者响应体不同。
 
 ## 11. 项目结构
 

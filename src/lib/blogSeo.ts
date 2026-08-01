@@ -8,6 +8,7 @@
 
 import type { MenuItem } from './blogLayout'
 import { usableMenu } from './blogLayout'
+import { postPath } from './blogSlug'
 import {
   enabledArticleParts, partFlag, DEFAULT_SOURCE_TEXT, DEFAULT_DIVIDER_TEXT, type ArticlePart,
 } from './blogArticleParts'
@@ -347,14 +348,14 @@ export function seoNavHtml(n: SeoNavInput): string {
   if (menu.length) groups.push('<div>' + menu.map((x) => item(x.href, x.item.label)).join('') + '</div>')
 
   const neighbors: string[] = []
-  if (n.prev) neighbors.push(item(`/blog/${n.prev.id}`, '← 上一篇：' + n.prev.title))
-  if (n.next) neighbors.push(item(`/blog/${n.next.id}`, '下一篇：' + n.next.title + ' →'))
+  if (n.prev) neighbors.push(item(postPath(n.prev.id, n.prev.title), '← 上一篇：' + n.prev.title))
+  if (n.next) neighbors.push(item(postPath(n.next.id, n.next.title), '下一篇：' + n.next.title + ' →'))
   if (neighbors.length) groups.push('<div style="margin-top:8px">' + neighbors.join('') + '</div>')
 
   const related = (n.related || []).filter((r) => r && r.id)
   if (related.length) {
     groups.push(
-      '<div style="margin-top:8px">相关文章：' + related.map((r) => item(`/blog/${r.id}`, r.title)).join('') + '</div>'
+      '<div style="margin-top:8px">相关文章：' + related.map((r) => item(postPath(r.id, r.title), r.title)).join('') + '</div>'
     )
   }
 
@@ -396,6 +397,8 @@ export function robotsTxt(origin: string): string {
 export interface SitemapPost {
   id: number
   updated_at: string
+  /** P15.2:slug 由标题现算,所以 sitemap 查询要把标题一起取回来 */
+  title?: string
 }
 
 /**
@@ -407,7 +410,7 @@ export function sitemapXml(origin: string, posts: SitemapPost[]): string {
   for (const p of posts) {
     const iso = toIso(p.updated_at)
     urls.push(
-      `<url><loc>${escapeXml(absUrl(origin, '/blog/' + p.id))}</loc>` +
+      `<url><loc>${escapeXml(absUrl(origin, postPath(p.id, p.title)))}</loc>` +
         (iso ? `<lastmod>${escapeXml(iso)}</lastmod>` : '') +
         `</url>`
     )
@@ -430,7 +433,7 @@ export interface FeedPost {
 export function feedXml(opts: { origin: string; title: string; description: string; posts: FeedPost[] }): string {
   const self = absUrl(opts.origin, '/blog/feed.xml')
   const items = opts.posts.map((p) => {
-    const link = absUrl(opts.origin, '/blog/' + p.id)
+    const link = absUrl(opts.origin, postPath(p.id, p.title))
     const date = toRfc822(p.published_at)
     return (
       `<item><title>${escapeXml(p.title)}</title><link>${escapeXml(link)}</link>` +

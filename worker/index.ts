@@ -69,8 +69,9 @@ app.route('/api/backups', backups)
 // 免鉴权(上面的中间件只管 /api/*),放在 API 之后注册,互不重叠。
 app.route('/', pages)
 
-// /api/* 没匹配上就是接口不存在;其余路径说明 run_worker_first 放它进来了但没有对应页面路由
-// (例如 /blog/12/xxx),原样交还静态资源层,由 SPA 回退处理。
+// /api/* 没匹配上就是接口不存在;其余路径说明 run_worker_first 放它进来了但没有对应页面路由,
+// 原样交还静态资源层,由 SPA 回退处理。
+// (P15.2 之前这里举的例子是 /blog/12/xxx——那条现在已经是详情页的正式路由了)
 app.notFound((c) => {
   if (c.req.path.startsWith('/api/')) return err('接口不存在: ' + c.req.path, 404)
   if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw)

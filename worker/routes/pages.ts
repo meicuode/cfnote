@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { getSettingValue } from '../utils'
 import { marked } from '../../src/lib/markdown'
 import { mdExcerpt, mdFirstImage } from '../../src/lib/blogExtract'
@@ -13,6 +14,7 @@ import {
 import { loadBlogDetail, countBlogView } from './blog'
 import { listSitemapPosts, listFeedPosts } from '../repo/blogRepo'
 import { articlePartOption } from '../../src/lib/blogArticleParts'
+import { postPath } from '../../src/lib/blogSlug'
 import type { AppEnv } from '../types'
 
 // 页面级路由(P12.6):详情页 HTML 预渲染 + robots / sitemap / feed。
@@ -70,17 +72,23 @@ pages.get('/blog/feed.xml', async (c) => {
 pages.get('/blog/share/:token', async (c) => passthrough(c.env, c.req.raw, { 'X-Robots-Tag': 'noindex, nofollow' }))
 
 /**
- * GET /blog/:id —— 详情页 HTML。
+ * GET /blog/:id 与 /blog/:id/:slug —— 详情页 HTML。
+ *
+ * slug 段(P15.2)纯属装饰:查表只认 :id,:slug 一律不读,写错、过期、缺失都照常出内容。
+ * 因此改标题不会断链——老地址仍然指向同一篇,只是 canonical 指向新的规范形态。
+ * 站内链接一律直发规范地址(见 src/lib/blogSlug.postPath),所以正常浏览不会出现非规范 URL。
  *
  * full:<head> 全套 + 正文 + 纯链接内链 + 内联状态(前端不再打 API)
  * meta:只注入 <head>,正文仍由客户端拉
  * off :原样透传
  */
-pages.get('/blog/:id', async (c) => {
+const blogDetail = async (c: Context<AppEnv>) => {
   const req = c.req.raw
   const url = new URL(req.url)
   const origin = url.origin
-  const id = c.req.param('id')
+  // 抽成独立函数后 Context 不再带路径字面量,param 的类型退化成 string | undefined;
+  // 下面那条数字判断本来就会把空串挡掉,这里补个默认值即可,不必为类型再造一层泛型
+  const id = c.req.param('id') || ''
 
   // 只处理数字 id。feed.xml、share/… 等由各自的路由或透传接管
   if (!/^\d+$/.test(id)) return passthrough(c.env, req)
@@ -98,7 +106,9 @@ pages.get('/blog/:id', async (c) => {
 
   const ip = c.req.header('cf-connecting-ip') || ''
   const cache = edgeCache()
-  // 档位进缓存键:改了开关立刻生效,不必等 TTL 过期(否则看起来像开关失灵)
+  // 档位进缓存键:改了开关立刻生效,不必等 TTL 过期(否则看起来像开关失灵)。
+  // slug **不进**缓存键:同一篇文章不管从哪个地址进来,产出的 HTML 完全一样
+  // (canonical 由标题算,与请求路径无关);放进去只会把同一份内容缓存成好几份。
   const cacheKey = new Request(`https://prerender.cfnote.internal/blog/${id}?m=${mode}`)
 
   if (cache) {
@@ -129,7 +139,7 @@ pages.get('/blog/:id', async (c) => {
     }
 
     const content = String(data.content || '')
-    const canonical = absUrl(origin, `/blog/${id}`)
+    const canonical = absUrl(origin, postPath(id, data.title))
     const description = mdExcerpt(content.slice(0, 3000), 150)
     const image = absImage(origin, mdFirstImage(content.slice(0, 3000)))
     const title = `${data.title} - ${SITE_NAME}`
@@ -211,7 +221,13 @@ pages.get('/blog/:id', async (c) => {
     // 预渲染出任何问题都不该让博客页打不开——退回原样透传(等价于 off 档)
     return passthrough(c.env, req)
   }
-})
+}
+
+// 两条路径同一个处理函数。带 slug 的那条要单独注册:Hono 的 `:id` 只吃一段,
+// 不注册的话 /blog/12/xxx 会掉进 not_found_handling 变成 SPA 外壳(soft-404)。
+// /blog/share/:token 与 /blog/feed.xml 都注册在前,不会被这两条抢走。
+pages.get('/blog/:id', blogDetail)
+pages.get('/blog/:id/:slug', blogDetail)
 
 // GET /sitemap.xml —— 「加载更多」的必要配套:第 21 篇之后抓取器只能靠它发现
 pages.get('/sitemap.xml', async (c) => {

@@ -5,6 +5,7 @@ import { addPending, prunePending, mergePending, collectApprovedIds, pendingKey,
 import { commentAvatar } from '../lib/comments'
 import { parseCommentMarkup, type Inline } from '../lib/commentMarkup'
 import { slugifyHeading, tocIndent, MIN_TOC_HEADINGS, type TocItem } from '../lib/toc'
+import { postPath } from '../lib/blogSlug'
 import {
   defaultLayout, parseBlogLayout, enabledWidgets, hasSide, parseLinks, usableMenu, parseBannerBg,
   DETAIL_ONLY_WIDGETS, WIDGET_LABELS,
@@ -577,7 +578,7 @@ const SLIDER_RATIO: Record<string, string> = {
  *             是门户焦点图的常见形态,也最贴这个博客的调性。
  * 三种都只渲染当前 ±1 张的图——否则 lazy 图会因为「在 DOM 里且接近视口」被浏览器提前全拉下来。
  */
-function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record<string, string>; onOpen: (id: number) => void }) {
+function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record<string, string>; onOpen: (p: { id: number; title?: string }) => void }) {
   const n = items.length
   const [i, setI] = useState(0)
   const [paused, setPaused] = useState(false)
@@ -650,7 +651,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
           {items.map((p, k) => (
             <button
               key={p.id}
-              onClick={() => onOpen(p.id)}
+              onClick={() => onOpen(p)}
               tabIndex={k === i ? 0 : -1}
               aria-hidden={k !== i}
               className={`absolute inset-0 w-full text-left transition-opacity duration-500 ${k === i ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
@@ -671,7 +672,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
             {side.map((p) => (
               <li key={p.id} className="flex-1">
                 <button
-                  onClick={() => onOpen(p.id)}
+                  onClick={() => onOpen(p)}
                   onMouseEnter={() => setI(items.findIndex((x) => x.id === p.id))}
                   className="w-full h-full min-h-[3.5rem] text-left flex items-center gap-2.5 px-2.5 py-2 rounded-[var(--blog-radius)] bg-[var(--blog-panel)] hover:bg-[var(--blog-hover)] transition-colors"
                 >
@@ -701,7 +702,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
           {items.map((p, k) => (
             <button
               key={p.id}
-              onClick={() => (k === i ? onOpen(p.id) : setI(k))}
+              onClick={() => (k === i ? onOpen(p) : setI(k))}
               tabIndex={k === i ? 0 : -1}
               className={`relative h-full shrink-0 px-1.5 transition-all duration-500 ${k === i ? 'scale-100' : 'scale-[0.88] opacity-60'}`}
               style={{ width: `${100 / n}%` }}
@@ -733,7 +734,7 @@ function SliderWidget({ items, opts, onOpen }: { items: PostCard[]; opts: Record
       {items.map((p, k) => (
         <button
           key={p.id}
-          onClick={() => onOpen(p.id)}
+          onClick={() => onOpen(p)}
           tabIndex={k === i ? 0 : -1}
           aria-hidden={k !== i}
           className={`absolute inset-0 w-full text-left transition-opacity duration-500 ${k === i ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
@@ -818,12 +819,12 @@ const GRID_COLS: Record<string, string> = {
 }
 
 /** 文章宫格 / 相关文章共用的卡片网格。都在页面底部,缩略图天然 lazy,不占首屏 */
-function PostCardGrid({ items, cols, onOpen }: { items: PostCard[]; cols: string; onOpen: (id: number) => void }) {
+function PostCardGrid({ items, cols, onOpen }: { items: PostCard[]; cols: string; onOpen: (p: { id: number; title?: string }) => void }) {
   if (items.length === 0) return <p className="text-xs text-gray-500 text-center py-3">暂无文章</p>
   return (
     <div className={`grid grid-cols-1 gap-4 ${GRID_COLS[cols] || GRID_COLS['3']}`}>
       {items.map((p) => (
-        <button key={p.id} onClick={() => onOpen(p.id)} className="text-left group">
+        <button key={p.id} onClick={() => onOpen(p)} className="text-left group">
           {p.thumb ? (
             <img src={p.thumb} alt="" loading="lazy" className="w-full aspect-[16/10] object-cover rounded-md bg-black/10" />
           ) : (
@@ -844,13 +845,13 @@ function PostCardGrid({ items, cols, onOpen }: { items: PostCard[]; cols: string
 }
 
 /** 上一篇(更新)/ 下一篇(更早):方向与列表顺序一致 */
-function PrevNextRow({ prev, next, onOpen }: { prev: PostCard | null; next: PostCard | null; onOpen: (id: number) => void }) {
+function PrevNextRow({ prev, next, onOpen }: { prev: PostCard | null; next: PostCard | null; onOpen: (p: { id: number; title?: string }) => void }) {
   if (!prev && !next) return <p className="text-xs text-gray-500 text-center py-3">没有更多文章了</p>
   const cell = (p: PostCard | null, label: string, align: 'left' | 'right') => (
     <div className={`flex-1 min-w-0 ${align === 'right' ? 'text-right' : ''}`}>
       <p className="text-xs text-[var(--blog-muted)] mb-1">{label}</p>
       {p ? (
-        <button onClick={() => onOpen(p.id)} className="text-sm text-[var(--blog-text)] hover:text-[var(--blog-accent-hover)] transition-colors line-clamp-2 w-full" title={p.title}>
+        <button onClick={() => onOpen(p)} className="text-sm text-[var(--blog-text)] hover:text-[var(--blog-accent-hover)] transition-colors line-clamp-2 w-full" title={p.title}>
           {p.title}
         </button>
       ) : (
@@ -1107,7 +1108,9 @@ export default function BlogPage() {
     setFilter(parseBlogFilter(window.location.search))
     window.scrollTo(0, 0)
   }
-  const openPost = (id: number) => go(`/blog/${id}`)
+  // 打开一篇:一律走规范地址(带 slug)。这里收的是整个条目而不是 id——
+  // slug 由标题现算,只给 id 就只能发裸地址,而站内链接本不该出现非规范形态
+  const openPost = (p: { id: number; title?: string }) => go(postPath(p.id, p.title))
   const goHome = () => go('/blog')
   const openTag = (tag: string) => go(blogListUrl({ tag, q: '' }))
   const openSearch = (q: string) => go(blogListUrl({ tag: '', q }))
@@ -1238,7 +1241,7 @@ export default function BlogPage() {
             <ol className="px-5 py-3">
               {hot.map((h, i) => (
                 <li key={h.id}>
-                  <button onClick={() => openPost(h.id)} className="w-full flex items-center gap-2.5 py-[7px] group text-left min-w-0">
+                  <button onClick={() => openPost(h)} className="w-full flex items-center gap-2.5 py-[7px] group text-left min-w-0">
                     <span
                       className={`w-[18px] h-[18px] rounded-[3px] text-[11px] font-bold text-white flex items-center justify-center shrink-0 ${
                         i < 3 ? 'bg-[var(--blog-accent)]' : 'bg-[var(--blog-rank)]'
@@ -1279,7 +1282,7 @@ export default function BlogPage() {
             <ul className="space-y-1.5">
               {items.map((p) => (
                 <li key={p.id}>
-                  <button onClick={() => openPost(p.id)} className="w-full text-left text-sm text-[var(--blog-text)] hover:text-[var(--blog-accent-hover)] transition-colors truncate" title={p.title}>
+                  <button onClick={() => openPost(p)} className="w-full text-left text-sm text-[var(--blog-text)] hover:text-[var(--blog-accent-hover)] transition-colors truncate" title={p.title}>
                     {p.title}
                   </button>
                 </li>
@@ -1601,7 +1604,7 @@ export default function BlogPage() {
                       // 纯文字列表:不出缩略图,一行一篇。除了观感,也实实在在省掉每篇一次的图片请求
                       <article
                         key={p.id}
-                        onClick={() => openPost(p.id)}
+                        onClick={() => openPost(p)}
                         className="flex items-center gap-3 py-3.5 border-b border-[var(--blog-border)] cursor-pointer group"
                       >
                         <h2 className="flex-1 min-w-0 truncate text-[15px] sm:text-[17px] font-medium text-[var(--blog-title)] group-hover:text-[var(--blog-accent-hover)] transition-colors">
@@ -1618,7 +1621,7 @@ export default function BlogPage() {
                     ) : (
                       <article
                         key={p.id}
-                        onClick={() => openPost(p.id)}
+                        onClick={() => openPost(p)}
                         className="flex gap-5 py-6 border-b border-[var(--blog-border)] cursor-pointer group"
                       >
                         {p.thumb ? (

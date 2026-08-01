@@ -166,14 +166,14 @@ describe('seoNavHtml', () => {
     expect(h).not.toContain('javascript:')
   })
 
-  it('上下篇与相关文章都出成 a 标签(内链是抓取器发现其他文章的唯一途径)', () => {
+  it('上下篇与相关文章都出成 a 标签(内链是抓取器发现其他文章的唯一途径),且一律是带 slug 的规范地址', () => {
     const h = seoNavHtml({
       menu: [], prev: { id: 7, title: '前一篇' }, next: { id: 9, title: '后一篇' },
       related: [{ id: 11, title: '相关' }], tags: ['运维'],
     })
-    expect(h).toContain('href="/blog/7"')
-    expect(h).toContain('href="/blog/9"')
-    expect(h).toContain('href="/blog/11"')
+    expect(h).toContain(`href="/blog/7/${encodeURIComponent('前一篇')}"`)
+    expect(h).toContain(`href="/blog/9/${encodeURIComponent('后一篇')}"`)
+    expect(h).toContain(`href="/blog/11/${encodeURIComponent('相关')}"`)
     expect(h).toContain('href="/blog?tag=%E8%BF%90%E7%BB%B4"')
   })
 
@@ -190,11 +190,16 @@ describe('robots / sitemap / feed', () => {
     expect(t).toContain('Disallow: /blog/share/')
   })
 
-  it('sitemap 含列表页与每篇文章', () => {
-    const x = sitemapXml('https://a.com', [{ id: 3, updated_at: '2026-07-24 07:26:56' }])
+  it('sitemap 含列表页与每篇文章(带 slug)', () => {
+    const x = sitemapXml('https://a.com', [{ id: 3, title: 'Deploy Guide', updated_at: '2026-07-24 07:26:56' }])
     expect(x).toContain('<loc>https://a.com/blog</loc>')
-    expect(x).toContain('<loc>https://a.com/blog/3</loc>')
+    expect(x).toContain('<loc>https://a.com/blog/3/deploy-guide</loc>')
     expect(x).toContain('<lastmod>2026-07-24T07:26:56.000Z</lastmod>')
+  })
+
+  it('sitemap 没有标题(或标题算不出 slug)时退回裸 id,不产出半截地址', () => {
+    expect(sitemapXml('https://a.com', [{ id: 3, updated_at: '' }])).toContain('<loc>https://a.com/blog/3</loc>')
+    expect(sitemapXml('https://a.com', [{ id: 3, title: '???', updated_at: '' }])).toContain('<loc>https://a.com/blog/3</loc>')
   })
 
   it('sitemap 坏时间只是省掉 lastmod,不产出 Invalid Date', () => {
@@ -203,13 +208,13 @@ describe('robots / sitemap / feed', () => {
     expect(x).not.toContain('lastmod')
   })
 
-  it('feed 用 RFC-822 时间与绝对 guid', () => {
+  it('feed 用 RFC-822 时间与绝对 guid;slug 里的 & 已经被规则丢掉,不会漏进 XML', () => {
     const x = feedXml({
       origin: 'https://a.com', title: 'T', description: 'D',
       posts: [{ id: 5, title: 'A&B', excerpt: '摘要', published_at: '2026-07-24 07:26:56', tag: '运维' }],
     })
     expect(x).toContain('<pubDate>Fri, 24 Jul 2026 07:26:56 GMT</pubDate>')
-    expect(x).toContain('<guid isPermaLink="true">https://a.com/blog/5</guid>')
+    expect(x).toContain('<guid isPermaLink="true">https://a.com/blog/5/ab</guid>')
     expect(x).toContain('<title>A&amp;B</title>')
   })
 })

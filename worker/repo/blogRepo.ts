@@ -275,13 +275,14 @@ export function incrementViews(env: Env, id: string): Promise<unknown> {
   return env.DB.prepare('UPDATE articles SET views = COALESCE(views, 0) + 1 WHERE id = ?').bind(id).run()
 }
 
-// sitemap.xml 用:全部公开文章的 id 与更新时间(只读两列,几千行也很便宜)。
+// sitemap.xml 用:全部公开文章的 id、标题与更新时间(只读三列,几千行也很便宜)。
+// 标题是 P15.2 加的——URL slug 从标题现算,不取回来就只能发裸 id 的地址。
 // 这里用 PUBLIC_WHERE 而不是 POST_WHERE:单页是真实可访问的 URL,该被索引。
 export async function listSitemapPosts(env: Env, limit = 5000) {
   const { results } = await env.DB.prepare(
-    `SELECT a.id, COALESCE(a.updated_at, a.published_at) as updated_at FROM articles a
+    `SELECT a.id, a.title, COALESCE(a.updated_at, a.published_at) as updated_at FROM articles a
       WHERE ${PUBLIC_WHERE} ORDER BY COALESCE(a.published_at, a.updated_at) DESC LIMIT ?`
-  ).bind(limit).all<{ id: number; updated_at: string }>()
+  ).bind(limit).all<{ id: number; title: string; updated_at: string }>()
   return results || []
 }
 

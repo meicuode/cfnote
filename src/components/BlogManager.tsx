@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi'
 import ArticleEditor from './ArticleEditor'
 import BlogLayoutPanel from './BlogLayoutPanel'
 import { commentAvatar } from '../lib/comments'
+import { postPath } from '../lib/blogSlug'
 import type { Pane } from '../lib/pane'
 import type { Notebook, Article } from '../types'
 
@@ -332,7 +333,7 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                             {/* 悬浮才出:预览↗ / 设为单页 / 取消公开(阻止冒泡,避免顺带切换选中)。
                                 窄屏没有悬浮,常驻显示 */}
                             <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 max-lg:opacity-100 transition-opacity">
-                              <a href={`/blog/${a.id}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-gray-400 hover:text-emerald-600" title="在新标签预览博客页">预览↗</a>
+                              <a href={postPath(a.id, a.title)} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-gray-400 hover:text-emerald-600" title="在新标签预览博客页">预览↗</a>
                               <button
                                 onClick={(e) => { e.stopPropagation(); toggleIsPage(a) }}
                                 disabled={busyId === a.id}
@@ -434,7 +435,7 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                         {cm.status !== 'rejected' && <button onClick={() => setStatus(cm.id, 'reject')} disabled={cBusy === cm.id} className="text-xs text-gray-500 hover:underline disabled:opacity-50">{cm.status === 'approved' ? '下架' : '拒绝'}</button>}
                         <button onClick={() => { setReplyId(replyId === cm.id ? null : cm.id); setReplyText('') }} className="text-xs text-gray-500 hover:text-emerald-600">回复</button>
                         <a
-                          href={`/blog/${cm.article_id}#comment-${cm.id}`}
+                          href={`${postPath(cm.article_id, cm.article_title)}#comment-${cm.id}`}
                           target="_blank"
                           rel="noreferrer"
                           className="text-xs text-gray-400 hover:text-emerald-600"

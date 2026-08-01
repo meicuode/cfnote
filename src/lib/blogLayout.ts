@@ -273,6 +273,9 @@ export function menuHref(item: MenuItem): string | null {
     case 'tag':
       return item.value.trim() ? `/blog?tag=${encodeURIComponent(item.value.trim())}` : null
     case 'page': {
+      // 不带 slug(P15.2):菜单项的 value 是**手填的文章 id**,这里根本没有标题可算。
+      // 站内其他地方都发规范地址,只有这一条是裸 id——而它照常打得开(slug 纯属装饰),
+      // 代价仅仅是地址栏不好看。要修就得让配置页存一份 slug,不值当。
       const n = Number(item.value)
       return Number.isInteger(n) && n > 0 ? `/blog/${n}` : null
     }

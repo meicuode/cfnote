@@ -239,7 +239,7 @@
 
 ### 还想做的(与 Evernote 无关)
 
-- **URL slug**:`/blog/12` → `/blog/12/部署-cloudflare-workers`,对搜索引擎和可读性都有好处;旧链接需 301。
+- ~~**URL slug**~~:✅ P15.2 已做(`/blog/12/部署-cloudflare-workers`;id 在前、slug 现算、不做 301)。
 - **归档页**:按年月归档的文章索引页,现在只有列表 + 标签筛选。
 
 ### 不做(理由)
