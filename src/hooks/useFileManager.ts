@@ -22,6 +22,16 @@ export type FmView =
   | { kind: 'notebook'; id: number }
   | { kind: 'folder'; id: number }
 
+/**
+ * 移进私密文件夹会失效的公开引用(P14.2)。私密文件对访客一票否决,
+ * 所以这个动作会让已发布博客里的图当场变裂图——服务端先回名单,确认了才真移。
+ */
+export interface PubRefWarn {
+  id: number
+  name: string
+  articles: { id: number; title: string }[]
+}
+
 export interface UseFileManager {
   overview: FmOverview | null
   reloadOverview: () => Promise<void>
@@ -55,6 +65,14 @@ export interface UseFileManager {
    */
   moveFilesToFolder: (folderId: number | null, ids: number[]) => Promise<void>
   /**
+   * 「移进私密文件夹会让这些公开文章的图失效」确认框(P14.2)。
+   * 状态放在 hook 里而不是某个组件里,是因为触发它的三条路径分属两棵组件树:
+   * 右侧列表的批量移动、侧栏的目录移动、以及从列表拖到侧栏目录。
+   * 弹窗本体渲染在 FileManager 里(这三条路径发生时它必然在屏幕上)。
+   */
+  pubWarn: { files: PubRefWarn[]; onConfirm: () => void } | null
+  setPubWarn: (v: { files: PubRefWarn[]; onConfirm: () => void } | null) => void
+  /**
    * 正在拖文件(P13.7)。侧栏的「拖到此处移出文件夹」落点据此显示——
    * 它此前是常驻的,于是不拖的时候、切到别的目录之后都还挂在树下面。
    * 和 moveFilesToFolder 同一个理由放在 hook 里:拖起来的行在 FileManager、落点在 FileManagerNav。
@@ -75,6 +93,7 @@ export function useFileManager(token: string): UseFileManager {
   const [folderDelete, setFolderDelete] = useState<FolderRow | null>(null)
   const [folderMove, setFolderMove] = useState<FolderNode | null>(null)
   const [draggingFiles, setDraggingFiles] = useState(false)
+  const [pubWarn, setPubWarn] = useState<{ files: PubRefWarn[]; onConfirm: () => void } | null>(null)
 
   const api = useCallback(
     async (path: string, init?: RequestInit): Promise<any> => {
@@ -99,15 +118,32 @@ export function useFileManager(token: string): UseFileManager {
 
   const moveFilesToFolder = useCallback(async (folderId: number | null, ids: number[]) => {
     if (ids.length === 0) return
-    const j = await api('/api/fm/files/batch', {
+    const post = (force: boolean) => api('/api/fm/files/batch', {
       method: 'POST',
-      body: JSON.stringify({ op: 'move', ids, folder_id: folderId }),
+      body: JSON.stringify({ op: 'move', ids, folder_id: folderId, force }),
     }).catch(() => null)
+    const done = async (d: any) => {
+      flash(`已移动 ${d.moved} 个文件` + (d.revoked_shares > 0 ? `,其中 ${d.revoked_shares} 个原分享已取消` : ''))
+      setTick((t) => t + 1)
+      await reloadOverview()
+    }
+
+    const j = await post(false)
     if (!j?.ok) return flash(j?.error || '移动失败')
-    const d = j.data || {}
-    flash(`已移动 ${d.moved} 个文件` + (d.revoked_shares > 0 ? `,其中 ${d.revoked_shares} 个原分享已取消` : ''))
-    setTick((t) => t + 1)
-    await reloadOverview()
+    // 落点是私密文件夹、而拖的文件正被公开文章引用:先确认再移(P14.2)
+    if (j.data?.needs_force) {
+      setPubWarn({
+        files: j.data.public_refs,
+        onConfirm: async () => {
+          setPubWarn(null)
+          const again = await post(true)
+          if (!again?.ok) return flash(again?.error || '移动失败')
+          await done(again.data || {})
+        },
+      })
+      return
+    }
+    await done(j.data || {})
   }, [api, flash, reloadOverview])
 
   const submitFolderCreate = useCallback(async () => {
@@ -143,12 +179,33 @@ export function useFileManager(token: string): UseFileManager {
 
   const submitFolderMove = useCallback(async (parentId: number | null) => {
     if (!folderMove) return
-    const j = await api(`/api/fm/folders/${folderMove.id}`, { method: 'PUT', body: JSON.stringify({ parent_id: parentId }) })
-    if (!j?.ok) flash(j?.error || '移动失败')
-    else if (j.data?.revoked_shares > 0) flash(`已移入私密文件夹,取消了 ${j.data.revoked_shares} 个文件的分享`)
+    const id = folderMove.id
+    const post = (force: boolean) => api(`/api/fm/folders/${id}`, {
+      method: 'PUT', body: JSON.stringify({ parent_id: parentId, force }),
+    })
+    const done = async (d: any) => {
+      if (d?.revoked_shares > 0) flash(`已移入私密文件夹,取消了 ${d.revoked_shares} 个文件的分享`)
+      await reloadOverview()
+      setTick((t) => t + 1) // 文件可能随目录换位,右侧列表重拉
+    }
+
+    const j = await post(false)
     setFolderMove(null)
-    await reloadOverview()
-    setTick((t) => t + 1) // 文件可能随目录换位,右侧列表重拉
+    if (!j?.ok) { flash(j?.error || '移动失败'); return }
+    // 整个目录搬进私密子树,里面有公开文章在用的图:先确认(P14.2)
+    if (j.data?.needs_force) {
+      setPubWarn({
+        files: j.data.public_refs,
+        onConfirm: async () => {
+          setPubWarn(null)
+          const again = await post(true)
+          if (!again?.ok) return flash(again?.error || '移动失败')
+          await done(again.data)
+        },
+      })
+      return
+    }
+    await done(j.data)
   }, [api, flash, folderMove, reloadOverview])
 
   return {
@@ -158,6 +215,7 @@ export function useFileManager(token: string): UseFileManager {
     folderDelete, setFolderDelete, folderMove, setFolderMove,
     submitFolderCreate, submitFolderRename, submitFolderDelete, submitFolderMove,
     moveFilesToFolder,
+    pubWarn, setPubWarn,
     draggingFiles, setDraggingFiles,
   }
 }

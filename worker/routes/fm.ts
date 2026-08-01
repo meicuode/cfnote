@@ -43,6 +43,90 @@ async function revokePrivateShares(env: AppEnv['Bindings'], userId: number): Pro
   return r.meta.changes || 0
 }
 
+// ---- 移入私密文件夹前的公开引用预检(P14.2)----
+
+export interface PublicRefWarn {
+  id: number
+  name: string
+  articles: { id: number; title: string }[]
+}
+
+const IN_CHUNK = 200
+function chunked<T>(arr: T[], size = IN_CHUNK): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+  return out
+}
+
+/**
+ * 把附件挪进私密子树之前先问一句。
+ *
+ * 私密文件对匿名访问是**一票否决**(files.ts anonReadable:哪怕正被公开文章引用也不放行),
+ * 所以拖一张已发布博客里的图进「我的私密文件夹」,博客上那张图当场变裂图 ——
+ * 而此前这个动作是静默成功的,你要等到自己去翻博客才发现。
+ *
+ * 返回受影响的文件及引用它的公开文章;空数组表示可以直接移。
+ * 已经在私密子树里的文件不算(私密目录之间互相搬动改变不了任何可见性)。
+ */
+async function publicRefsInto(
+  env: AppEnv['Bindings'], userId: number, fileIds: number[], targetFolderId: number | null,
+): Promise<PublicRefWarn[]> {
+  if (targetFolderId == null || fileIds.length === 0) return []
+  const priv = await getPrivateFolderIds(env, userId)
+  if (!priv.has(targetFolderId)) return []
+
+  const byFile = new Map<number, PublicRefWarn>()
+  for (const chunk of chunked(fileIds)) {
+    const { results } = await env.DB.prepare(
+      `SELECT f.id AS fid, f.name AS fname, f.folder_id AS folder_id, a.id AS aid, a.title
+         FROM files f
+         JOIN article_files af ON af.file_key = f.key
+         JOIN articles a ON a.id = af.article_id
+        WHERE f.user_id = ? AND f.id IN (${chunk.map(() => '?').join(',')})
+          AND a.is_public = 1 AND a.is_private = 0 AND a.deleted_at IS NULL
+        ORDER BY f.id, a.id`
+    ).bind(userId, ...chunk).all<{ fid: number; fname: string; folder_id: number | null; aid: number; title: string }>()
+    for (const r of results || []) {
+      if (r.folder_id != null && priv.has(r.folder_id)) continue // 本来就是私密的,搬不搬都一样
+      let w = byFile.get(r.fid)
+      if (!w) { w = { id: r.fid, name: r.fname, articles: [] }; byFile.set(r.fid, w) }
+      if (w.articles.length < 10) w.articles.push({ id: r.aid, title: r.title })
+    }
+  }
+  return [...byFile.values()]
+}
+
+/** 目录整体搬进私密子树时,受影响的是它子树里的全部文件 */
+async function fileIdsUnderFolder(
+  env: AppEnv['Bindings'], userId: number, rootId: number,
+): Promise<number[]> {
+  const { results: folders } = await env.DB.prepare('SELECT id, parent_id FROM folders WHERE user_id = ?')
+    .bind(userId).all<{ id: number; parent_id: number | null }>()
+  const kids = new Map<number, number[]>()
+  for (const f of folders || []) {
+    if (f.parent_id == null) continue
+    const list = kids.get(f.parent_id)
+    if (list) list.push(f.id)
+    else kids.set(f.parent_id, [f.id])
+  }
+  const subtree: number[] = []
+  const queue = [rootId]
+  while (queue.length > 0) {
+    const cur = queue.pop()!
+    subtree.push(cur)
+    for (const k of kids.get(cur) || []) queue.push(k)
+  }
+
+  const ids: number[] = []
+  for (const chunk of chunked(subtree)) {
+    const { results } = await env.DB.prepare(
+      `SELECT id FROM files WHERE user_id = ? AND folder_id IN (${chunk.map(() => '?').join(',')})`
+    ).bind(userId, ...chunk).all<{ id: number }>()
+    for (const r of results || []) ids.push(r.id)
+  }
+  return ids
+}
+
 // GET /api/fm/overview - 左栏与统计:总量、未引用数、笔记附件按笔记本分组计数、文件夹列表。
 // 顺带懒创建「我的私密文件夹」系统根目录(is_private=1,不可改名/移动/删除)。
 fm.get('/overview', async (c) => {
@@ -151,10 +235,11 @@ fm.get('/files/:id/refs', async (c) => {
 })
 
 // PUT /api/fm/files/:id - 重命名(仅显示名,key 与链接不变)/ 移动目录(folder_id,null 为移出)
+// 移进私密子树且该文件正被公开文章引用时,先回 {needs_force, public_refs} 让前端确认(P14.2)
 fm.put('/files/:id', async (c) => {
   const user = c.get('user')
   try {
-    const { name, folder_id } = await c.req.json<{ name?: string; folder_id?: number | null }>()
+    const { name, folder_id, force } = await c.req.json<{ name?: string; folder_id?: number | null; force?: boolean }>()
     const f = await c.env.DB.prepare('SELECT * FROM files WHERE id = ? AND user_id = ?')
       .bind(c.req.param('id'), user.id).first<FileRow>()
     if (!f) return err('文件不存在', 404)
@@ -174,6 +259,11 @@ fm.put('/files/:id', async (c) => {
         if (!fd) return err('目标文件夹不存在', 404)
         newFolder = folder_id
       }
+    }
+    // 移进私密子树会让公开文章里的图对访客失效,先回名单让前端确认(P14.2)
+    if (folder_id !== undefined && !force) {
+      const warn = await publicRefsInto(c.env, user.id, [f.id], newFolder)
+      if (warn.length > 0) return ok({ needs_force: true, public_refs: warn })
     }
     await c.env.DB.prepare("UPDATE files SET name = ?, folder_id = ?, updated_at = datetime('now') WHERE id = ?")
       .bind(newName, newFolder, f.id).run()
@@ -244,6 +334,11 @@ fm.post('/files/batch', async (c) => {
           .bind(body.folder_id, user.id).first()
         if (!fd) return err('目标文件夹不存在', 404)
         target = Number(body.folder_id)
+      }
+      // 与单个移动同一条规矩:移进私密子树前先把「会失效的公开文章」摊开给人看
+      if (!body.force) {
+        const warn = await publicRefsInto(c.env, user.id, files.map((f) => f.id), target)
+        if (warn.length > 0) return ok({ needs_force: true, public_refs: warn })
       }
       await c.env.DB.prepare(
         `UPDATE files SET folder_id = ?, updated_at = datetime('now')
@@ -408,7 +503,7 @@ fm.post('/folders', async (c) => {
 fm.put('/folders/:id', async (c) => {
   const user = c.get('user')
   try {
-    const body = await c.req.json<{ name?: string; parent_id?: number | null }>()
+    const body = await c.req.json<{ name?: string; parent_id?: number | null; force?: boolean }>()
     const fd = await c.env.DB.prepare('SELECT id, name, parent_id, is_private FROM folders WHERE id = ? AND user_id = ?')
       .bind(c.req.param('id'), user.id).first<{ id: number; name: string; parent_id: number | null; is_private: number }>()
     if (!fd) return err('文件夹不存在', 404)
@@ -437,6 +532,13 @@ fm.put('/folders/:id', async (c) => {
         }
         newParent = body.parent_id
       }
+    }
+    // 整个目录搬进私密子树:受影响的是它子树里的全部文件,一次问清楚(P14.2)
+    if ('parent_id' in body && !body.force) {
+      const warn = await publicRefsInto(
+        c.env, user.id, await fileIdsUnderFolder(c.env, user.id, fd.id), newParent,
+      )
+      if (warn.length > 0) return ok({ needs_force: true, public_refs: warn })
     }
     await c.env.DB.prepare('UPDATE folders SET name = ?, parent_id = ? WHERE id = ?')
       .bind(newName, newParent, fd.id).run()

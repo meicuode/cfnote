@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
 import { vectorizeArticle } from './articles'
 import { syncArticleFiles } from './files'
+import { buildExportPayload, SENSITIVE_PATTERNS, CHANNELS_KEY } from '../backup'
 import { MASK_PREFIX, maskChannels, mergeMaskedChannels, type NotifyChannel } from '../../src/lib/notifyChannels'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
@@ -219,7 +220,9 @@ system.post('/init', async (c) => {
 
 // ---- Settings ----
 
-const SENSITIVE_PATTERNS = /key|token|secret/i
+// SENSITIVE_PATTERNS / CHANNELS_KEY 定义在 worker/backup.ts:
+// 「哪些设置不能出现在备份里」和「哪些设置不能下发给前端」是同一份名单,
+// 分两处写迟早只改其中一处。
 
 // 掩码前缀与 notifyChannels 共用一个常量:两处各写一遍 '****' 迟早只改其中一处。
 function maskValue(key: string, value: string): string {
@@ -231,8 +234,6 @@ function maskValue(key: string, value: string): string {
 function isMasked(value: string): boolean {
   return value.startsWith(MASK_PREFIX)
 }
-
-const CHANNELS_KEY = 'notify_channels'
 
 function parseChannels(raw: string | null | undefined): NotifyChannel[] {
   if (!raw) return []
@@ -316,54 +317,12 @@ export function isRestorableSetting(key: string): boolean {
 
 // GET /api/export - 全量数据备份(JSON 附件下载;敏感设置不导出)
 // ?versions=1 额外带上文章的历史版本(每篇可能有几十版,体积会翻几倍,故默认不带)
+// 快照的构建在 worker/backup.ts,与 R2 自动备份是同一份逻辑(P14.2)。
 system.get('/export', async (c) => {
   const user = c.get('user')
   const withVersions = c.req.query('versions') === '1'
   try {
-    const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows, commentRows, versionRows] = await Promise.all([
-      c.env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
-      // P12.11 补上博客那一层:此前只导正文,恢复之后所有文章都变回未公开、浏览数归零
-      c.env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, COALESCE(is_page, 0) AS is_page, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
-      c.env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),
-      c.env.DB.prepare('SELECT m.id, m.conversation_id, m.role, m.content, m.sources, m.created_at FROM messages m JOIN conversations cv ON m.conversation_id = cv.id WHERE cv.user_id = ? ORDER BY m.id').bind(user.id).all(),
-      c.env.DB.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>(),
-      c.env.DB.prepare('SELECT id, key, name, folder_id, size, content_type, category, created_at FROM files WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
-      c.env.DB.prepare('SELECT id, name, parent_id, created_at FROM folders WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] })),
-      // 评论含邮箱与 IP:这是本人的完整备份,备份丢数据就不叫备份;而同一个文件里本来就是整个知识库,
-      // 比访客 IP 敏感得多。公开接口那条「永不返回 ip/user_agent/author_email」的规矩只管 /api/blog/comments。
-      c.env.DB.prepare(
-        `SELECT cm.id, cm.article_id, cm.parent_id, cm.root_id, cm.author_name, cm.author_email,
-                cm.content, cm.status, cm.is_admin, cm.ip, cm.user_agent, cm.created_at
-           FROM comments cm JOIN articles a ON a.id = cm.article_id
-          WHERE a.user_id = ? ORDER BY cm.id`
-      ).bind(user.id).all().catch(() => ({ results: [] })),
-      withVersions
-        ? c.env.DB.prepare('SELECT id, article_id, title, content, tags, created_at FROM article_versions WHERE user_id = ? ORDER BY id').bind(user.id).all().catch(() => ({ results: [] }))
-        : Promise.resolve({ results: [] }),
-    ])
-
-    const settings: Record<string, string> = {}
-    for (const r of settingsRows.results ?? []) {
-      if (SENSITIVE_PATTERNS.test(r.key) || r.key === CHANNELS_KEY) continue
-      settings[r.key] = r.value
-    }
-
-    const payload = {
-      app: 'cfnote',
-      export_version: 2,
-      exported_at: new Date().toISOString(),
-      username: user.username,
-      notebooks: notebooks.results ?? [],
-      articles: articles.results ?? [],
-      conversations: convs.results ?? [],
-      messages: (msgs.results ?? []).map((m: any) => ({ ...m, sources: m.sources ? JSON.parse(m.sources) : null })),
-      files: fileRows.results ?? [],
-      folders: folderRows.results ?? [],
-      comments: commentRows.results ?? [],
-      article_versions: versionRows.results ?? [],
-      settings,
-    }
-
+    const payload = await buildExportPayload(c.env, user, withVersions)
     const date = new Date().toISOString().slice(0, 10)
     return new Response(JSON.stringify(payload, null, 2), {
       headers: {

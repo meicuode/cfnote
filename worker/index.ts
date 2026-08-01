@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { err, getUser } from './utils'
 import { runScheduledArchive } from './archive'
+import { runAutoBackup } from './backup'
 import { ensureSchema } from './migrate'
 import { system } from './routes/system'
 import { auth } from './routes/auth'
@@ -15,6 +16,7 @@ import { blog } from './routes/blog'
 import { notify, sendDueReminders } from './routes/notify'
 import { comments } from './routes/comments'
 import { pages } from './routes/pages'
+import { backups } from './routes/backups'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -61,6 +63,7 @@ app.route('/api/stats', stats)
 app.route('/api/blog', blog)
 app.route('/api/notify', notify)
 app.route('/api/comments', comments)
+app.route('/api/backups', backups)
 
 // 页面级路由(P12.6):/blog/:id 预渲染、/blog/feed.xml、/sitemap.xml、/robots.txt。
 // 免鉴权(上面的中间件只管 /api/*),放在 API 之后注册,互不重叠。
@@ -80,9 +83,12 @@ app.notFound((c) => {
 export default {
   fetch: (request, env, ctx) => app.fetch(request, env, ctx),
   scheduled: (event, env, ctx) => {
-    // 高频 cron(*/5)只跑提醒推送;每月那条跑用量归档 + 回收站清理
+    // 高频 cron(*/5)跑提醒推送 + 自动备份到 R2(P14.2:备份自己判到期,
+    // 没到期就是一次 settings 读,所以不必为它单开一条 cron 触发器);
+    // 每月那条跑用量归档 + 回收站清理
     if (event.cron === '*/5 * * * *') {
       ctx.waitUntil(sendDueReminders(env))
+      ctx.waitUntil(runAutoBackup(env))
       return
     }
     ctx.waitUntil(runScheduledArchive(env))

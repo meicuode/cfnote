@@ -4,6 +4,11 @@ import { CHANNEL_META, CHANNEL_TYPES, isSecretField, isMaskedValue, type NotifyC
 import { PRERENDER_KEY, parsePrerenderMode, type PrerenderMode } from '../lib/blogSeo'
 import { CUSTOM_JS_KEY, MAX_CUSTOM_JS, describeCustomScripts } from '../lib/blogScripts'
 import { FM_CHECKBOX_KEY, parseCheckboxMode, type CheckboxMode } from '../lib/fmUtils'
+import {
+  BACKUP_INTERVALS, DEFAULT_INTERVAL, DEFAULT_KEEP, MAX_KEEP,
+  parseInterval, parseKeep, retentionSpan, type BackupInterval,
+} from '../lib/backupPlan'
+import { formatBytes } from '../lib/format'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -18,6 +23,19 @@ interface Props {
   onClose: () => void
   /** 打开时滚到并高亮某一节(目前只有 'files',由文件管理右上角的齿轮传进来) */
   focus?: 'files' | null
+}
+
+/** GET /api/backups 的返回:列表与配置一次拉完,不为一个开关多打一趟请求 */
+interface BackupInfo {
+  available: boolean
+  interval: BackupInterval
+  keep: number
+  span: string
+  last_at: string
+  last_size: number
+  last_error: string
+  next_at: string
+  files: { name: string; size: number; created_at: string }[]
 }
 
 export default function SettingsPanel({ token, onClose, focus }: Props) {
@@ -47,6 +65,12 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
   const [importMsg, setImportMsg] = useState('')
   // 导出时是否带上文章历史版本(P12.11)
   const [withVersions, setWithVersions] = useState(false)
+  // P14.2 自动备份到 R2
+  const [backupInterval, setBackupInterval] = useState<BackupInterval>(DEFAULT_INTERVAL)
+  const [backupKeep, setBackupKeep] = useState(DEFAULT_KEEP)
+  const [backupInfo, setBackupInfo] = useState<BackupInfo | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupMsg, setBackupMsg] = useState('')
   const [error, setError] = useState('')
 
   // 文件管理的列表复选框(P13.7):存 localStorage(每台设备各自的显示偏好,见 fmUtils 里的论证),
@@ -79,7 +103,10 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
 
   useEffect(() => {
     (async () => {
-      const res = await api.get<Settings>('/settings')
+      const [res, bk] = await Promise.all([
+        api.get<Settings>('/settings'),
+        api.get<BackupInfo>('/backups'),
+      ])
       if (res.ok && res.data) {
         setSelected(res.data.llm_model)
         if (res.data.jina_api_key) setJinaKey(res.data.jina_api_key)
@@ -91,6 +118,11 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
         setCustomJs(((res.data as any)[CUSTOM_JS_KEY] as string) || '')
       } else {
         setError(res.error || '加载失败')
+      }
+      if (bk.ok && bk.data) {
+        setBackupInfo(bk.data)
+        setBackupInterval(parseInterval(bk.data.interval))
+        setBackupKeep(parseKeep(String(bk.data.keep)))
       }
       setLoading(false)
     })()
@@ -108,6 +140,8 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
       comments_auto_approve: commentsAutoApprove ? '1' : '0',
       [PRERENDER_KEY]: prerender,
       [CUSTOM_JS_KEY]: customJs,
+      backup_interval: backupInterval,
+      backup_keep: String(backupKeep),
       site_url: window.location.origin,
     })
     if (res.ok) {
@@ -348,6 +382,59 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
       setError(e.message)
     } finally {
       setExporting(false)
+    }
+  }
+
+  // ---- 自动备份到 R2(P14.2)----
+
+  const reloadBackups = async () => {
+    const r = await api.get<BackupInfo>('/backups')
+    if (r.ok && r.data) setBackupInfo(r.data)
+  }
+
+  // 有这个按钮才不用等一整个周期,才知道这功能到底能不能跑
+  const handleBackupNow = async () => {
+    setBackupBusy(true)
+    setBackupMsg('')
+    const r = await api.post<{ files: number; bytes: number; pruned: number }>('/backups/run', {})
+    if (r.ok && r.data) {
+      setBackupMsg(`已备份 ${formatBytes(r.data.bytes)}` + (r.data.pruned > 0 ? `，清掉 ${r.data.pruned} 份旧的` : ''))
+      await reloadBackups()
+    } else {
+      setBackupMsg(`❌ ${r.error || '备份失败'}`)
+    }
+    setBackupBusy(false)
+  }
+
+  const handleBackupDownload = async (name: string) => {
+    try {
+      const res = await fetch(`/api/backups/${name}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) throw new Error(`下载失败 (${res.status})`)
+      const url = URL.createObjectURL(await res.blob())
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: any) {
+      setBackupMsg(`❌ ${e.message}`)
+    }
+  }
+
+  const handleBackupDelete = async (name: string) => {
+    const r = await api.del(`/backups/${name}`)
+    if (!r.ok) setBackupMsg(`❌ ${r.error || '删除失败'}`)
+    await reloadBackups()
+  }
+
+  // 恢复 = 下载那一份再走既有的导入流程,服务端不另写一套恢复逻辑
+  const handleBackupRestore = async (name: string) => {
+    try {
+      const res = await fetch(`/api/backups/${name}`, { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) throw new Error(`读取备份失败 (${res.status})`)
+      await handleImportFile(new File([await res.blob()], name, { type: 'application/json' }))
+    } catch (e: any) {
+      setBackupMsg(`❌ ${e.message}`)
     }
   }
 
@@ -729,6 +816,83 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
                   补建缺失的向量索引（导入中断/失败后重试）
                 </button>
                 {importMsg && <p className="text-xs text-emerald-600 mt-2">{importMsg}</p>}
+
+                {/* 自动备份到 R2(P14.2):手动导出要手点，手不点就没有备份 */}
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <h4 className="text-xs font-semibold text-gray-500 mb-2">自动备份到 R2</h4>
+                  {backupInfo && !backupInfo.available ? (
+                    <p className="text-[11px] text-gray-400">
+                      未配置附件存储（R2），自动备份不可用。在 Cloudflare 控制台创建 cfnote-files 桶后重新部署即可。
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={backupInterval}
+                          onChange={(e) => setBackupInterval(parseInterval(e.target.value))}
+                          className="flex-1 text-sm border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-emerald-400"
+                        >
+                          {BACKUP_INTERVALS.map((o) => (
+                            <option key={o.id} value={o.id}>{o.label}</option>
+                          ))}
+                        </select>
+                        <label className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0">
+                          保留
+                          <input
+                            type="number"
+                            min={1}
+                            max={MAX_KEEP}
+                            value={backupKeep}
+                            onChange={(e) => setBackupKeep(parseKeep(e.target.value))}
+                            className="w-14 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:border-emerald-400"
+                          />
+                          份
+                        </label>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        {backupInterval === 'off'
+                          ? '已关闭。数据只在你手动导出时才有副本。'
+                          : `${retentionSpan(backupInterval, backupKeep)}的历史。`}
+                        备份只含数据库（笔记、评论、设置、附件清单），
+                        <b>不含附件本身</b>——附件已经在 R2 里，再复制一份只是把同一份风险买两遍。频率改动点右下角「保存」后生效。
+                      </p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <button
+                          onClick={handleBackupNow}
+                          disabled={backupBusy || importing}
+                          className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 hover:border-emerald-400 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
+                        >
+                          {backupBusy ? '备份中...' : '立即备份一次'}
+                        </button>
+                        {backupInfo?.last_at && (
+                          <span className="text-[11px] text-gray-400 truncate">
+                            上次 {new Date(backupInfo.last_at).toLocaleString('zh-CN')}
+                            {backupInfo.last_size > 0 && `（${formatBytes(backupInfo.last_size)}）`}
+                          </span>
+                        )}
+                      </div>
+                      {backupInfo?.last_error && (
+                        <p className="text-[11px] text-red-500 mt-1">上次自动备份失败：{backupInfo.last_error}</p>
+                      )}
+                      {backupMsg && <p className="text-[11px] text-emerald-600 mt-1">{backupMsg}</p>}
+                      {backupInfo && backupInfo.files.length > 0 && (
+                        <ul className="mt-2 border border-gray-100 rounded-lg divide-y divide-gray-50 max-h-44 overflow-y-auto">
+                          {backupInfo.files.map((f) => (
+                            <li key={f.name} className="px-3 py-1.5 flex items-center gap-2 text-xs">
+                              <span className="text-gray-600 flex-1 truncate">
+                                {new Date(f.created_at).toLocaleString('zh-CN')}
+                              </span>
+                              <span className="text-gray-400 shrink-0">{formatBytes(f.size)}</span>
+                              <button onClick={() => handleBackupDownload(f.name)} className="text-emerald-600 hover:underline shrink-0">下载</button>
+                              <button onClick={() => handleBackupRestore(f.name)} disabled={importing} className="text-emerald-600 hover:underline disabled:opacity-50 shrink-0">恢复</button>
+                              <button onClick={() => handleBackupDelete(f.name)} className="text-gray-400 hover:text-red-500 shrink-0">删除</button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </>
           )}

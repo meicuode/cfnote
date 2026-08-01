@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test'
 import { describe, it, expect, beforeEach } from 'vitest'
 import { api, j, bootstrap, newNotebook, newArticle, dropAll } from './_helpers'
+import { buildAfileUrl } from '../../src/lib/fileRefs'
 
 // 文件管理批量操作(P13.3)的端到端。这块此前完全没有覆盖,而它是唯一真正动 R2 的路径:
 // R2 的 Workers binding 没有服务端 copy,复制必须 get 再 put、字节流经 Worker,
@@ -159,5 +160,131 @@ describe('文件管理批量操作', () => {
     expect(res.body.data!.deleted).toBe(1)
     const left = await env.DB.prepare('SELECT COUNT(*) AS c FROM files WHERE user_id = 999').first<{ c: number }>()
     expect(left!.c).toBe(1)
+  })
+})
+
+// P14.2:私密文件夹对匿名访问是一票否决(files.ts anonReadable),所以把正被公开文章
+// 引用的附件挪进去 = 博客上那张图当场变裂图。此前这个动作是静默成功的。
+describe('移进私密文件夹前的公开引用预检', () => {
+  beforeEach(dropAll)
+
+  /** 「我的私密文件夹」由 overview 懒创建 */
+  async function privateFolder(token: string): Promise<number> {
+    const ov = await api<{ folders: { id: number; name: string; is_private?: number }[] }>('/api/fm/overview', { token })
+    expect(ov.body.ok, ov.body.error).toBe(true)
+    const p = (ov.body.data!.folders || []).find((f) => f.is_private)
+    expect(p, '私密文件夹没有被懒创建').toBeTruthy()
+    return p!.id
+  }
+
+  /** 传一张图,写进一篇笔记的正文里(走真正的引用索引,不手工插 article_files) */
+  async function publishedWith(token: string, fileName: string, title: string, isPublic = true) {
+    const nb = await newNotebook(token)
+    const f = await upload(token, fileName)
+    const art = await newArticle(token, nb, title, `正文\n\n![](${buildAfileUrl(f.id, f.name)})`)
+    if (isPublic) {
+      const pub = await api(`/api/articles/${art}`, { method: 'PUT', token, body: j({ is_public: 1 }) })
+      expect(pub.body.ok, pub.body.error).toBe(true)
+    }
+    return { file: f, article: art }
+  }
+
+  it('拦住并给出会失效的公开文章清单,文件一动不动', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const { file } = await publishedWith(token, '封面.png', '已发布的文章')
+
+    const res = await batch<{ needs_force: boolean; public_refs: any[] }>(token, {
+      op: 'move', ids: [file.id], folder_id: priv,
+    })
+    expect(res.body.ok, res.body.error).toBe(true)
+    expect(res.body.data!.needs_force).toBe(true)
+    expect(res.body.data!.public_refs).toHaveLength(1)
+    expect(res.body.data!.public_refs[0].name).toBe('封面.png')
+    expect(res.body.data!.public_refs[0].articles[0].title).toBe('已发布的文章')
+
+    // 关键:被拦下时不能已经移过去了
+    const after = await listFiles(token)
+    expect(after.find((f) => f.id === file.id)!.folder_id).toBeNull()
+  })
+
+  it('确认之后才真的移进去', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const { file } = await publishedWith(token, '封面.png', '已发布的文章')
+
+    const res = await batch<{ moved: number }>(token, { op: 'move', ids: [file.id], folder_id: priv, force: true })
+    expect(res.body.data!.moved).toBe(1)
+    const after = await listFiles(token)
+    expect(after.find((f) => f.id === file.id)!.folder_id).toBe(priv)
+  })
+
+  it('只被未公开的笔记引用就不拦(访客本来也看不见)', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const { file } = await publishedWith(token, '草稿图.png', '还没发布', false)
+
+    const res = await batch<{ moved: number }>(token, { op: 'move', ids: [file.id], folder_id: priv })
+    expect(res.body.data!.moved).toBe(1)
+  })
+
+  it('移进普通文件夹不拦;私密目录之间互相搬也不拦', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const normal = await newFolder(token, '素材')
+    const { file } = await publishedWith(token, '封面.png', '已发布的文章')
+
+    expect((await batch<{ moved: number }>(token, { op: 'move', ids: [file.id], folder_id: normal })).body.data!.moved).toBe(1)
+
+    // 先强行放进私密,再在私密子树内部搬:可见性没有任何变化,不该再问一遍
+    await batch(token, { op: 'move', ids: [file.id], folder_id: priv, force: true })
+    const sub = await api<{ id: number }>('/api/fm/folders', {
+      method: 'POST', token, body: j({ name: '私密子目录', parent_id: priv }),
+    })
+    const res = await batch<{ moved: number }>(token, { op: 'move', ids: [file.id], folder_id: sub.body.data!.id })
+    expect(res.body.data!.moved).toBe(1)
+  })
+
+  it('单个文件的移动走同一条规矩', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const { file } = await publishedWith(token, '封面.png', '已发布的文章')
+
+    const blocked = await api<{ needs_force: boolean; public_refs: any[] }>(`/api/fm/files/${file.id}`, {
+      method: 'PUT', token, body: j({ folder_id: priv }),
+    })
+    expect(blocked.body.data!.needs_force).toBe(true)
+    expect((await listFiles(token)).find((f) => f.id === file.id)!.folder_id).toBeNull()
+
+    const forced = await api(`/api/fm/files/${file.id}`, {
+      method: 'PUT', token, body: j({ folder_id: priv, force: true }),
+    })
+    expect(forced.body.ok, forced.body.error).toBe(true)
+    expect((await listFiles(token)).find((f) => f.id === file.id)!.folder_id).toBe(priv)
+  })
+
+  it('整个目录搬进私密子树时,连子目录里的文件一起算', async () => {
+    const token = await bootstrap()
+    const priv = await privateFolder(token)
+    const outer = await newFolder(token, '外层')
+    const inner = await api<{ id: number }>('/api/fm/folders', {
+      method: 'POST', token, body: j({ name: '内层', parent_id: outer }),
+    })
+    const { file } = await publishedWith(token, '深处的图.png', '已发布的文章')
+    await batch(token, { op: 'move', ids: [file.id], folder_id: inner.body.data!.id, force: true })
+
+    const blocked = await api<{ needs_force: boolean; public_refs: any[] }>(`/api/fm/folders/${outer}`, {
+      method: 'PUT', token, body: j({ parent_id: priv }),
+    })
+    expect(blocked.body.data!.needs_force).toBe(true)
+    expect(blocked.body.data!.public_refs[0].name).toBe('深处的图.png')
+    // 目录也不能已经搬过去了
+    const fd = await env.DB.prepare('SELECT parent_id FROM folders WHERE id = ?').bind(outer).first<{ parent_id: number | null }>()
+    expect(fd!.parent_id).toBeNull()
+
+    const forced = await api(`/api/fm/folders/${outer}`, {
+      method: 'PUT', token, body: j({ parent_id: priv, force: true }),
+    })
+    expect(forced.body.ok, forced.body.error).toBe(true)
   })
 })

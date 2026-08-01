@@ -246,7 +246,10 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   }
 
   /** 批量操作统一入口:一次请求打完,不在前端循环打 N 次(N 个文件就是 N 次计费请求) */
-  const runBatch = async (op: 'move' | 'delete' | 'copy', opts: { ids?: number[]; folder_id?: number | null; force?: boolean } = {}) => {
+  const runBatch = async (
+    op: 'move' | 'delete' | 'copy',
+    opts: { ids?: number[]; folder_id?: number | null; force?: boolean } = {},
+  ): Promise<void> => {
     const ids = opts.ids ?? [...sel]
     if (ids.length === 0) return
     setBatchBusy(true)
@@ -257,6 +260,17 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
     setBatchBusy(false)
     if (!j?.ok) return flashBatch(j?.error || '操作失败')
     const d = j.data || {}
+    // 移进私密文件夹会让公开文章里的图失效:与批量删除同一套确认流程,只是名单不同(P14.2)
+    if (d.needs_force && d.public_refs) {
+      fm.setPubWarn({
+        files: d.public_refs,
+        onConfirm: () => {
+          fm.setPubWarn(null)
+          void runBatch('move', { ids, folder_id: opts.folder_id, force: true })
+        },
+      })
+      return
+    }
     if (d.needs_force) { setBatchDel(d.referenced); return }
     if (op === 'move') {
       flashBatch(`已移动 ${d.moved} 个文件` + (d.revoked_shares > 0 ? `;其中 ${d.revoked_shares} 个移入私密文件夹,原分享已取消` : ''))
@@ -364,10 +378,27 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
 
   const submitMove = async (folderId: number | null) => {
     if (!moveTarget) return
-    const j = await api(`/api/fm/files/${moveTarget.id}`, { method: 'PUT', body: JSON.stringify({ folder_id: folderId }) })
-    if (!j?.ok) flash(j?.error || '移动失败')
-    else if (j.data?.revoked_shares > 0) flash('已移入私密文件夹,原分享已取消')
+    const id = moveTarget.id
+    const put = (force: boolean) => api(`/api/fm/files/${id}`, {
+      method: 'PUT', body: JSON.stringify({ folder_id: folderId, force }),
+    })
+    const j = await put(false)
     setMoveTarget(null)
+    if (!j?.ok) { flash(j?.error || '移动失败'); return }
+    if (j.data?.needs_force) {
+      fm.setPubWarn({
+        files: j.data.public_refs,
+        onConfirm: async () => {
+          fm.setPubWarn(null)
+          const again = await put(true)
+          if (!again?.ok) flash(again?.error || '移动失败')
+          else if (again.data?.revoked_shares > 0) flash('已移入私密文件夹,原分享已取消')
+          refresh()
+        },
+      })
+      return
+    }
+    if (j.data?.revoked_shares > 0) flash('已移入私密文件夹,原分享已取消')
     refresh()
   }
 
@@ -999,6 +1030,40 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                 className="px-3 py-1.5 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 disabled:opacity-50"
               >
                 仍要删除全部 {sel.size} 个
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 移进私密文件夹 = 让这些公开文章里的图对访客失效(P14.2)。
+          三条路径(批量移动/单个移动/拖到侧栏目录)共用这一个弹窗,回调由触发方给出。 */}
+      {fm.pubWarn && (
+        <div className="fixed inset-0 z-[80] bg-black/40 flex items-center justify-center" onMouseDown={() => fm.setPubWarn(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[26rem] max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">
+              有 {fm.pubWarn.files.length} 个文件正被已公开的笔记引用
+            </h3>
+            <p className="text-[11px] text-gray-400 mb-2">
+              私密文件夹里的文件对访客一律不可见。移进去之后,下面这些已发布页面里的图片会立刻变成裂图（你自己登录时仍然看得见,所以不检查博客不会发现）。移出来即可恢复。
+            </p>
+            <ul className="max-h-52 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50 mb-3">
+              {fm.pubWarn.files.map((x) => (
+                <li key={x.id} className="px-3 py-1.5 text-xs">
+                  <div className="text-gray-700 truncate">{x.name}</div>
+                  <div className="text-[11px] text-gray-400 truncate">
+                    {x.articles.map((a) => a.title).join('、')}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => fm.setPubWarn(null)} className="px-3 py-1.5 text-xs rounded-lg text-gray-500 hover:bg-gray-100">取消</button>
+              <button
+                onClick={fm.pubWarn.onConfirm}
+                className="px-3 py-1.5 text-xs rounded-lg bg-amber-500 text-white hover:bg-amber-600"
+              >
+                仍然移入私密文件夹
               </button>
             </div>
           </div>

@@ -17,7 +17,9 @@ binding = "ASSETS"          # worker 里取 SPA 外壳用(env.ASSETS.fetch),绑�
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*", "/blog/*", "/robots.txt", "/sitemap.xml"]
 
-# 定时任务:每月 2 日 02:47 UTC 归档上月用量 + 清理回收站;每 5 分钟扫描到期提醒并推送(见 worker/index.ts scheduled 按 cron 分支)
+# 定时任务:每月 2 日 02:47 UTC 归档上月用量 + 清理回收站;每 5 分钟扫描到期提醒并推送,
+# 顺带判一次自动备份是否到期(P14.2:频率是设置项,不是 cron 表达式——改频率不用重新部署,
+# 也不必为它多占一条触发器)。见 worker/index.ts scheduled 按 cron 分支。
 [triggers]
 crons = ["47 2 2 * *", "*/5 * * * *"]
 
