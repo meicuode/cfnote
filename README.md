@@ -493,7 +493,7 @@ cfnote/
 │   ├── App.tsx                # 应用入口 + 路由（/blog、/clip 分流懒加载）
 │   ├── main.tsx               # React 挂载
 │   └── index.css              # Tailwind 入口 + 深色映射
-├── docs/                       # 需求与设计文档（roadmap、evernote-gap、file-manager、public-blog、wysiwyg-editor、notifications）
+├── docs/                       # 专题与历史文档，入口见 docs/README.md（文档地图：哪份是活的、哪份是历史存档）
 ├── tests/                      # Vitest 单元测试（纯函数，node 环境）
 │   └── worker/                 # Worker 端到端（workerd + 真 D1/R2，见 wrangler.test.toml）
 ├── wrangler.toml               # Worker 入口 + 静态资源 + Cron + 绑定（D1/Vectorize/AI/R2/AE）
