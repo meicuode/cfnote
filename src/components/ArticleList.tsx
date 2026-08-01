@@ -208,7 +208,7 @@ export default function ArticleList({
                   {trash ? '处理中' : '删除中'}
                 </span>
               ) : trash ? (
-                <span className="flex items-center gap-0.5 shrink-0 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <span className="flex items-center gap-0.5 shrink-0 ml-2 opacity-0 group-hover:opacity-100 max-lg:opacity-100 transition-opacity">
                   <button
                     onClick={(e) => { e.stopPropagation(); restore(article.id) }}
                     title="恢复到原笔记本"
@@ -229,7 +229,8 @@ export default function ArticleList({
                   </button>
                 </span>
               ) : (
-                <span className="flex items-center gap-0.5 shrink-0 ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                /* 置顶 / 移入回收站:桌面悬浮才出;窄屏没有悬浮,常驻显示 */
+                <span className="flex items-center gap-0.5 shrink-0 ml-2 opacity-0 group-hover:opacity-100 max-lg:opacity-100 transition-opacity">
                   {onTogglePin && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onTogglePin(article) }}

@@ -191,7 +191,9 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   const [shareBusy, setShareBusy] = useState(false)
   const [shareOverride, setShareOverride] = useState<{ token: string | null; expires: string | null } | null>(null)
   const share = shareOverride ?? { token: article.share_token ?? null, expires: article.share_expires_at ?? null }
-  const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>('edit')
+  // 移动端默认进预览(P15.1):手机上多数时候是「看」,一进来就是等宽字体的源码没有意义。
+  // 要写就点「源码」——textarea 在移动端是可用的,只有富文本不行(见 IS_MOBILE 注释)。
+  const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>(IS_MOBILE ? 'preview' : 'edit')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(true)
   const [uploading, setUploading] = useState(false)
@@ -873,8 +875,8 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top bar: mode toggle + save status */}
-      <div className="px-4 py-2 border-b border-gray-100 flex items-center justify-between shrink-0">
+      {/* Top bar: mode toggle + save status。窄屏按钮多,允许换行而不是横向溢出 */}
+      <div className="px-3 lg:px-4 py-2 border-b border-gray-100 flex items-center justify-between gap-x-2 gap-y-1 flex-wrap shrink-0">
         <div className="flex items-center gap-1">
           <button
             onClick={() => setMode('edit')}
@@ -939,7 +941,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
             </>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-x-3 gap-y-1 flex-wrap justify-end ml-auto">
           {/* P10 版本历史:查看/恢复历史快照(草稿与回收站不可用) */}
           {article.id > 0 && !trashed && (
             <button
@@ -1002,9 +1004,9 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               设为私有
             </button>
           ))}
-          <span className="text-xs text-gray-300">{charCount} 字</span>
+          <span className="text-xs text-gray-300 max-sm:hidden">{charCount} 字</span>
           {article.is_vectorized ? (
-            <span className="text-xs text-emerald-500 flex items-center gap-1">
+            <span className="text-xs text-emerald-500 flex items-center gap-1 max-sm:hidden">
               <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
               </svg>
@@ -1028,14 +1030,14 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
 
       {/* P9 回收站横幅:软删除的笔记只读 */}
       {trashed && (
-        <div className="px-6 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 shrink-0">
+        <div className="px-4 lg:px-6 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 shrink-0">
           🗑 这篇笔记在回收站中(只读),30 天后自动彻底删除;可在左侧列表悬浮操作里恢复或彻底删除。
         </div>
       )}
 
       {/* P9.2 反向链接条:哪些笔记链接到本篇 */}
       {backlinks.length > 0 && (
-        <div className="px-6 py-1.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 shrink-0 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+        <div className="px-4 lg:px-6 py-1.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 shrink-0 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
           <span className="text-gray-400 shrink-0">🔗 {backlinks.length} 篇笔记链接到此篇:</span>
           {backlinks.map((b) => (
             <button
@@ -1054,7 +1056,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       {mode === 'edit' && !trashed && (
         <div className="px-4 py-1.5 border-b border-gray-100 flex items-center gap-0.5 shrink-0 overflow-x-auto">
           {TOOLBAR_GROUPS.map((group, gi) => (
-            <div key={gi} className="flex items-center gap-0.5">
+            <div key={gi} className="flex items-center gap-0.5 shrink-0">
               {gi > 0 && <div className="w-px h-5 bg-gray-200 mx-1" />}
               {group.map(({ key, label, title, className }) => (
                 <button
@@ -1106,13 +1108,13 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       )}
 
       {/* Title */}
-      <div className="px-6 pt-4 shrink-0">
+      <div className="px-4 lg:px-6 pt-3 lg:pt-4 shrink-0">
         <input
           type="text"
           value={title}
           readOnly={trashed}
           onChange={(e) => setTitle(e.target.value)}
-          className="w-full text-2xl font-bold text-gray-900 border-none outline-none bg-transparent placeholder:text-gray-300"
+          className="w-full text-xl lg:text-2xl font-bold text-gray-900 border-none outline-none bg-transparent placeholder:text-gray-300"
           placeholder="文章标题"
         />
         {/* P9 标签行:前置标签图标 + chips + 虚线胶囊输入(datalist 补全已有标签);回收站只读展示 */}
@@ -1179,7 +1181,7 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
       </div>
 
       {/* Content area */}
-      <div className="flex-1 overflow-hidden px-6 py-4">
+      <div className="flex-1 overflow-hidden px-4 lg:px-6 py-3 lg:py-4">
         {mode === 'edit' ? (
           <textarea
             ref={textareaRef}

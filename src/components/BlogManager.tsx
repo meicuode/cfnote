@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi'
 import ArticleEditor from './ArticleEditor'
 import BlogLayoutPanel from './BlogLayoutPanel'
 import { commentAvatar } from '../lib/comments'
+import type { Pane } from '../lib/pane'
 import type { Notebook, Article } from '../types'
 
 // 博客管理(P11.1 + P11.2;P11.4 内联;P11.7 两栏可编辑):占据侧栏右侧整个工作区。
@@ -48,6 +49,10 @@ interface Props {
   /** 返回笔记工作区 */
   onClose: () => void
   onOpenArticle: (id: number) => void
+  /** 窄屏返回栈当前层(P15.1):'list' 显示已公开文章列表,'main' 显示编辑器。桌面下被 lg: 类忽略 */
+  pane: Pane
+  /** 窄屏:在列表里点开一篇 → 让外壳推进到正文那一层 */
+  onEnterDetail: () => void
 }
 
 // 时间戳(UTC 无时区)补 Z 归一后本地展示
@@ -59,7 +64,7 @@ function fmtTime(s: string | null): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-export default function BlogManager({ token, notebooks, tab, onTabChange, onClose, onOpenArticle }: Props) {
+export default function BlogManager({ token, notebooks, tab, onTabChange, onClose, onOpenArticle, pane, onEnterDetail }: Props) {
   const api = useApi(token)
   const [pendingCount, setPendingCount] = useState(0)
 
@@ -113,6 +118,7 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
   // 直到请求回来才换——笔记工作区(Layout.openArticle)早就改成乐观切换了,这里漏改。
   // 列表行的形态只有一种(PublishedArticle,带 summary),不存在「不同调用方字段不一致」的问题。
   const openInEditor = async (id: number) => {
+    onEnterDetail()
     if (selected?.id === id) return
     const row = (items || []).find((a) => a.id === id)
     if (row) {
@@ -246,21 +252,25 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
       </div>
 
       {/* 子视图切换(与侧栏二级菜单同源,点击即改 URL) */}
-      <div className="px-4 border-b border-gray-100 flex items-center gap-1 shrink-0">
-        <button onClick={() => onTabChange('articles')} className={tabCls(tab === 'articles')}>已公开文章{tab === 'articles' && items ? ` (${items.length})` : ''}</button>
-        <button onClick={() => onTabChange('comments')} className={tabCls(tab === 'comments')}>
+      <div className="px-4 border-b border-gray-100 flex items-center gap-1 shrink-0 overflow-x-auto">
+        <button onClick={() => onTabChange('articles')} className={`shrink-0 ${tabCls(tab === 'articles')}`}>已公开文章{tab === 'articles' && items ? ` (${items.length})` : ''}</button>
+        <button onClick={() => onTabChange('comments')} className={`shrink-0 ${tabCls(tab === 'comments')}`}>
           评论管理
           {pendingCount > 0 && <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">{pendingCount > 99 ? '99+' : pendingCount}</span>}
         </button>
-        <button onClick={() => onTabChange('layout')} className={tabCls(tab === 'layout')}>页面布局</button>
+        <button onClick={() => onTabChange('layout')} className={`shrink-0 ${tabCls(tab === 'layout')}`}>页面布局</button>
       </div>
 
         {tab === 'layout' ? (
           <BlogLayoutPanel token={token} />
         ) : tab === 'articles' ? (
-          // 两栏(P11.7):左「已公开文章」列表 + 右完整编辑器,中间可拖拽分隔
+          // 两栏(P11.7):左「已公开文章」列表 + 右完整编辑器,中间可拖拽分隔。
+          // 窄屏(P15.1)放不下两栏,由外壳的 pane 决定当前显示哪一栏
           <div className="flex-1 flex min-h-0">
-            <div className="flex flex-col min-h-0 shrink-0 border-r border-gray-100" style={{ width: listWidth }}>
+            <div
+              className={`flex flex-col min-h-0 shrink-0 border-r border-gray-100 w-[var(--cf-blog-list-w)] ${pane === 'main' ? 'max-lg:hidden' : 'max-lg:w-full'}`}
+              style={{ '--cf-blog-list-w': `${listWidth}px` } as React.CSSProperties}
+            >
               <div className="px-3 py-3 border-b border-gray-100 flex flex-col gap-2 shrink-0">
                 <div className="flex items-center gap-2">
                   <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题…" className="flex-1 min-w-0 text-sm border border-gray-200 rounded-lg px-3 py-1.5 outline-none focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400" />
@@ -319,8 +329,9 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
                                 <span className="shrink-0">· {a.views} 浏览</span>
                               </div>
                             </div>
-                            {/* 悬浮才出:预览↗ / 设为单页 / 取消公开(阻止冒泡,避免顺带切换选中) */}
-                            <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* 悬浮才出:预览↗ / 设为单页 / 取消公开(阻止冒泡,避免顺带切换选中)。
+                                窄屏没有悬浮,常驻显示 */}
+                            <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 max-lg:opacity-100 transition-opacity">
                               <a href={`/blog/${a.id}`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[11px] text-gray-400 hover:text-emerald-600" title="在新标签预览博客页">预览↗</a>
                               <button
                                 onClick={(e) => { e.stopPropagation(); toggleIsPage(a) }}
@@ -343,14 +354,14 @@ export default function BlogManager({ token, notebooks, tab, onTabChange, onClos
               </div>
             </div>
 
-            {/* 拖拽分隔条(宽度存 localStorage) */}
+            {/* 拖拽分隔条(宽度存 localStorage;窄屏无并排可分配) */}
             <div
               onMouseDown={startListResize}
-              className={`w-1 shrink-0 cursor-col-resize transition-colors ${listDragging ? 'bg-emerald-300' : 'bg-transparent hover:bg-emerald-200'}`}
+              className={`max-lg:hidden w-1 shrink-0 cursor-col-resize transition-colors ${listDragging ? 'bg-emerald-300' : 'bg-transparent hover:bg-emerald-200'}`}
               title="拖动调整列表宽度"
             />
 
-            <div className="flex-1 min-w-0 min-h-0">
+            <div className={`flex-1 min-w-0 min-h-0 ${pane === 'main' ? '' : 'max-lg:hidden'}`}>
               {selected ? (
                 <ArticleEditor
                   key={selected.id}

@@ -14,6 +14,7 @@ import { isDue, type ReminderItem } from '../lib/reminders'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import type { Notebook, Article } from '../types'
 import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
+import { workspaceOf, entryPane, backPane, canGoBack, paneForRoute, type Pane } from '../lib/pane'
 import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -57,6 +58,11 @@ export default function Layout({ token, username, onLogout }: Props) {
       localStorage.setItem('cfnote-sidebar-open', v ? '0' : '1')
       return !v
     })
+  // 窄屏返回栈(P15.1):当前显示哪一层。桌面下 lg: 类让三层同时可见,这个状态不起作用。
+  // 不存 localStorage——它是「刚才点到哪」而不是布局偏好,刷新时由 paneForRoute 从 URL 重算。
+  const [pane, setPane] = useState<Pane>('nav')
+  // 顶栏在窄屏塞不下八个按钮:主题/统计/设置/日志/退出 收进这个溢出菜单
+  const [moreOpen, setMoreOpen] = useState(false)
   const [showChat, setShowChat] = useState(() => localStorage.getItem('cfnote-chat-open') === '1')
   // AI 对话折叠状态存本地(不进 URL):与 chatWidth 同属布局偏好
   const setChatOpen = (v: boolean) => { setShowChat(v); localStorage.setItem('cfnote-chat-open', v ? '1' : '0') }
@@ -129,7 +135,11 @@ export default function Layout({ token, username, onLogout }: Props) {
   }
 
   // 退出文件管理:子视图一并回到「全部文件」,下次进入不残留上次停在的文件夹
-  const closeFiles = useCallback(() => { setShowFiles(false); setFmView({ kind: 'all' }) }, [])
+  const closeFiles = useCallback(() => { setShowFiles(false); setFmView({ kind: 'all' }); setPane('list') }, [])
+
+  // 窄屏返回栈:当前工作区决定「返回」退到哪一层(文件管理与评论/布局没有列表层)
+  const workspace = workspaceOf(blogView, showFiles)
+  const goBack = () => { setMoreOpen(false); setPane((p) => backPane(p, workspace)) }
 
   // 进入文件管理时加载共享 overview(侧栏二级菜单与右侧列表同一份;不进入则完全不拉)
   const reloadFmOverview = fm.reloadOverview
@@ -142,6 +152,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     // 打开文章即回到笔记工作区(否则被博客管理/文件管理内联模块挡住)
     setBlogView(null)
     closeFiles()
+    setPane('main')
   }
 
   const loadNotebooks = useCallback(async () => {
@@ -203,6 +214,7 @@ export default function Layout({ token, username, onLogout }: Props) {
   // 从列表选中文章:立即用列表项(标题+摘要)切换显示,正文异步补全,不阻塞界面
   const [articleLoading, setArticleLoading] = useState(false)
   const openArticle = (a: Article) => {
+    setPane('main')
     if (activeArticle?.id === a.id) return
     setActiveArticle({ ...a, content: (a as any).summary ?? '' })
     setArticleLoading(true)
@@ -227,6 +239,8 @@ export default function Layout({ token, username, onLogout }: Props) {
     setShowStats(r.panel === 'stats')
     setShowLogs(r.panel === 'logs')
     setBlogView(r.panel === 'blog' ? 'articles' : r.panel === 'comments' ? 'comments' : r.panel === 'layout' ? 'layout' : null)
+    // 窄屏:刷新/前进后退后停在与 URL 相符的那一层,而不是一律掉回侧栏
+    setPane(paneForRoute(r.panel, v.kind !== 'none', !!r.articleId))
   }, [notebooks, loadArticleDetail])
 
   // 由当前 state 反推规范 URL(pathname+search)
@@ -265,6 +279,7 @@ export default function Layout({ token, username, onLogout }: Props) {
         const nb = notebooks.find((n) => n.id === res.data!.notebook_id) ?? null
         if (nb) setActiveNotebook(nb)
         loadArticleDetail(id)
+        setPane('main')  // 深链就是冲着这一篇来的:窄屏直接停在正文那一层
         window.history.replaceState(null, '', buildLocation({ view: nb ? { kind: 'notebook', id: nb.id } : { kind: 'none' }, articleId: id, panel: null }))
       })()
       return () => clearTimeout(safety)
@@ -287,6 +302,7 @@ export default function Layout({ token, username, onLogout }: Props) {
     const artId = Number(localStorage.getItem('cfnote-last-article'))
     const validArt = Number.isInteger(artId) && artId > 0 ? artId : null
     if (validArt) loadArticleDetail(validArt)
+    setPane(validArt ? 'main' : 'list')
     window.history.replaceState(null, '', buildLocation({
       view: nb.id === PRIVATE_NOTEBOOK.id ? { kind: 'private' } : nb.id === TRASH_NOTEBOOK.id ? { kind: 'trash' } : { kind: 'notebook', id: nb.id },
       articleId: validArt, panel: null,
@@ -355,6 +371,7 @@ export default function Layout({ token, username, onLogout }: Props) {
   const startDraft = (tpl?: Article) => {
     if (!activeNotebook || activeNotebook.id < 0) return
     setTemplatePick(null)
+    setPane('main')
     // 本地草稿:不落库。用户首次输入触发保存时才真正创建记录(见 saveArticle 的 id<0 分支)
     setActiveArticle({
       id: -Date.now(), notebook_id: activeNotebook.id,
@@ -579,36 +596,45 @@ export default function Layout({ token, username, onLogout }: Props) {
   return (
     <div className="h-screen flex flex-col bg-white">
       {/* Top Bar */}
-      <header className="h-13 border-b border-gray-200 flex items-center px-4 shrink-0 bg-white z-10">
-        {/* 折叠/展开左侧笔记本列表(桌面与移动端通用,状态存 localStorage) */}
-        <button onClick={toggleSidebar} className="p-1.5 rounded-lg hover:bg-gray-100 mr-3" title={sidebarOpen ? '折叠侧栏' : '展开侧栏'}>
+      <header className="h-13 border-b border-gray-200 flex items-center px-2 lg:px-4 shrink-0 bg-white z-30 relative">
+        {/* 窄屏:返回上一层(正文 → 列表 → 侧栏)。桌面不需要——三层本来就同屏 */}
+        {canGoBack(pane) && (
+          <button onClick={goBack} className="lg:hidden p-1.5 rounded-lg hover:bg-gray-100 mr-1" title="返回上一层" aria-label="返回上一层">
+            <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+        {/* 折叠/展开左侧笔记本列表(窄屏没有「并排」可折叠,由返回栈代替) */}
+        <button onClick={toggleSidebar} className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 mr-3" title={sidebarOpen ? '折叠侧栏' : '展开侧栏'}>
           <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
           </svg>
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <div className="w-7 h-7 bg-emerald-500 rounded-lg flex items-center justify-center">
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
             </svg>
           </div>
-          <span className="font-semibold text-gray-900 text-sm">CFNote</span>
+          <span className="font-semibold text-gray-900 text-sm max-sm:hidden">CFNote</span>
         </div>
 
         <button
           onClick={() => setShowSearch(!showSearch)}
-          className="ml-4 flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-3 py-1.5 text-sm text-gray-500 transition-colors flex-1 max-w-xs"
+          className="ml-2 lg:ml-4 flex items-center gap-2 bg-gray-100 hover:bg-gray-200 rounded-lg px-2.5 lg:px-3 py-1.5 text-sm text-gray-500 transition-colors flex-1 max-w-xs min-w-0"
+          title="搜索知识库"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
-          搜索知识库...
+          <span className="truncate max-sm:hidden">搜索知识库...</span>
         </button>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-1 lg:gap-3">
           <button
             onClick={toggleTheme}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
+            className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title={dark ? '切换到浅色模式' : '切换到深色模式'}
           >
             {dark ? (
@@ -637,7 +663,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           </button>
           <button
             onClick={() => setShowStats(!showStats)}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
+            className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title="使用统计"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -646,7 +672,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           </button>
           <button
             onClick={() => { setSettingsFocus(null); setShowSettings(!showSettings) }}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
+            className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title="设置"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -656,7 +682,7 @@ export default function Layout({ token, username, onLogout }: Props) {
           </button>
           <button
             onClick={() => setShowLogs(!showLogs)}
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
+            className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
             title="系统日志"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -672,50 +698,91 @@ export default function Layout({ token, username, onLogout }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
             </svg>
           </button>
-          <span className="text-sm text-gray-500">{username}</span>
-          <button onClick={onLogout} className="text-sm text-gray-400 hover:text-red-500 transition-colors">退出</button>
+          <span className="text-sm text-gray-500 max-lg:hidden">{username}</span>
+          <button onClick={onLogout} className="text-sm text-gray-400 hover:text-red-500 transition-colors max-lg:hidden">退出</button>
+          {/* 窄屏溢出菜单:上面那批 max-lg:hidden 的入口在这里各有一条 */}
+          <button
+            onClick={() => setMoreOpen((v) => !v)}
+            className={`lg:hidden p-1.5 rounded-lg transition-colors ${moreOpen ? 'text-emerald-600 bg-emerald-50' : 'text-gray-400 hover:bg-gray-100'}`}
+            title="更多"
+            aria-label="更多"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01" />
+            </svg>
+          </button>
         </div>
+
+        {moreOpen && (
+          <>
+            <div className="lg:hidden fixed inset-0" onClick={() => setMoreOpen(false)} />
+            <div className="lg:hidden absolute right-2 top-12 w-44 bg-white rounded-xl shadow-lg border border-gray-200 py-1 z-10">
+              {([
+                ['主题', dark ? '切换到浅色' : '切换到深色', () => toggleTheme()],
+                ['统计', '使用统计', () => setShowStats(true)],
+                ['设置', '', () => { setSettingsFocus(null); setShowSettings(true) }],
+                ['日志', '系统日志', () => setShowLogs(true)],
+              ] as [string, string, () => void][]).map(([label, hint, act]) => (
+                <button
+                  key={label}
+                  onClick={() => { setMoreOpen(false); act() }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center justify-between gap-2"
+                >
+                  <span>{label}</span>
+                  {hint && <span className="text-[11px] text-gray-400 truncate">{hint}</span>}
+                </button>
+              ))}
+              <div className="border-t border-gray-100 mt-1 pt-1">
+                <div className="px-3 py-1 text-[11px] text-gray-400 truncate">{username}</div>
+                <button onClick={onLogout} className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-red-50">退出登录</button>
+              </div>
+            </div>
+          </>
+        )}
       </header>
 
-      {/* Main Content */}
+      {/* Main Content。窄屏(max-lg)一次只显示 pane 指向的那一层;桌面那一支的类保持原样,
+          全部改动都挂在 max-lg: 上——这样「四栏并排」不可能被这一批碰坏 */}
       <div className="flex-1 flex overflow-hidden">
-        <div className={`${sidebarOpen ? 'w-56' : 'w-0'} transition-all duration-200 overflow-hidden border-r border-gray-200 bg-gray-50/70 shrink-0`}>
+        <div className={`${sidebarOpen ? 'w-56' : 'w-0'} transition-all duration-200 overflow-hidden border-r border-gray-200 bg-gray-50/70 shrink-0 ${pane === 'nav' ? 'max-lg:w-full' : 'max-lg:hidden'}`}>
           <Sidebar
             notebooks={notebooks}
             activeNotebook={activeNotebook}
             tags={tags}
-            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); closeFiles() }}
+            onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); closeFiles(); setPane('list') }}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
-            onOpenFiles={() => { setShowFiles(true); setBlogView(null) }}
+            onOpenFiles={() => { setShowFiles(true); setBlogView(null); setPane('main') }}
             filesActive={showFiles}
             fileNavSlot={showFiles ? (
               <Suspense fallback={<p className="pl-8 py-1 text-[11px] text-gray-400">加载中…</p>}>
-                <FileManagerNav view={fmView} onChangeView={setFmView} fm={fm} />
+                <FileManagerNav view={fmView} onChangeView={(v) => { setFmView(v); setPane('main') }} fm={fm} />
               </Suspense>
             ) : null}
             blogView={blogView}
-            onOpenBlog={(v) => { setBlogView(v); closeFiles() }}
+            onOpenBlog={(v) => { setBlogView(v); closeFiles(); setPane(entryPane(workspaceOf(v, false))) }}
           />
         </div>
 
         {blogView ? (
           /* 博客管理(P11.4):内联占据侧栏右侧整个工作区,不再弹窗 */
-          <div className="flex-1 overflow-hidden">
+          <div className={`flex-1 overflow-hidden ${pane === 'nav' ? 'max-lg:hidden' : ''}`}>
             <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
               <BlogManager
                 token={token}
                 notebooks={notebooks}
                 tab={blogView}
-                onTabChange={(v) => setBlogView(v)}
-                onClose={() => setBlogView(null)}
+                onTabChange={(v) => { setBlogView(v); setPane(entryPane(workspaceOf(v, false))) }}
+                onClose={() => { setBlogView(null); setPane('list') }}
                 onOpenArticle={openArticleWithSnippet}
+                pane={pane}
+                onEnterDetail={() => setPane('main')}
               />
             </Suspense>
           </div>
         ) : showFiles ? (
           /* 文件管理(P11.5):同样内联展示,不再弹窗 */
-          <div className="flex-1 overflow-hidden">
+          <div className={`flex-1 overflow-hidden ${pane === 'nav' ? 'max-lg:hidden' : ''}`}>
             <Suspense fallback={<div className="h-full flex items-center justify-center"><div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" /></div>}>
               <FileManager
                 token={token}
@@ -729,7 +796,10 @@ export default function Layout({ token, username, onLogout }: Props) {
           </div>
         ) : (
           <>
-        <div className="relative border-r border-gray-200 bg-white shrink-0 flex flex-col overflow-hidden" style={{ width: listWidth }}>
+        <div
+          className={`relative border-r border-gray-200 bg-white shrink-0 flex flex-col overflow-hidden w-[var(--cf-list-w)] ${pane === 'list' ? 'max-lg:w-full' : 'max-lg:hidden'}`}
+          style={{ '--cf-list-w': `${listWidth}px` } as React.CSSProperties}
+        >
           <ArticleList
             articles={articles}
             activeArticle={activeArticle}
@@ -750,15 +820,15 @@ export default function Layout({ token, username, onLogout }: Props) {
             onPurgeNotebook={purgeNotebook}
             onTrashImpact={trashImpact}
           />
-          {/* 列表右缘拖拽条:调整列表/正文分配 */}
+          {/* 列表右缘拖拽条:调整列表/正文分配(窄屏无并排可分配) */}
           <div
             onMouseDown={startListResize}
-            className={`absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors ${listDragging ? 'bg-emerald-400' : ''}`}
+            className={`max-lg:hidden absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors ${listDragging ? 'bg-emerald-400' : ''}`}
             title="拖拽调整宽度"
           />
         </div>
 
-        <div className="flex-1 overflow-hidden">
+        <div className={`flex-1 overflow-hidden ${pane === 'main' ? '' : 'max-lg:hidden'}`}>
           {activeArticle ? (
             <ArticleEditor article={activeArticle} token={token} onSave={saveArticle} highlight={highlight} loadingContent={articleLoading} allTags={tags.map((t) => t.name)} onOpenArticle={(id) => openArticleWithSnippet(id)} onRemindersChanged={loadReminders} />
           ) : (
@@ -773,19 +843,24 @@ export default function Layout({ token, username, onLogout }: Props) {
           )}
         </div>
 
-        {/* AI Chat Panel(宽度可拖拽,300px ~ 屏幕一半) */}
+        {/* AI Chat Panel:桌面是第四栏(宽度可拖拽,300px ~ 屏幕一半),窄屏改为盖住工作区的
+            全屏覆盖层(顶栏之下)。宽度走 CSS 变量而不是内联 style——内联 width 会把
+            max-lg:w-full 顶掉,而变量与类同属一个层叠层,断点说了算 */}
         <div
-          className={`relative ${chatDragging ? '' : 'transition-[width] duration-300'} overflow-hidden border-l border-gray-200 shrink-0`}
-          style={{ width: showChat ? chatWidth : 0 }}
+          className={`relative ${chatDragging ? '' : 'transition-[width] duration-300'} overflow-hidden border-l border-gray-200 shrink-0 w-[var(--cf-chat-w)] ${
+            showChat ? 'max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:top-13 max-lg:z-20 max-lg:w-full max-lg:bg-white' : 'max-lg:hidden'
+          }`}
+          style={{ '--cf-chat-w': showChat ? `${chatWidth}px` : '0px', '--cf-chat-inner': `${chatWidth}px` } as React.CSSProperties}
         >
           {showChat && (
             <div
               onMouseDown={startChatResize}
-              className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors"
+              className="max-lg:hidden absolute left-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-emerald-300 active:bg-emerald-400 z-10 transition-colors"
               title="拖拽调整宽度"
             />
           )}
-          <div style={{ width: chatWidth }} className="h-full">
+          {/* 内层固定宽度:折叠动画期间内容不跟着重排 */}
+          <div className="h-full w-[var(--cf-chat-inner)] max-lg:w-full">
             <AiChatPanel
               token={token}
               onClose={() => setChatOpen(false)}

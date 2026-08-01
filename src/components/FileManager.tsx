@@ -551,7 +551,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
         {/* 顶栏 */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
+        <div className="flex items-center gap-x-3 gap-y-2 flex-wrap px-3 lg:px-4 py-3 border-b border-gray-100 shrink-0">
           <h2 className="text-sm font-semibold text-gray-900">文件管理</h2>
           {overview && (
             <span className="text-xs text-gray-400">
@@ -602,7 +602,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
         <div className="flex-1 flex overflow-hidden">
           {/* 左栏已上移为侧栏二级菜单(P11.6,见 FileManagerNav.tsx) */}
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 shrink-0 flex-wrap">
+            <div className="flex items-center gap-2 px-3 lg:px-4 py-2.5 border-b border-gray-50 shrink-0 flex-wrap">
               {withCheckbox && files && files.length > 0 && (
                 <input
                   type="checkbox"
@@ -631,7 +631,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="搜索文件名…"
-                className="w-44 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                className="w-full sm:w-44 text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-emerald-400"
               />
             </div>
 
@@ -683,7 +683,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                       onClick={(e) => clickRow(f, e)}
                       onDoubleClick={() => openPreview(f)}
                       onContextMenu={(e) => onRowContextMenu(f, e)}
-                      className={`px-4 py-2 flex items-center gap-3 group select-none cursor-default ${
+                      className={`px-3 lg:px-4 py-2 flex items-center gap-3 group select-none cursor-default ${
                         sel.has(f.id) ? 'bg-emerald-100/70' : 'hover:bg-gray-50/70'
                       }`}
                     >
@@ -712,7 +712,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                       )}
                       <div className="min-w-0 flex-1">
                         <span className="text-sm text-gray-800 truncate block" title={`${f.name}(双击打开)`}>{f.name}</span>
-                        <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-2">
+                        <p className="text-[11px] text-gray-400 mt-0.5 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
                           <span>{fmtSize(f.size)}</span>
                           <span>{CATE_LABEL[f.category] || f.category}</span>
                           <button
@@ -752,8 +752,20 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                           🔗 {fmtRemaining(f.share_expires_at)}
                         </span>
                       )}
+                      {/* 触屏没有悬浮态,长按能不能出 contextmenu 又因浏览器而异:
+                          给一个「⋯」开同一份右键菜单(P13.8),省得把六个动作塞进 390px 宽的行里 */}
+                      {coarse && (
+                        <button
+                          onClick={(e) => onRowContextMenu(f, e)}
+                          title="更多操作"
+                          aria-label="更多操作"
+                          className="shrink-0 px-2 py-1.5 rounded-md text-gray-400 hover:bg-gray-200 text-xs leading-none"
+                        >
+                          ⋯
+                        </button>
+                      )}
                       {/* 行内动作:一律 stopPropagation,点它们不该改变选择 */}
-                      <div className="hidden group-hover:flex items-center gap-0.5 shrink-0 text-gray-400" onClick={(e) => e.stopPropagation()}>
+                      <div className={`${coarse ? 'hidden' : 'hidden group-hover:flex'} items-center gap-0.5 shrink-0 text-gray-400`} onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => copyLink(f)} title="复制链接" className="p-1.5 rounded-md hover:bg-gray-200 text-xs">📋</button>
                         {!f.is_private_file && (
                           <button
@@ -783,7 +795,7 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
 
             {/* 底部状态栏(P13.7):没选中显示当前视图合计,选中后显示选中合计 + 批量操作。
                 取代了原来顶部那条批量条——选择状态在两个地方显示迟早会对不上 */}
-            <div className="flex items-center gap-2 px-4 py-2 border-t border-gray-100 bg-gray-50/80 shrink-0 flex-wrap text-xs">
+            <div className="flex items-center gap-2 px-3 lg:px-4 py-2 border-t border-gray-100 bg-gray-50/80 shrink-0 flex-wrap text-xs">
               {sel.size > 0 ? (
                 <>
                   <span className="text-emerald-800 font-medium">
@@ -820,14 +832,14 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                     删除
                   </button>
                   {batchBusy && <span className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
-                  <span className="text-[11px] text-gray-400 ml-auto">也可以直接把选中的文件拖到左侧目录上</span>
+                  <span className="max-lg:hidden text-[11px] text-gray-400 ml-auto">也可以直接把选中的文件拖到左侧目录上</span>
                 </>
               ) : (
                 <>
                   <span className="text-gray-500">
                     {files ? `${files.length} 个文件 · 共 ${fmtSize(files.reduce((s, f) => s + (Number(f.size) || 0), 0))}` : '加载中…'}
                   </span>
-                  <span className="text-[11px] text-gray-400 ml-auto">
+                  <span className="max-sm:hidden text-[11px] text-gray-400 ml-auto">
                     {withCheckbox ? '勾选多个文件后可批量操作 · 右键打开菜单' : '单击选中 · Ctrl 点选 · Shift 连选 · Ctrl+A 全选 · 双击打开 · 右键菜单'}
                   </span>
                 </>
