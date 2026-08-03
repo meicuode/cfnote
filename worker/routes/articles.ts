@@ -3,6 +3,7 @@ import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../uti
 import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
+import { loadNotebookRows, shouldBePrivateIn } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -86,14 +87,16 @@ articles.post('/', async (c) => {
     }>()
     if (!notebook_id || !title?.trim()) return err('笔记本ID和标题不能为空')
 
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .bind(notebook_id, user.id).first()
-    if (!nb) return err('笔记本不存在', 404)
+    // 笔记本存在性校验与「私密分支继承」合并成同一次全表取(个人库就几十行)。
+    // 这条路覆盖了新建笔记、网页剪藏、AI 对话保存 —— 全都走 POST /api/articles
+    const nbRows = await loadNotebookRows(c.env, user.id)
+    if (!nbRows.some((n) => n.id === notebook_id)) return err('笔记本不存在', 404)
+    const priv = shouldBePrivateIn(nbRows, notebook_id) ? 1 : 0
 
     const hash = await contentHash(content || '')
     const result = await c.env.DB.prepare(
-      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, tags) VALUES (?, ?, ?, ?, ?, ?)'
-    ).bind(notebook_id, user.id, title.trim(), content || '', hash, normalizeTags(tags)).run()
+      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, tags, is_private) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(notebook_id, user.id, title.trim(), content || '', hash, normalizeTags(tags), priv).run()
 
     const articleId = result.meta.last_row_id
 
@@ -124,10 +127,10 @@ articles.post('/import', async (c) => {
     if (!url?.trim()) return err('URL 不能为空')
     if (!notebook_id) return err('请选择笔记本')
 
-    // Verify notebook belongs to user
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .bind(notebook_id, user.id).first()
-    if (!nb) return err('笔记本不存在', 404)
+    // Verify notebook belongs to user(顺带取到私密分支判断,P16.5)
+    const nbRows = await loadNotebookRows(c.env, user.id)
+    if (!nbRows.some((n) => n.id === notebook_id)) return err('笔记本不存在', 404)
+    const priv = shouldBePrivateIn(nbRows, notebook_id) ? 1 : 0
 
     // Fetch article content via shared Jina Reader helper
     let articleTitle: string
@@ -147,8 +150,8 @@ articles.post('/import', async (c) => {
     // Create article
     const hash = await contentHash(articleContent)
     const result = await c.env.DB.prepare(
-      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash) VALUES (?, ?, ?, ?, ?)'
-    ).bind(notebook_id, user.id, articleTitle.trim(), articleContent, hash).run()
+      'INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_private) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(notebook_id, user.id, articleTitle.trim(), articleContent, hash, priv).run()
 
     const articleId = result.meta.last_row_id
 
@@ -595,9 +598,14 @@ articles.put('/:id', async (c) => {
 
     // If moving to another notebook, verify ownership
     if (notebook_id && notebook_id !== article.notebook_id) {
-      const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-        .bind(notebook_id, user.id).first()
-      if (!nb) return err('目标笔记本不存在', 404)
+      const nbRows = await loadNotebookRows(c.env, user.id)
+      if (!nbRows.some((n) => n.id === notebook_id)) return err('目标笔记本不存在', 404)
+      // P16.5:挪进私密分支就自动上锁(安全方向)。挪出去**不解锁**——
+      // 不能因为拖错地方就把一篇私有笔记暴露出去。请求里显式带了 is_private 的以它为准
+      if (is_private === undefined && shouldBePrivateIn(nbRows, notebook_id)) {
+        priv = 1
+        pub = 0
+      }
       await c.env.DB.batch([
         c.env.DB.prepare('UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime(\'now\') WHERE id = ?').bind(article.notebook_id),
         c.env.DB.prepare('UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?').bind(notebook_id),

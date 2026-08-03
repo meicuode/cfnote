@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import { ok, err } from '../utils'
 import { purgeUnreferencedAttachments } from './files'
 import { vectorizeArticle } from './articles'
-import { wouldCycle } from '../../src/lib/notebookTree'
+import { wouldCycle, subtreeIds } from '../../src/lib/notebookTree'
+import { loadNotebookRows } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 
 export const notebooks = new Hono<AppEnv>()
@@ -92,10 +93,10 @@ notebooks.put('/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
   try {
-    const body = await c.req.json<{ name?: string; description?: string; color?: string; parent_id?: number | null }>()
+    const body = await c.req.json<{ name?: string; description?: string; color?: string; parent_id?: number | null; is_private?: number | boolean }>()
     const { name, description, color } = body
     const notebook = await c.env.DB.prepare('SELECT * FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .bind(id, user.id).first<{ id: number; parent_id: number | null }>()
+      .bind(id, user.id).first<{ id: number; parent_id: number | null; is_private: number }>()
     if (!notebook) return err('笔记本不存在', 404)
 
     let newParent = notebook.parent_id
@@ -111,15 +112,64 @@ notebooks.put('/:id', async (c) => {
       newParent = parent.id
     }
 
+    // P16.5 私密笔记本:只改这一本自己的标志位。含义是「新写进来的笔记自动上锁」,
+    // 不动任何已有笔记——已有的那些要不要一并上锁,由前端问过之后调 /apply-private。
+    // 取消私有同样不解锁已有笔记:安全方向的默认永远是「不解密」。
+    const newPrivate = body.is_private === undefined ? (notebook.is_private ? 1 : 0) : (body.is_private ? 1 : 0)
+
     await c.env.DB.prepare(
       `UPDATE notebooks SET name = COALESCE(?, name), description = COALESCE(?, description),
-              color = COALESCE(?, color), parent_id = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(name || null, description ?? null, color || null, newParent, id).run()
+              color = COALESCE(?, color), parent_id = ?, is_private = ?, updated_at = datetime('now') WHERE id = ?`
+    ).bind(name || null, description ?? null, color || null, newParent, newPrivate, id).run()
 
     const updated = await c.env.DB.prepare('SELECT * FROM notebooks WHERE id = ?').bind(id).first()
     return ok(updated)
   } catch (e: any) {
     return err('更新失败: ' + e.message, 500)
+  }
+})
+
+// GET /api/notebooks/:id/private-impact - 这一支(含子孙)里还有多少篇没上锁(P16.5)
+// 前端在「设为私有」「移进私密分支」之前拿它来问「已有的 N 篇要不要一并上锁」
+notebooks.get('/:id/private-impact', async (c) => {
+  const user = c.get('user')
+  try {
+    const rows = await loadNotebookRows(c.env, user.id)
+    const id = Number(c.req.param('id'))
+    if (!rows.some((n) => n.id === id)) return err('笔记本不存在', 404)
+    const ids = subtreeIds(rows, id)
+    const row = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS cnt FROM articles
+       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
+         AND notebook_id IN (${ids.map(() => '?').join(',')})`
+    ).bind(user.id, ...ids).first<{ cnt: number }>()
+    return ok({ notebooks: ids.length, articles: row?.cnt ?? 0 })
+  } catch (e: any) {
+    return err('检查失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/notebooks/:id/apply-private - 把这一支(含子孙)里已有的笔记全部上锁(P16.5)
+//
+// 只往「更私密」一个方向走,没有反向接口:批量解锁是个一按就泄露的按钮,
+// 要放行某一篇就去那一篇上单独取消——例外必须是显式动作。
+// 公开状态一并清掉,与 PUT /api/articles/:id 的「私有与公开互斥」同一条规则。
+notebooks.post('/:id/apply-private', async (c) => {
+  const user = c.get('user')
+  try {
+    const rows = await loadNotebookRows(c.env, user.id)
+    const id = Number(c.req.param('id'))
+    if (!rows.some((n) => n.id === id)) return err('笔记本不存在', 404)
+    const ids = subtreeIds(rows, id)
+    const r = await c.env.DB.prepare(
+      `UPDATE articles SET is_private = 1, is_public = 0, share_token = NULL, share_expires_at = NULL,
+              updated_at = datetime('now')
+       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
+         AND notebook_id IN (${ids.map(() => '?').join(',')})`
+    ).bind(user.id, ...ids).run()
+    return ok({ updated: r.meta?.changes ?? 0 })
+  } catch (e: any) {
+    return err('设置失败: ' + e.message, 500)
   }
 })
 

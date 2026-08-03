@@ -123,3 +123,38 @@ export function pathOf(list: NotebookLike[], id: number): string[] {
   }
   return out
 }
+
+/**
+ * 该笔记本自己、或它的任一祖先,是不是私密笔记本(P16.5)。
+ *
+ * **私有性沿树向下继承,而且不允许在私有子树里挖公开的洞**:标了「内部资料」私有,
+ * 而「内部资料/薪酬」不跟着私有,那就是个陷阱——你以为整棵锁了,实际漏一层,
+ * 而侧栏一排锁图标里混一个没锁的根本看不出来。要放公开的东西就挪到私有子树外面。
+ *
+ * 注意这只决定**写入时的默认值**:事实源始终是 articles.is_private 那一列,
+ * 所以博客发布、分享、备份、公开预检没有一处需要同时看两个地方。
+ * 单篇笔记仍可显式取消私有(整理好了要发博客),但那必须是主动动作——忘了标不会漏。
+ */
+export function inPrivateBranch(list: (NotebookLike & { is_private?: number | null })[], id: number): boolean {
+  const byId = new Map(list.map((n) => [n.id, n]))
+  const seen = new Set<number>()
+  let cur: number | null | undefined = id
+  while (cur != null && !seen.has(cur)) {
+    seen.add(cur)
+    const nb = byId.get(cur)
+    if (!nb) return false
+    if (nb.is_private) return true
+    cur = nb.parent_id
+  }
+  return false
+}
+
+/** 私有是自己标的,还是从上级继承来的(只有前者能在界面上取消) */
+export function privacySource(
+  list: (NotebookLike & { is_private?: number | null })[],
+  id: number,
+): 'self' | 'inherited' | 'none' {
+  const self = list.find((n) => n.id === id)
+  if (self?.is_private) return 'self'
+  return inPrivateBranch(list, id) ? 'inherited' : 'none'
+}

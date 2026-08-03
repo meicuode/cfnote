@@ -4,6 +4,7 @@ import { vectorizeArticle } from './articles'
 import { syncArticleFiles } from './files'
 import { buildExportPayload, SENSITIVE_PATTERNS, CHANNELS_KEY } from '../backup'
 import { MASK_PREFIX, maskChannels, mergeMaskedChannels, type NotifyChannel } from '../../src/lib/notifyChannels'
+import { loadNotebookRows, shouldBePrivateIn } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -370,6 +371,8 @@ system.post('/import', async (c) => {
     }
 
     // 2. 文章:按 标题+内容哈希 去重后批量插入(未向量化)
+    // 笔记本表在上一步可能新建过行,私密分支判断必须放在那之后取(P16.5),整批只取一次
+    const privRows = await loadNotebookRows(c.env, user.id)
     const { results: existingArts } = await c.env.DB.prepare(
       'SELECT id, title, content_hash FROM articles WHERE user_id = ?'
     ).bind(user.id).all<{ id: number; title: string; content_hash: string }>()
@@ -398,7 +401,8 @@ system.post('/import', async (c) => {
       existingKeys.set(key, -1) // 占位:同一份文件里的重复项也要跳过,真实 id 插入后回填
       // P12.11:公开状态与浏览数一并恢复,否则恢复完整个博客是空的。
       // is_public 与 is_private 互斥由这里保证(与 PUT /api/articles/:id 同一条规则)。
-      const priv = a.is_private ? 1 : 0
+      // P16.5:目标笔记本在私密分支里就强制上锁——备份里说不私有也照锁,安全方向宁可多锁。
+      const priv = (a.is_private || shouldBePrivateIn(privRows, nbId)) ? 1 : 0
       inserts.push(c.env.DB.prepare(
         `INSERT INTO articles (notebook_id, user_id, title, content, content_hash, is_vectorized, tags, pinned,
                                is_public, is_private, is_page, published_at, views)

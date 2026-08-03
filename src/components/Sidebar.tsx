@@ -3,7 +3,7 @@ import ConfirmDialog from './ConfirmDialog'
 import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
-import { buildTree, descendantIds, type TreeNode } from '../lib/notebookTree'
+import { buildTree, descendantIds, inPrivateBranch, privacySource, type TreeNode } from '../lib/notebookTree'
 import type { Notebook } from '../types'
 
 interface Props {
@@ -16,6 +16,12 @@ interface Props {
   onDelete: (id: number) => Promise<any>
   /** P16.1 移动笔记本:parent 为 null 表示移到根 */
   onMove: (id: number, parent: number | null) => Promise<any>
+  /** P16.5 私密笔记本:只改标志位,不动已有笔记 */
+  onSetPrivate: (id: number, isPrivate: boolean) => Promise<any>
+  /** 这一支(含子孙)里还有多少篇没上锁 */
+  onPrivateImpact: (id: number) => Promise<{ ok: boolean; data?: { notebooks: number; articles: number } }>
+  /** 把这一支里已有的笔记全部上锁 */
+  onApplyPrivate: (id: number) => Promise<any>
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
   filesActive: boolean
@@ -32,13 +38,15 @@ const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899'
 const INDENT_PX = 12
 const MAX_INDENT_DEPTH = 6
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onSetPrivate, onPrivateImpact, onApplyPrivate, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState<{ parent: number | null } | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [moving, setMoving] = useState<number | null>(null)
+  // P16.5 上锁确认:标记私有 / 移进私密分支之后都问同一句「已有的 N 篇要不要一并上锁」
+  const [lockAsk, setLockAsk] = useState<{ id: number; name: string; articles: number } | null>(null)
   // P16.1 展开态:记住哪几本是展开的(存 id 列表,跟文件管理二级菜单同样的持久化做法)
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     try {
@@ -106,6 +114,30 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
     setContextMenu(null)
   }
 
+  /**
+   * 让一个分支变私密之后,问一次「已有的笔记要不要一并上锁」(P16.5)。
+   * 标记私有、移进私密分支走的是同一句问话——两者制造的是同一种「你以为锁了其实没锁」。
+   * 数量为 0 就不打扰。
+   */
+  const askLock = async (id: number) => {
+    const res = await onPrivateImpact(id)
+    const n = res.ok ? res.data?.articles ?? 0 : 0
+    if (n > 0) setLockAsk({ id, name: notebooks.find((x) => x.id === id)?.name || '', articles: n })
+  }
+
+  const handleTogglePrivate = async (id: number, next: boolean) => {
+    setContextMenu(null)
+    const res = await onSetPrivate(id, next)
+    if (res?.ok && next) await askLock(id)
+  }
+
+  const handleMove = async (id: number, parent: number | null) => {
+    setMoving(null)
+    const res = await onMove(id, parent)
+    // 挪进私密分支才问;挪出去不问也不解锁——安全方向的默认永远是「不解密」
+    if (res?.ok && parent !== null && inPrivateBranch(notebooks, parent)) await askLock(id)
+  }
+
   const newNameInput = (
     <input
       type="text"
@@ -127,6 +159,8 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
     const { nb, depth, children } = node
     const open = expanded.has(nb.id)
     const pad = 10 + Math.min(depth, MAX_INDENT_DEPTH) * INDENT_PX
+    // 自己标的锁是实的,从上级继承来的是淡的 —— 一眼能看出「这锁能不能在这儿解」
+    const priv = privacySource(notebooks, nb.id)
     return (
       <div key={nb.id}>
         <div
@@ -159,6 +193,14 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           >
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: nb.color }} />
             <span className="truncate flex-1">{nb.name}</span>
+            {priv !== 'none' && (
+              <span
+                className={`shrink-0 ${priv === 'self' ? 'text-amber-500' : 'text-amber-300'}`}
+                title={priv === 'self' ? '私密笔记本:新写进来的笔记自动私有' : '随上级私密:新写进来的笔记自动私有'}
+              >
+                <EyeOffIcon className="w-3.5 h-3.5" />
+              </span>
+            )}
             <span className="text-xs text-gray-400">{nb.article_count}</span>
           </button>
           <button
@@ -395,6 +437,24 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           >
             移动到…
           </button>
+          {/* P16.5:继承来的私有不能在这一层解——要解就去标了私有的那个祖先上解 */}
+          {privacySource(notebooks, contextMenu.id) === 'inherited' ? (
+            <button
+              disabled
+              className="w-full text-left px-4 py-2 text-sm text-gray-300 whitespace-nowrap"
+              title="它的上级是私密笔记本;要取消请到标了私有的那一本上操作"
+            >
+              已随上级私密
+            </button>
+          ) : (
+            <button
+              onClick={() => handleTogglePrivate(contextMenu.id, privacySource(notebooks, contextMenu.id) !== 'self')}
+              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+              title="私密笔记本:之后写进这一支的笔记自动设为私有"
+            >
+              {privacySource(notebooks, contextMenu.id) === 'self' ? '取消私密笔记本' : '设为私密笔记本'}
+            </button>
+          )}
           {/* 有子本时服务端会拒绝(P16.1),这里直接置灰,免得点了没反应还看不到原因 */}
           <button
             onClick={handleDelete}
@@ -417,7 +477,7 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             <p className="text-[11px] text-gray-400 mb-2">选一个新的上级；里面的笔记不会动。</p>
             <div className="max-h-72 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
               <button
-                onClick={() => { const id = moving; setMoving(null); onMove(id, null) }}
+                onClick={() => { const id = moving; setMoving(null); handleMove(id, null) }}
                 className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
               >
                 ↥ 移到最外层
@@ -425,11 +485,11 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
               {moveTargets.map((t) => (
                 <button
                   key={t.nb.id}
-                  onClick={() => { const id = moving; setMoving(null); onMove(id, t.nb.id) }}
+                  onClick={() => { const id = moving; setMoving(null); handleMove(id, t.nb.id) }}
                   className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 truncate"
                   style={{ paddingLeft: 12 + Math.min(t.depth, MAX_INDENT_DEPTH) * INDENT_PX }}
                 >
-                  📓 {t.nb.name}
+                  {inPrivateBranch(notebooks, t.nb.id) ? '🔒' : '📓'} {t.nb.name}
                 </button>
               ))}
               {moveTargets.length === 0 && (
@@ -456,6 +516,18 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           activeName={activeTagName}
           onPick={(name) => onSelect(tagNotebook(name))}
           onClose={() => setShowTagBrowser(false)}
+        />
+      )}
+
+      {/* P16.5:让一个分支变私密之后,已有的笔记不会自己上锁——不问的话就会留下
+          「你以为整棵锁了、其实老笔记全是敞的」这种最危险的状态 */}
+      {lockAsk && (
+        <ConfirmDialog
+          title={`「${lockAsk.name}」已设为私密`}
+          message={`这一支里还有 ${lockAsk.articles} 篇笔记没有上锁。要把它们也设为私有吗？（会同时取消公开与分享链接）不处理的话，只有之后新写进来的笔记才是私有的。`}
+          confirmText={`一并设为私有（${lockAsk.articles} 篇）`}
+          onConfirm={() => { const id = lockAsk.id; setLockAsk(null); onApplyPrivate(id) }}
+          onCancel={() => setLockAsk(null)}
         />
       )}
     </div>

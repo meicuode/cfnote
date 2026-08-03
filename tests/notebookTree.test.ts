@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildTree, descendantIds, subtreeIds, wouldCycle, pathOf } from '../src/lib/notebookTree'
+import { buildTree, descendantIds, subtreeIds, wouldCycle, pathOf, inPrivateBranch, privacySource } from '../src/lib/notebookTree'
 
 const nb = (id: number, name: string, parent_id: number | null = null) => ({ id, name, parent_id })
 
@@ -111,5 +111,57 @@ describe('pathOf', () => {
   it('成环时不会死循环', () => {
     const cyc = [nb(1, '甲', 2), nb(2, '乙', 1)]
     expect(pathOf(cyc, 1)).toEqual(['乙', '甲'])
+  })
+})
+
+describe('inPrivateBranch / privacySource', () => {
+  // ERP笔记 ├ 内部资料(私密) └ 薪酬 / 销售管理
+  const P = [
+    { id: 1, name: 'ERP笔记', parent_id: null, is_private: 0 },
+    { id: 2, name: '内部资料', parent_id: 1, is_private: 1 },
+    { id: 3, name: '薪酬', parent_id: 2, is_private: 0 },
+    { id: 4, name: '销售管理', parent_id: 1, is_private: 0 },
+  ]
+
+  it('自己标了私密就是私密', () => {
+    expect(inPrivateBranch(P, 2)).toBe(true)
+    expect(privacySource(P, 2)).toBe('self')
+  })
+
+  it('私有沿树向下继承:子孙不必自己标也算私密', () => {
+    expect(inPrivateBranch(P, 3)).toBe(true)
+    expect(privacySource(P, 3)).toBe('inherited')
+  })
+
+  it('私有不向上蔓延:父本与旁支不受影响', () => {
+    expect(inPrivateBranch(P, 1)).toBe(false)
+    expect(inPrivateBranch(P, 4)).toBe(false)
+    expect(privacySource(P, 4)).toBe('none')
+  })
+
+  it('子本把自己标成非私密也挖不出公开的洞', () => {
+    // is_private 显式为 0,但祖先私密——仍然算在私有分支里
+    expect(inPrivateBranch(P, 3)).toBe(true)
+  })
+
+  it('id 不存在时不算私密,但也不能报错', () => {
+    expect(inPrivateBranch(P, 999)).toBe(false)
+    expect(privacySource(P, 999)).toBe('none')
+  })
+
+  it('成环时不会死循环', () => {
+    const cyc = [
+      { id: 1, name: '甲', parent_id: 2, is_private: 0 },
+      { id: 2, name: '乙', parent_id: 1, is_private: 0 },
+    ]
+    expect(inPrivateBranch(cyc, 1)).toBe(false)
+  })
+
+  it('环里只要有一本私密,链上的都算私密(安全方向宁可多判)', () => {
+    const cyc = [
+      { id: 1, name: '甲', parent_id: 2, is_private: 0 },
+      { id: 2, name: '乙', parent_id: 1, is_private: 1 },
+    ]
+    expect(inPrivateBranch(cyc, 1)).toBe(true)
   })
 })
