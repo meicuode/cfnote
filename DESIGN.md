@@ -533,6 +533,15 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
   - `openPost` 的入参从 `id: number` 改成了 `{id, title}`，几个模块部件的 `onOpen` 跟着改——只给 id 就只能发裸地址。预渲染的边缘缓存键**仍只按 id + 档位**：同一篇文章不管从哪个地址进来产出的 HTML 完全一样，slug 进缓存键只会把同一份内容缓存成好几份。
   - 测试的边界要说清楚：算法在 `tests/blogSlug.test.ts` 单测；路由注册与 sitemap 在 `tests/worker/blogSlug.test.ts` e2e。**预渲染出来的 HTML 与 canonical 测不到**——`wrangler.test.toml` 刻意不声明 `[assets]`（否则测试就依赖 `./dist` 的构建产物），详情页一律走 passthrough。这反倒给了「路由是否注册」一个干净的判据：命中详情路由是 passthrough 的 `Not found`，没有任何路由是 `app.notFound` 的 `页面不存在: …`，两者响应体不同。
 
+- 新建笔记重复保存（P15.3，修 bug）：连按 Ctrl+S 会多出好几篇笔记。
+  - **根因是「草稿的 id 要等网络回来才变正」**。草稿是本地假记录（`id: -Date.now()`，不落库），`saveArticle` 靠 `id < 0` 判断该 POST 还是 PUT，而 `article.id` 只有在 `POST /api/articles` 回来、`setActiveArticle(res.data)` 之后才变正。**在途这段时间里任何第二次保存都会再 INSERT 一行**（服务端不去重，`worker/routes/articles.ts` 的 `POST /` 直接 INSERT）。
+  - **主犯是自动保存定时器，不是 Ctrl+S 本身**。它的 effect 依赖是 `[handleSave, saved, trashed]`——**不含 `saving`**，所以手动保存不触发 cleanup，上一次击键排下的 3 秒定时器照样到点开火，而定时器回调里一个判断都没有。「打完最后一个字顺手 Ctrl+S」的间隔天然小于 3 秒，定时器必然还在倒计时；国内访问的 POST 只要慢过剩下那点时间就必现，不是偶发。
+  - **闸门放在 `Layout.saveArticle`，不是放在按钮上**：`src/lib/singleFlight.ts` 按草稿 id 合并在途请求，后来者复用同一个 Promise（不是报错、不是丢弃，所以调用方不需要知道自己被合并了）。放这一层是因为调用方只会越来越多——Ctrl+S、定时器、保存按钮、`applyFlags`（点「公开」，它压根不经过 `handleSave`）——**修在任何一个按钮上都会漏，而且以后加一个就复发一次**。
+  - `handleSave` 里另加 `savingRef`（`useRef`，同步赋值）：`saving` 是 state，要等重渲染才更新，拦不住同一 tick 的第二次调用。它挡的是「无谓的第二个请求根本别发出去」——免费额度里请求数（10 万/天）比 D1 行读（500 万/天）紧得多。真正保证不重复建记录的仍是单飞闸门。
+  - **顺带修好「保存失败后自动保存永远停摆」**：失败时依赖一个都没变，effect 不重跑、不再排定时器，而界面只写「未保存」，不说为什么。把 `saving` 加进依赖后，`saving` 落回 false 会自然重排一次。但**必须配一个重试上限**（`MAX_SAVE_RETRY = 3`）：不设的话离线时开着的标签页每 3 秒打一次接口，一夜近 3 万次请求，正好打在最紧的那条额度上。失败三次就停手，状态栏改成「保存失败，点『保存』重试」，内容一动重试额度归零。
+  - 「公开」按钮补上 `article.id <= 0` 禁用，跟 `submitShare` 早就有的那条判断对齐——它是唯一一个对草稿开着的写入口。私有／取消公开本来就在 `article.id > 0` 里。
+  - 测试只能测到闸门本身（`tests/singleFlight.test.ts`）：仓库没有 `@testing-library/react`，组件里的 effect 时序测不了。这也正是把闸门抽成纯函数的理由——**「同一篇草稿的创建请求同时只能有一个」是一句与 UI 无关的话，能单独证**，剩下的是接线。
+
 ## 11. 项目结构
 
 见 `README.md`「项目结构」一节（`worker/` 后端 Hono 路由 + `src/` React 前端 + `docs/` 设计文档 + `tests/` Vitest）。

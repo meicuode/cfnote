@@ -174,6 +174,11 @@ const IS_MOBILE = typeof navigator !== 'undefined' &&
   (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
     (/Macintosh/.test(navigator.userAgent) && (navigator.maxTouchPoints || 0) > 1))
 
+// 自动保存连续失败到这个次数就停手,改由状态栏提示 + 人工点「保存」重试。
+// 不设上限的话,离线时开着的标签页会每 3 秒打一次接口 —— 一夜将近 3 万次请求,
+// 而免费额度里最紧的恰恰是请求数(10 万/天),不是 D1 的行读。
+const MAX_SAVE_RETRY = 3
+
 // ---- Component ----
 
 export default function ArticleEditor({ article, token, onSave, highlight, loadingContent, allTags, onOpenArticle, onRemindersChanged }: Props) {
@@ -196,6 +201,9 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   // 要写就点「源码」——textarea 在移动端是可用的,只有富文本不行(见 IS_MOBILE 注释)。
   const [mode, setMode] = useState<'edit' | 'wysiwyg' | 'preview'>(IS_MOBILE ? 'preview' : 'edit')
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false) // 同步的在途标记(saving 只是给界面看的,慢一拍)
+  const [saveError, setSaveError] = useState('')
+  const [saveFails, setSaveFails] = useState(0) // 连续失败次数,到 MAX_SAVE_RETRY 就停手改人工重试
   const [saved, setSaved] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
@@ -256,6 +264,10 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     const changed = title !== article.title || content !== article.content
       || JSON.stringify(tags) !== JSON.stringify(parseTags(article.tags))
     setSaved(!changed)
+    // 内容一动就把失败计数清零:重试额度按「这一版内容」算,不是按标签页的一生算。
+    // 保存失败时这几个依赖都不会变,所以计数不会被自己的失败重置掉
+    setSaveFails(0)
+    setSaveError('')
   }, [title, content, tags, article.title, article.content, article.tags])
 
   // P9.2 反向链接:打开文章时查一次(其他笔记内容变化才会影响,不随本篇编辑刷新)
@@ -271,10 +283,27 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
   }, [article.id, token])
 
   const handleSave = useCallback(async () => {
+    // savingRef 而不是 saving:state 要等重渲染才更新,拦不住同一 tick 里的第二次
+    // 调用;ref 是同步赋值的。真正兜底重复建笔记的是 Layout 的单飞闸门,这里这道
+    // 是把「无谓的第二个请求」挡在发出去之前 —— 免费额度里请求数比行读贵得多
+    if (savingRef.current) return
+    savingRef.current = true
     setSaving(true)
-    const res = await saveRef.current(article.id, { title, content, tags })
-    setSaving(false)
-    if (res?.ok) setSaved(true)
+    try {
+      const res = await saveRef.current(article.id, { title, content, tags })
+      if (res?.ok) {
+        setSaved(true)
+        setSaveFails(0)
+        setSaveError('')
+      } else {
+        setSaveFails((n) => n + 1)
+        setSaveError(res?.error || '保存失败')
+      }
+      return res
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }, [article.id, title, content, tags])
 
   // P10 版本历史:恢复=把选中版本作为当前工作副本并立即落库(既有保存链路会再快照一版)
@@ -427,13 +456,17 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
     return () => window.removeEventListener('keydown', handler)
   }, [handleSave, saving, saved, trashed])
 
-  // Auto-save after 3s idle
+  // 空闲 3 秒自动保存。
+  // saving 必须在依赖里(P15.3):少了它,手动 Ctrl+S 不会触发 cleanup,上一次击键排下的
+  // 定时器照样到点开火,一头撞进「保存还在途中」的窗口 —— 草稿期这会多建一篇笔记。
+  // 带上它还顺手修好另一件事:保存失败后 saving 落回 false 会让 effect 重跑、重排定时器,
+  // 否则失败之后自动保存就永远停摆,而界面只写着「未保存」,不说为什么。
   useEffect(() => {
-    if (saved || trashed) return
+    if (saved || trashed || saving || saveFails >= MAX_SAVE_RETRY) return
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => { handleSave() }, 3000)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [handleSave, saved, trashed])
+  }, [handleSave, saved, trashed, saving, saveFails])
 
   // ---- 附件上传(R2):图片插入 ![](url),其他文件插入 [📎 name](url) ----
 
@@ -929,9 +962,9 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               ) : (
                 <button
                   onClick={handlePublishClick}
-                  disabled={flagBusy || loadingContent}
+                  disabled={flagBusy || loadingContent || article.id <= 0}
                   className="px-3 py-1 rounded text-sm text-gray-500 hover:bg-gray-100 transition-colors flex items-center gap-1.5 disabled:opacity-50"
-                  title="公开到博客(发布前自动检查敏感信息)"
+                  title={article.id <= 0 ? '先保存这篇草稿再公开' : '公开到博客(发布前自动检查敏感信息)'}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -1014,8 +1047,12 @@ export default function ArticleEditor({ article, token, onSave, highlight, loadi
               已向量化
             </span>
           ) : null}
-          <span className={`text-xs ${saved ? 'text-gray-400' : 'text-amber-500'}`}>
-            {loadingContent ? '加载中...' : saving ? '保存中...' : saved ? '已保存' : '未保存'}
+          <span
+            className={`text-xs ${saved ? 'text-gray-400' : saveError ? 'text-red-500' : 'text-amber-500'}`}
+            title={saveError || undefined}
+          >
+            {loadingContent ? '加载中...' : saving ? '保存中...' : saved ? '已保存'
+              : saveError ? (saveFails >= MAX_SAVE_RETRY ? '保存失败,点「保存」重试' : '保存失败,重试中') : '未保存'}
           </span>
           {!trashed && (
             <button

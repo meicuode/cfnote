@@ -15,6 +15,7 @@ import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../t
 import type { Notebook, Article } from '../types'
 import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
 import { workspaceOf, entryPane, backPane, canGoBack, paneForRoute, type Pane } from '../lib/pane'
+import { createSingleFlight } from '../lib/singleFlight'
 import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -368,6 +369,10 @@ export default function Layout({ token, username, onLogout }: Props) {
   // P9.3 笔记模板:存在名为「模板」的笔记本且有内容时,新建笔记先弹选择(空白/套用模板)
   const [templatePick, setTemplatePick] = useState<Article[] | null>(null)
 
+  // 草稿首次保存的单飞闸门(P15.3,详见 src/lib/singleFlight.ts)。每次渲染都会
+  // 白造一个空闸门当参数,但 useRef 只留第一个 —— 这点开销换的是闸门身份恒定
+  const draftGate = useRef(createSingleFlight<number, { ok: boolean; data?: Article; error?: string }>()).current
+
   const startDraft = (tpl?: Article) => {
     if (!activeNotebook || activeNotebook.id < 0) return
     setTemplatePick(null)
@@ -402,22 +407,29 @@ export default function Layout({ token, username, onLogout }: Props) {
   }
 
   const saveArticle = async (id: number, data: { title?: string; content?: string; is_public?: number; is_private?: number; tags?: string[]; pinned?: number }) => {
-    // 草稿首次保存:创建真实文章并替换草稿
+    // 草稿首次保存:创建真实文章并替换草稿。
+    // 必须单飞(P15.3):草稿的 id 在 POST 回来之前一直是负数,自动保存定时器、
+    // 再按一次 Ctrl+S、点「公开」只要落进这个窗口,就会又走一遍这个分支再 INSERT
+    // 一行(服务端不去重),一篇草稿于是变成好几篇笔记。闸门放在这里而不是放在
+    // 各个按钮上,是因为调用方只会越来越多,漏一个就复发。
     if (id < 0) {
       if (!activeNotebook || activeNotebook.id < 0) return { ok: false, error: '未选择笔记本' }
-      const res = await post<Article>('/articles', {
-        notebook_id: activeNotebook.id,
-        title: data.title?.trim() || '无标题文章',
-        content: data.content ?? '',
-        tags: data.tags,
+      const nb = activeNotebook
+      return draftGate.run(id, async () => {
+        const res = await post<Article>('/articles', {
+          notebook_id: nb.id,
+          title: data.title?.trim() || '无标题文章',
+          content: data.content ?? '',
+          tags: data.tags,
+        })
+        if (res.ok && res.data) {
+          setActiveArticle(res.data)
+          loadArticles(nb)
+          loadNotebooks()
+          loadTags()
+        }
+        return res
       })
-      if (res.ok && res.data) {
-        setActiveArticle(res.data)
-        loadArticles(activeNotebook)
-        loadNotebooks()
-        loadTags()
-      }
-      return res
     }
     const res = await put<Article>(`/articles/${id}`, data)
     if (res.ok && res.data) {
