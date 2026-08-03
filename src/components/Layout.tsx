@@ -365,26 +365,22 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
-  // P16.5 私密笔记本:只改标志位,已有笔记要不要一并上锁由调用方问过后走 applyPrivate
+  // P16.5 私密笔记本。服务端保证不变式:落进私密分支就把整支已有笔记一并上锁,
+  // 所以这里不需要再补一个「应用私有」的调用——那种要调用方记得的接口迟早被绕过
   const setNotebookPrivate = async (id: number, isPrivate: boolean) => {
     const res = await put<Notebook>(`/notebooks/${id}`, { is_private: isPrivate ? 1 : 0 })
-    if (res.ok) await loadNotebooks()
-    return res
-  }
-
-  /** 这一支(含子孙)里还有多少篇没上锁 */
-  const privateImpact = async (id: number) =>
-    get<{ notebooks: number; articles: number }>(`/notebooks/${id}/private-impact`)
-
-  /** 把这一支里已有的笔记全部上锁(只往更私密一个方向走,没有反向接口) */
-  const applyPrivate = async (id: number) => {
-    const res = await post<{ updated: number }>(`/notebooks/${id}/apply-private`, {})
     if (res.ok) {
       await loadNotebooks()
       if (activeNotebook) loadArticles(activeNotebook)
     }
     return res
   }
+
+  /** 设为私密/移进私密分支之前的后果清单:多少篇、其中几篇已公开、几个分享链接 */
+  const privateImpact = async (id: number) =>
+    get<{ notebooks: number; articles: number; published: number; shared: number }>(
+      `/notebooks/${id}/private-impact`,
+    )
 
   const deleteNotebook = async (id: number) => {
     const res = await del(`/notebooks/${id}`)
@@ -796,7 +792,6 @@ export default function Layout({ token, username, onLogout }: Props) {
             onMove={moveNotebook}
             onSetPrivate={setNotebookPrivate}
             onPrivateImpact={privateImpact}
-            onApplyPrivate={applyPrivate}
             onOpenFiles={() => { setShowFiles(true); setBlogView(null); setPane('main') }}
             filesActive={showFiles}
             fileNavSlot={showFiles ? (

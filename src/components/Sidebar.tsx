@@ -16,12 +16,13 @@ interface Props {
   onDelete: (id: number) => Promise<any>
   /** P16.1 移动笔记本:parent 为 null 表示移到根 */
   onMove: (id: number, parent: number | null) => Promise<any>
-  /** P16.5 私密笔记本:只改标志位,不动已有笔记 */
+  /** P16.5 私密笔记本:只改标志位,服务端会把整支已有笔记一并上锁 */
   onSetPrivate: (id: number, isPrivate: boolean) => Promise<any>
-  /** 这一支(含子孙)里还有多少篇没上锁 */
-  onPrivateImpact: (id: number) => Promise<{ ok: boolean; data?: { notebooks: number; articles: number } }>
-  /** 把这一支里已有的笔记全部上锁 */
-  onApplyPrivate: (id: number) => Promise<any>
+  /** 设为私密之前的后果清单 */
+  onPrivateImpact: (id: number) => Promise<{
+    ok: boolean
+    data?: { notebooks: number; articles: number; published: number; shared: number }
+  }>
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
   filesActive: boolean
@@ -38,15 +39,20 @@ const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899'
 const INDENT_PX = 12
 const MAX_INDENT_DEPTH = 6
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onSetPrivate, onPrivateImpact, onApplyPrivate, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onSetPrivate, onPrivateImpact, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState<{ parent: number | null } | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [moving, setMoving] = useState<number | null>(null)
-  // P16.5 上锁确认:标记私有 / 移进私密分支之后都问同一句「已有的 N 篇要不要一并上锁」
-  const [lockAsk, setLockAsk] = useState<{ id: number; name: string; articles: number } | null>(null)
+  // P16.5 上锁确认:设为私密 / 移进私密分支之前摊开后果,确认即强制,没有「只锁新的」
+  const [lockAsk, setLockAsk] = useState<{
+    id: number
+    name: string
+    impact: { notebooks: number; articles: number; published: number; shared: number }
+    run: () => Promise<any>
+  } | null>(null)
   // P16.1 展开态:记住哪几本是展开的(存 id 列表,跟文件管理二级菜单同样的持久化做法)
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     try {
@@ -115,27 +121,39 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
   }
 
   /**
-   * 让一个分支变私密之后,问一次「已有的笔记要不要一并上锁」(P16.5)。
-   * 标记私有、移进私密分支走的是同一句问话——两者制造的是同一种「你以为锁了其实没锁」。
-   * 数量为 0 就不打扰。
+   * 设为私密 / 移进私密分支之前,先把后果摊开(P16.5)。
+   *
+   * 顺序是**先问后做**,不是先做再问要不要补救:确认之后服务端会把整支已有笔记
+   * 无条件上锁,没有「只锁新的」这个选项——那会留下「笔记本挂着锁、老笔记全是敞的」,
+   * 而侧栏一排锁图标里混一个没锁的根本看不出来。
+   * 真正要让人看见的不是总篇数,是**其中几篇已公开、几个分享链接**:那才是别人
+   * 看得见、确认之后会当场消失的东西。都是 0 就不打扰,直接做。
    */
-  const askLock = async (id: number) => {
+  const askThenLock = async (id: number, run: () => Promise<any>) => {
     const res = await onPrivateImpact(id)
-    const n = res.ok ? res.data?.articles ?? 0 : 0
-    if (n > 0) setLockAsk({ id, name: notebooks.find((x) => x.id === id)?.name || '', articles: n })
+    const d = res.ok ? res.data : undefined
+    if (!d || (d.published === 0 && d.shared === 0 && d.articles === 0)) {
+      await run()
+      return
+    }
+    setLockAsk({ id, name: notebooks.find((x) => x.id === id)?.name || '', impact: d, run })
   }
 
   const handleTogglePrivate = async (id: number, next: boolean) => {
     setContextMenu(null)
-    const res = await onSetPrivate(id, next)
-    if (res?.ok && next) await askLock(id)
+    // 取消私密不问:它不会泄露任何东西,而且已有笔记照旧保持私有(不解密)
+    if (!next) { await onSetPrivate(id, false); return }
+    await askThenLock(id, () => onSetPrivate(id, true))
   }
 
   const handleMove = async (id: number, parent: number | null) => {
     setMoving(null)
-    const res = await onMove(id, parent)
-    // 挪进私密分支才问;挪出去不问也不解锁——安全方向的默认永远是「不解密」
-    if (res?.ok && parent !== null && inPrivateBranch(notebooks, parent)) await askLock(id)
+    // 挪进私密分支等同于设为私密,同样先问;挪出去不问也不解锁
+    if (parent !== null && inPrivateBranch(notebooks, parent)) {
+      await askThenLock(id, () => onMove(id, parent))
+      return
+    }
+    await onMove(id, parent)
   }
 
   const newNameInput = (
@@ -519,14 +537,18 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
         />
       )}
 
-      {/* P16.5:让一个分支变私密之后,已有的笔记不会自己上锁——不问的话就会留下
-          「你以为整棵锁了、其实老笔记全是敞的」这种最危险的状态 */}
+      {/* P16.5:确认框摊开的是「确认之后别人看不见了什么」,而不是一个数字 */}
       {lockAsk && (
         <ConfirmDialog
-          title={`「${lockAsk.name}」已设为私密`}
-          message={`这一支里还有 ${lockAsk.articles} 篇笔记没有上锁。要把它们也设为私有吗？（会同时取消公开与分享链接）不处理的话，只有之后新写进来的笔记才是私有的。`}
-          confirmText={`一并设为私有（${lockAsk.articles} 篇）`}
-          onConfirm={() => { const id = lockAsk.id; setLockAsk(null); onApplyPrivate(id) }}
+          title={`把「${lockAsk.name}」设为私密笔记本？`}
+          message={
+            `这一支（含 ${lockAsk.impact.notebooks} 个笔记本）里有 ${lockAsk.impact.articles} 篇笔记会被转为私有。` +
+            (lockAsk.impact.published > 0 ? `其中 ${lockAsk.impact.published} 篇已公开，会立即从博客下线。` : '') +
+            (lockAsk.impact.shared > 0 ? `另有 ${lockAsk.impact.shared} 个分享链接会立即失效。` : '') +
+            '之后写进这一支的笔记也会自动私有。要放行某一篇，去那一篇上单独取消私有。'
+          }
+          confirmText={lockAsk.impact.published > 0 ? `设为私密并下线 ${lockAsk.impact.published} 篇` : '设为私密'}
+          onConfirm={() => { const r = lockAsk.run; setLockAsk(null); r() }}
           onCancel={() => setLockAsk(null)}
         />
       )}

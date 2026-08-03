@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { ok, err } from '../utils'
 import { purgeUnreferencedAttachments } from './files'
 import { vectorizeArticle } from './articles'
-import { wouldCycle, subtreeIds } from '../../src/lib/notebookTree'
+import { wouldCycle, subtreeIds, inPrivateBranch } from '../../src/lib/notebookTree'
 import { loadNotebookRows } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 
@@ -112,9 +112,10 @@ notebooks.put('/:id', async (c) => {
       newParent = parent.id
     }
 
-    // P16.5 私密笔记本:只改这一本自己的标志位。含义是「新写进来的笔记自动上锁」,
-    // 不动任何已有笔记——已有的那些要不要一并上锁,由前端问过之后调 /apply-private。
-    // 取消私有同样不解锁已有笔记:安全方向的默认永远是「不解密」。
+    // P16.5 私密笔记本:这一位只决定「新写进来的笔记自动私有」,但**不能只管新的**。
+    // 「笔记本挂着锁、里面的老笔记全是敞的」是最危险的状态——侧栏一排锁图标里混一个
+    // 没锁的根本看不出来。所以这里不给选择:只要更新之后它落在私密分支里,
+    // 就无条件把整支已有的笔记一并上锁。
     const newPrivate = body.is_private === undefined ? (notebook.is_private ? 1 : 0) : (body.is_private ? 1 : 0)
 
     await c.env.DB.prepare(
@@ -122,15 +123,33 @@ notebooks.put('/:id', async (c) => {
               color = COALESCE(?, color), parent_id = ?, is_private = ?, updated_at = datetime('now') WHERE id = ?`
     ).bind(name || null, description ?? null, color || null, newParent, newPrivate, id).run()
 
+    // 不变式:私密分支里不存在 is_private = 0 的活笔记。
+    // 每次 PUT 都重新拉平一次(通常匹配 0 行),而不是靠调用方记得再打一个接口——
+    // 保证不了不变式的接口,迟早会有一条路径绕过去。取消私密时**不解锁**已有笔记:
+    // 安全方向的默认永远是「不解密」,要放行某一篇就去那一篇上显式取消。
+    let locked = 0
+    const after = await loadNotebookRows(c.env, user.id)
+    if (inPrivateBranch(after, notebook.id)) {
+      const ids = subtreeIds(after, notebook.id)
+      const r = await c.env.DB.prepare(
+        `UPDATE articles SET is_private = 1, is_public = 0, share_token = NULL, share_expires_at = NULL,
+                updated_at = datetime('now')
+         WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
+           AND notebook_id IN (${ids.map(() => '?').join(',')})`
+      ).bind(user.id, ...ids).run()
+      locked = r.meta?.changes ?? 0
+    }
+
     const updated = await c.env.DB.prepare('SELECT * FROM notebooks WHERE id = ?').bind(id).first()
-    return ok(updated)
+    return ok({ ...(updated as any), locked_articles: locked })
   } catch (e: any) {
     return err('更新失败: ' + e.message, 500)
   }
 })
 
-// GET /api/notebooks/:id/private-impact - 这一支(含子孙)里还有多少篇没上锁(P16.5)
-// 前端在「设为私有」「移进私密分支」之前拿它来问「已有的 N 篇要不要一并上锁」
+// GET /api/notebooks/:id/private-impact - 设为私密之前的后果清单(P16.5)
+// 数量不是重点,**其中有几篇是公开的、有几个分享链接**才是——那才是别人看得见、
+// 确认之后会消失的东西。前端拿它渲染确认框。
 notebooks.get('/:id/private-impact', async (c) => {
   const user = c.get('user')
   try {
@@ -138,38 +157,22 @@ notebooks.get('/:id/private-impact', async (c) => {
     const id = Number(c.req.param('id'))
     if (!rows.some((n) => n.id === id)) return err('笔记本不存在', 404)
     const ids = subtreeIds(rows, id)
+    const ph = ids.map(() => '?').join(',')
     const row = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS cnt FROM articles
-       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
-         AND notebook_id IN (${ids.map(() => '?').join(',')})`
-    ).bind(user.id, ...ids).first<{ cnt: number }>()
-    return ok({ notebooks: ids.length, articles: row?.cnt ?? 0 })
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN is_public = 1 THEN 1 ELSE 0 END) AS pub,
+              SUM(CASE WHEN share_token IS NOT NULL THEN 1 ELSE 0 END) AS shared
+       FROM articles
+       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0 AND notebook_id IN (${ph})`
+    ).bind(user.id, ...ids).first<{ total: number; pub: number; shared: number }>()
+    return ok({
+      notebooks: ids.length,
+      articles: row?.total ?? 0,
+      published: row?.pub ?? 0,
+      shared: row?.shared ?? 0,
+    })
   } catch (e: any) {
     return err('检查失败: ' + e.message, 500)
-  }
-})
-
-// POST /api/notebooks/:id/apply-private - 把这一支(含子孙)里已有的笔记全部上锁(P16.5)
-//
-// 只往「更私密」一个方向走,没有反向接口:批量解锁是个一按就泄露的按钮,
-// 要放行某一篇就去那一篇上单独取消——例外必须是显式动作。
-// 公开状态一并清掉,与 PUT /api/articles/:id 的「私有与公开互斥」同一条规则。
-notebooks.post('/:id/apply-private', async (c) => {
-  const user = c.get('user')
-  try {
-    const rows = await loadNotebookRows(c.env, user.id)
-    const id = Number(c.req.param('id'))
-    if (!rows.some((n) => n.id === id)) return err('笔记本不存在', 404)
-    const ids = subtreeIds(rows, id)
-    const r = await c.env.DB.prepare(
-      `UPDATE articles SET is_private = 1, is_public = 0, share_token = NULL, share_expires_at = NULL,
-              updated_at = datetime('now')
-       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
-         AND notebook_id IN (${ids.map(() => '?').join(',')})`
-    ).bind(user.id, ...ids).run()
-    return ok({ updated: r.meta?.changes ?? 0 })
-  } catch (e: any) {
-    return err('设置失败: ' + e.message, 500)
   }
 })
 
