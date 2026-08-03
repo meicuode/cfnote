@@ -352,8 +352,15 @@ export default function Layout({ token, username, onLogout }: Props) {
     else if (!activeArticle) localStorage.removeItem('cfnote-last-article')
   }, [activeArticle])
 
-  const createNotebook = async (name: string) => {
-    const res = await post<Notebook>('/notebooks', { name })
+  const createNotebook = async (name: string, parent: number | null = null) => {
+    const res = await post<Notebook>('/notebooks', { name, parent_id: parent })
+    if (res.ok) await loadNotebooks()
+    return res
+  }
+
+  // P16.1 移动笔记本(改 parent_id)。环检测在服务端,这里只负责刷新
+  const moveNotebook = async (id: number, parent: number | null) => {
+    const res = await put<Notebook>(`/notebooks/${id}`, { parent_id: parent })
     if (res.ok) await loadNotebooks()
     return res
   }
@@ -765,6 +772,7 @@ export default function Layout({ token, username, onLogout }: Props) {
             onSelect={(nb) => { setActiveNotebook(nb); setBlogView(null); closeFiles(); setPane('list') }}
             onCreate={createNotebook}
             onDelete={deleteNotebook}
+            onMove={moveNotebook}
             onOpenFiles={() => { setShowFiles(true); setBlogView(null); setPane('main') }}
             filesActive={showFiles}
             fileNavSlot={showFiles ? (

@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS notebooks (
   description TEXT DEFAULT '',
   color TEXT DEFAULT '#10B981',
   article_count INTEGER DEFAULT 0,
+  parent_id INTEGER,
+  is_private INTEGER DEFAULT 0,
   deleted_at TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),

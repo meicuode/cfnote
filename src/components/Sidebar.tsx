@@ -3,6 +3,7 @@ import ConfirmDialog from './ConfirmDialog'
 import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
+import { buildTree, descendantIds, type TreeNode } from '../lib/notebookTree'
 import type { Notebook } from '../types'
 
 interface Props {
@@ -10,8 +11,11 @@ interface Props {
   activeNotebook: Notebook | null
   tags: { name: string; count: number }[]
   onSelect: (nb: Notebook) => void
-  onCreate: (name: string) => Promise<any>
+  /** parent 为 null 表示建在根上(P16.1) */
+  onCreate: (name: string, parent: number | null) => Promise<any>
   onDelete: (id: number) => Promise<any>
+  /** P16.1 移动笔记本:parent 为 null 表示移到根 */
+  onMove: (id: number, parent: number | null) => Promise<any>
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
   filesActive: boolean
@@ -24,12 +28,51 @@ interface Props {
 
 const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#6366F1']
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
-  const [showNew, setShowNew] = useState(false)
+/** 缩进到第 6 层封顶:再深就把名字挤没了,层级关系靠展开状态已经能看清 */
+const INDENT_PX = 12
+const MAX_INDENT_DEPTH = 6
+
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
+  const [showNew, setShowNew] = useState<{ parent: number | null } | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  const [moving, setMoving] = useState<number | null>(null)
+  // P16.1 展开态:记住哪几本是展开的(存 id 列表,跟文件管理二级菜单同样的持久化做法)
+  const [expanded, setExpanded] = useState<Set<number>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('cfnote-nb-expanded') || '[]')
+      return new Set(Array.isArray(raw) ? raw.map(Number).filter(Number.isFinite) : [])
+    } catch {
+      return new Set<number>()
+    }
+  })
+  const toggleExpand = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      localStorage.setItem('cfnote-nb-expanded', JSON.stringify([...next]))
+      return next
+    })
+
+  const tree = buildTree(notebooks)
+
+  // 移动的候选:排除自己与自己的全部子孙(选了就成环)。摊平成带 depth 的列表以便缩进显示。
+  // 服务端 PUT /notebooks/:id 会用同一个 wouldCycle 再判一次——这里只是别让用户点到
+  const moveTargets: { nb: Notebook; depth: number }[] = []
+  if (moving !== null) {
+    const banned = new Set([moving, ...descendantIds(notebooks, moving)])
+    const walk = (ns: TreeNode<Notebook>[]) => {
+      for (const n of ns) {
+        if (banned.has(n.nb.id)) continue
+        moveTargets.push({ nb: n.nb, depth: n.depth })
+        walk(n.children)
+      }
+    }
+    walk(tree)
+  }
   // P10.4 标签区:折叠(记忆)+ 常用前 N 个 chips + 「全部标签」浏览器
   const [tagsOpen, setTagsOpen] = useState(() => localStorage.getItem('cfnote-tags-open') !== '0')
   const [showTagBrowser, setShowTagBrowser] = useState(false)
@@ -41,11 +84,14 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
     setTagsOpen((v) => { localStorage.setItem('cfnote-tags-open', v ? '0' : '1'); return !v })
 
   const handleCreate = async () => {
-    if (!newName.trim()) return
+    if (!newName.trim() || !showNew) return
     setCreating(true)
-    await onCreate(newName.trim())
+    const parent = showNew.parent
+    await onCreate(newName.trim(), parent)
+    // 在子层建的,把父本自动展开,否则新建完看不见
+    if (parent !== null && !expanded.has(parent)) toggleExpand(parent)
     setNewName('')
-    setShowNew(false)
+    setShowNew(null)
     setCreating(false)
   }
 
@@ -60,14 +106,90 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
     setContextMenu(null)
   }
 
+  const newNameInput = (
+    <input
+      type="text"
+      value={newName}
+      onChange={(e) => setNewName(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') handleCreate()
+        if (e.key === 'Escape') { setShowNew(null); setNewName('') }
+      }}
+      autoFocus
+      placeholder="笔记本名称"
+      className="w-full text-sm border border-emerald-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+      disabled={creating}
+    />
+  )
+
+  /** 递归渲染一层。展开态只影响子层的显隐,自身永远渲染 */
+  const renderNode = (node: TreeNode<Notebook>): ReactNode => {
+    const { nb, depth, children } = node
+    const open = expanded.has(nb.id)
+    const pad = 10 + Math.min(depth, MAX_INDENT_DEPTH) * INDENT_PX
+    return (
+      <div key={nb.id}>
+        <div
+          onContextMenu={(e) => handleContextMenu(e, nb.id)}
+          className={`group w-full flex items-center gap-1 rounded-lg mb-0.5 text-sm transition-colors ${
+            activeNotebook?.id === nb.id
+              ? 'bg-emerald-50 text-emerald-700 font-medium'
+              : 'text-gray-700 hover:bg-gray-100'
+          }`}
+          style={{ paddingLeft: pad }}
+        >
+          {/* 无子本时占位等宽,免得同级的圆点参差不齐 */}
+          {children.length > 0 ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleExpand(nb.id) }}
+              className="p-0.5 -ml-0.5 rounded text-gray-300 hover:text-gray-600 shrink-0"
+              title={open ? '折叠' : '展开'}
+              aria-label={open ? '折叠' : '展开'}
+            >
+              <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" />
+          )}
+          <button
+            onClick={() => onSelect(nb)}
+            className="flex-1 min-w-0 text-left flex items-center gap-2.5 py-2 pr-1"
+          >
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: nb.color }} />
+            <span className="truncate flex-1">{nb.name}</span>
+            <span className="text-xs text-gray-400">{nb.article_count}</span>
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setShowNew({ parent: nb.id }); setNewName('') }}
+            className="p-1 mr-1 rounded text-gray-300 hover:text-emerald-600 hover:bg-emerald-50 opacity-0 group-hover:opacity-100 max-lg:opacity-100 shrink-0 transition-opacity"
+            title="在此新建子笔记本"
+            aria-label="在此新建子笔记本"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
+        {showNew?.parent === nb.id && (
+          <div className="mb-1" style={{ paddingLeft: pad + INDENT_PX + 16, paddingRight: 8 }}>
+            {newNameInput}
+          </div>
+        )}
+        {open && children.map(renderNode)}
+      </div>
+    )
+  }
+
   return (
     <div className="h-full flex flex-col py-3" onClick={() => setContextMenu(null)}>
       <div className="px-3 mb-3 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">笔记本</span>
         <button
-          onClick={() => setShowNew(true)}
+          onClick={() => { setShowNew({ parent: null }); setNewName('') }}
           className="p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
-          title="新建笔记本"
+          title="新建笔记本(建在最外层)"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -75,43 +197,14 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
         </button>
       </div>
 
-      {/* New notebook input */}
-      {showNew && (
-        <div className="px-3 mb-2">
-          <input
-            type="text"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreate()
-              if (e.key === 'Escape') { setShowNew(false); setNewName('') }
-            }}
-            autoFocus
-            placeholder="笔记本名称"
-            className="w-full text-sm border border-emerald-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-            disabled={creating}
-          />
-        </div>
+      {/* 新建在最外层:建在子层的输入框由 renderNode 就地渲染 */}
+      {showNew?.parent === null && (
+        <div className="px-3 mb-2">{newNameInput}</div>
       )}
 
-      {/* Notebook list */}
+      {/* 笔记本树(P16.1):层级由 parent_id 决定,展开态记在 localStorage */}
       <div className="flex-1 overflow-y-auto px-1.5">
-        {notebooks.map((nb) => (
-          <button
-            key={nb.id}
-            onClick={() => onSelect(nb)}
-            onContextMenu={(e) => handleContextMenu(e, nb.id)}
-            className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg mb-0.5 text-sm transition-colors ${
-              activeNotebook?.id === nb.id
-                ? 'bg-emerald-50 text-emerald-700 font-medium'
-                : 'text-gray-700 hover:bg-gray-100'
-            }`}
-          >
-            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: nb.color }} />
-            <span className="truncate flex-1">{nb.name}</span>
-            <span className="text-xs text-gray-400">{nb.article_count}</span>
-          </button>
-        ))}
+        {tree.map(renderNode)}
 
         {notebooks.length === 0 && !showNew && (
           <p className="text-xs text-gray-400 text-center mt-8 px-4">
@@ -291,11 +384,59 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
+            onClick={() => { setShowNew({ parent: contextMenu.id }); setNewName(''); setContextMenu(null) }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+          >
+            新建子笔记本
+          </button>
+          <button
+            onClick={() => { setMoving(contextMenu.id); setContextMenu(null) }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+          >
+            移动到…
+          </button>
+          {/* 有子本时服务端会拒绝(P16.1),这里直接置灰,免得点了没反应还看不到原因 */}
+          <button
             onClick={handleDelete}
-            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+            disabled={notebooks.some((n) => n.parent_id === contextMenu.id)}
+            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 whitespace-nowrap disabled:text-gray-300 disabled:hover:bg-transparent"
+            title={notebooks.some((n) => n.parent_id === contextMenu.id) ? '请先删除或移走它的子笔记本' : undefined}
           >
             删除笔记本
           </button>
+        </div>
+      )}
+
+      {/* P16.1 移动:候选里排除自己与自己的子孙(否则会造出环),服务端还会再判一次 */}
+      {moving !== null && (
+        <div className="fixed inset-0 z-[70] bg-black/40 flex items-center justify-center" onMouseDown={() => setMoving(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-80 max-w-[92vw] p-4" onMouseDown={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">
+              移动「{notebooks.find((n) => n.id === moving)?.name}」
+            </h3>
+            <p className="text-[11px] text-gray-400 mb-2">选一个新的上级；里面的笔记不会动。</p>
+            <div className="max-h-72 overflow-y-auto border border-gray-100 rounded-lg divide-y divide-gray-50">
+              <button
+                onClick={() => { const id = moving; setMoving(null); onMove(id, null) }}
+                className="w-full text-left px-3 py-2 text-sm text-gray-500 hover:bg-gray-50"
+              >
+                ↥ 移到最外层
+              </button>
+              {moveTargets.map((t) => (
+                <button
+                  key={t.nb.id}
+                  onClick={() => { const id = moving; setMoving(null); onMove(id, t.nb.id) }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-emerald-50 truncate"
+                  style={{ paddingLeft: 12 + Math.min(t.depth, MAX_INDENT_DEPTH) * INDENT_PX }}
+                >
+                  📓 {t.nb.name}
+                </button>
+              ))}
+              {moveTargets.length === 0 && (
+                <p className="px-3 py-3 text-xs text-gray-400">没有别的笔记本可以放进去</p>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

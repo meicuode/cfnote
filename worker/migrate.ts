@@ -108,6 +108,11 @@ const COMMENT_COLUMNS: Record<string, string> = {
 // 违反「只做增量幂等」的约定):只要永远不 DELETE notebooks 那一行,CASCADE 就永远不会触发。
 const NOTEBOOK_COLUMNS: Record<string, string> = {
   deleted_at: 'ALTER TABLE notebooks ADD COLUMN deleted_at TEXT',
+  // P16.1 笔记本层级:NULL 表示挂在根上,所以老库天然就是一层平铺,零行为变化。
+  // 同样不加外键约束(要重建表),父被删成孤儿由 src/lib/notebookTree 的 buildTree 兜底挂根。
+  parent_id: 'ALTER TABLE notebooks ADD COLUMN parent_id INTEGER',
+  // P16.5 的私密笔记本。这一批只建列不生效——跟 parent_id 一起加,省一次迁移往返
+  is_private: 'ALTER TABLE notebooks ADD COLUMN is_private INTEGER DEFAULT 0',
 }
 
 export function ensureSchema(env: Env): Promise<void> {

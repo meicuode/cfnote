@@ -29,6 +29,10 @@ export interface Notebook {
   description: string
   color: string
   article_count: number
+  /** P16.1 层级:null/缺省=挂在根上。虚拟笔记本(id 为负)永远没有父 */
+  parent_id?: number | null
+  /** P16.5 私密笔记本(这一批只建列不生效) */
+  is_private?: number
   created_at: string
   updated_at: string
 }
