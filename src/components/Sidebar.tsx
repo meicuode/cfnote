@@ -21,7 +21,7 @@ interface Props {
   /** 设为私密之前的后果清单 */
   onPrivateImpact: (id: number) => Promise<{
     ok: boolean
-    data?: { notebooks: number; articles: number; published: number; shared: number }
+    data?: { notebooks: number; articles: number; published: number; shared: number; private: number }
   }>
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
@@ -39,6 +39,25 @@ const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899'
 const INDENT_PX = 12
 const MAX_INDENT_DEPTH = 6
 
+/**
+ * 笔记本图标(P16.5.2):封面 + 深一档的书脊,整体取笔记本自己的颜色。
+ *
+ * 换掉原来那个小色块,但**颜色必须留着**——那是用户给每本笔记本设的属性,
+ * 不能因为换了个图形就丢掉。
+ *
+ * 刻意**不用「敞开/合上」区��公开与私密**:这是安全信号,14 像素下开合两种书形
+ * 很难一眼分清,而锁的轮廓在任何尺寸下都不会认错——认错的代价是把该私密的当成公开的。
+ * 何况开/合在树形侧栏里的既定含义是展开/折叠,与右边的锁标记也会重复编码同一件事。
+ */
+function NotebookIcon({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className="w-4 h-4 shrink-0" style={{ color }} aria-hidden="true">
+      <rect x="3" y="1.5" width="10.5" height="13" rx="1.5" fill="currentColor" />
+      <rect x="3" y="1.5" width="3" height="13" rx="1.5" fill="currentColor" opacity="0.55" />
+    </svg>
+  )
+}
+
 export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onSetPrivate, onPrivateImpact, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState<{ parent: number | null } | null>(null)
   const [newName, setNewName] = useState('')
@@ -50,9 +69,11 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
   const [lockAsk, setLockAsk] = useState<{
     id: number
     name: string
-    impact: { notebooks: number; articles: number; published: number; shared: number }
+    impact: { notebooks: number; articles: number; published: number; shared: number; private: number }
     run: () => Promise<any>
   } | null>(null)
+  // 取消私密的解释框(不是安全闸门,见 handleTogglePrivate)
+  const [unlockAsk, setUnlockAsk] = useState<{ id: number; name: string; kept: number } | null>(null)
   // P16.1 展开态:记住哪几本是展开的(存 id 列表,跟文件管理二级菜单同样的持久化做法)
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     try {
@@ -141,9 +162,18 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
 
   const handleTogglePrivate = async (id: number, next: boolean) => {
     setContextMenu(null)
-    // 取消私密不问:它不会泄露任何东西,而且已有笔记照旧保持私有(不解密)
-    if (!next) { await onSetPrivate(id, false); return }
-    await askThenLock(id, () => onSetPrivate(id, true))
+    if (next) {
+      await askThenLock(id, () => onSetPrivate(id, true))
+      return
+    }
+    // 取消私密要弹的**不是安全闸门**(这个动作即时可逆,再点回去就是了),是**解释**:
+    // 已有笔记不会跟着解锁,于是会留下「笔记本没锁、里面全是私有」这个乍看很怪的状态;
+    // 而且真正的风险是延迟的——之后新写进来的笔记不再自动私有,你不会注意到。
+    // 里面一篇私有笔记都没有就没什么可解释的,直接做。
+    const res = await onPrivateImpact(id)
+    const kept = res.ok ? res.data?.private ?? 0 : 0
+    if (kept === 0) { await onSetPrivate(id, false); return }
+    setUnlockAsk({ id, name: notebooks.find((x) => x.id === id)?.name || '', kept })
   }
 
   const handleMove = async (id: number, parent: number | null) => {
@@ -209,7 +239,7 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             onClick={() => onSelect(nb)}
             className="flex-1 min-w-0 text-left flex items-center gap-2.5 py-2 pr-1"
           >
-            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: nb.color }} />
+            <NotebookIcon color={nb.color} />
             <span className="truncate flex-1">{nb.name}</span>
             {priv !== 'none' && (
               <span
@@ -550,6 +580,17 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           confirmText={lockAsk.impact.published > 0 ? `设为私密并下线 ${lockAsk.impact.published} 篇` : '设为私密'}
           onConfirm={() => { const r = lockAsk.run; setLockAsk(null); r() }}
           onCancel={() => setLockAsk(null)}
+        />
+      )}
+
+      {/* 取消私密:解释而非警告——已有笔记不解锁,真正变的是「以后新写的不再自动私有」 */}
+      {unlockAsk && (
+        <ConfirmDialog
+          title={`取消「${unlockAsk.name}」的私密？`}
+          message={`里面已有的 ${unlockAsk.kept} 篇笔记仍然保持私有，不会自动公开。变的是：之后新写进这一支的笔记不再自动设为私有。要让某几篇重新可公开，去那几篇上单独取消私有。`}
+          confirmText="取消私密"
+          onConfirm={() => { const id = unlockAsk.id; setUnlockAsk(null); onSetPrivate(id, false) }}
+          onCancel={() => setUnlockAsk(null)}
         />
       )}
     </div>

@@ -147,9 +147,12 @@ notebooks.put('/:id', async (c) => {
   }
 })
 
-// GET /api/notebooks/:id/private-impact - 设为私密之前的后果清单(P16.5)
-// 数量不是重点,**其中有几篇是公开的、有几个分享链接**才是——那才是别人看得见、
-// 确认之后会消失的东西。前端拿它渲染确认框。
+// GET /api/notebooks/:id/private-impact - 私密开关两个方向的后果清单(P16.5)
+//
+// 设为私密要看的是「还没上锁的有几篇、**其中几篇是公开的、几个分享链接**」——
+// 数量不是重点,别人看得见、确认之后会当场消失的那部分才是。
+// 取消私密要看的是「已经上锁的有几篇」:那几篇**不会**跟着解锁,得说清楚,
+// 否则就留下「笔记本没锁、里面全是私有」这个乍看很怪的状态没人解释。
 notebooks.get('/:id/private-impact', async (c) => {
   const user = c.get('user')
   try {
@@ -159,17 +162,19 @@ notebooks.get('/:id/private-impact', async (c) => {
     const ids = subtreeIds(rows, id)
     const ph = ids.map(() => '?').join(',')
     const row = await c.env.DB.prepare(
-      `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN is_public = 1 THEN 1 ELSE 0 END) AS pub,
-              SUM(CASE WHEN share_token IS NOT NULL THEN 1 ELSE 0 END) AS shared
+      `SELECT SUM(CASE WHEN is_private = 0 THEN 1 ELSE 0 END) AS open_cnt,
+              SUM(CASE WHEN is_private = 0 AND is_public = 1 THEN 1 ELSE 0 END) AS pub,
+              SUM(CASE WHEN is_private = 0 AND share_token IS NOT NULL THEN 1 ELSE 0 END) AS shared,
+              SUM(CASE WHEN is_private = 1 THEN 1 ELSE 0 END) AS priv
        FROM articles
-       WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0 AND notebook_id IN (${ph})`
-    ).bind(user.id, ...ids).first<{ total: number; pub: number; shared: number }>()
+       WHERE user_id = ? AND deleted_at IS NULL AND notebook_id IN (${ph})`
+    ).bind(user.id, ...ids).first<{ open_cnt: number; pub: number; shared: number; priv: number }>()
     return ok({
       notebooks: ids.length,
-      articles: row?.total ?? 0,
+      articles: row?.open_cnt ?? 0,
       published: row?.pub ?? 0,
       shared: row?.shared ?? 0,
+      private: row?.priv ?? 0,
     })
   } catch (e: any) {
     return err('检查失败: ' + e.message, 500)

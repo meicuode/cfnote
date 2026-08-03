@@ -376,9 +376,9 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
-  /** 设为私密/移进私密分支之前的后果清单:多少篇、其中几篇已公开、几个分享链接 */
+  /** 私密开关两个方向的后果清单:未上锁的(含其中几篇已公开/有分享链接)+ 已上锁的 */
   const privateImpact = async (id: number) =>
-    get<{ notebooks: number; articles: number; published: number; shared: number }>(
+    get<{ notebooks: number; articles: number; published: number; shared: number; private: number }>(
       `/notebooks/${id}/private-impact`,
     )
 
