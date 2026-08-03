@@ -542,6 +542,15 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
   - 「公开」按钮补上 `article.id <= 0` 禁用，跟 `submitShare` 早就有的那条判断对齐——它是唯一一个对草稿开着的写入口。私有／取消公开本来就在 `article.id > 0` 里。
   - 测试只能测到闸门本身（`tests/singleFlight.test.ts`）：仓库没有 `@testing-library/react`，组件里的 effect 时序测不了。这也正是把闸门抽成纯函数的理由——**「同一篇草稿的创建请求同时只能有一个」是一句与 UI 无关的话，能单独证**，剩下的是接线。
 
+- 本地导入一个文件都读不到（P15.4，修 bug）：选文件夹（或选文件）一律报「所选内容中没有 .md / .markdown / .txt 文件」。
+  - **根因是「清空 input 会就地清空已经拿到的那个 FileList」**。原代码是 `const fl = e.target.files; e.target.value = ''; handleFiles(fl)`。清 `value` 是为了下次选同一个文件夹还能触发 `change`（否则选不动），本身没错；错在 `e.target.files` 是**活引用**——Blink 的 `FileInputType::SetValue` 走 `file_list_->clear()`，就地把那个对象清空，于是 `fl.length` 在传下去之前已经是 0。改成先 `Array.from` 快照再重置：`File` 对象本身在 FileList 被清空后仍然有效。
+  - **错误信息要能区分两种失败**。「一个文件都没拿到」和「拿到了但类型不对」原来是同一句话，这正是这个 bug 藏得住的原因。现在前者说「浏览器没有交出任何文件」，后者说「收到 N 个文件，其中没有 …」——N 是多少直接指出问题在哪一侧。
+  - 文件夹 input 补 `multiple`：`webkitdirectory` 在 Chrome 下单独也能递归返回整棵树，但各浏览器不完全一致（MDN 自己的例子是两个一起写的），补上无副作用，顺带支持一次选多个文件夹。
+  - **子目录里的文档标题带相对路径**（`src/lib/importTitle.ts`）：`File.name` 只有基名，`技术/index.md` 与 `读书/index.md` 会变成两篇都叫 `index`。服务端去重键是**标题 + 内容哈希**（`worker/routes/system.ts`），所以内容不同的还是都能进来——主要是认不出谁是谁；真正会丢的是同名**且**同内容那种（每个子目录各放一份一样的 `README.md`）。带上路径两种都解决。
+  - **剥掉相对路径的第一段**：那一段就是用户选中的文件夹本身，每篇标题里重复它一遍没有意义。根目录下的文件因此仍然只有文件名，跟改造前一模一样——**斜杠只出现在真正来自子目录的笔记上**。选单个文件时 `webkitRelativePath` 是空串，自然走回 `name`。
+  - **扩展名只能从最后一段去**：拼好整条路径再 `replace(DOC_EXT, '')` 是错的——`sub/.markdown` 会剩下一个吊着斜杠的 `sub/`，而它非空，「什么都不剩就退回原名」那道兜底根本接不住。单测逮到的就是这条（顺带也保住了 `archive.md/note.md` 这种目录名）。
+  - **不做批内重名编号**：路径已经把标题分开了，再加 `(2)` 只会破坏服务端那套「标题 + 内容都一样就跳过」的去重——重复导入同一个文件夹本来就该只留一份。
+
 ## 11. 项目结构
 
 见 `README.md`「项目结构」一节（`worker/` 后端 Hono 路由 + `src/` React 前端 + `docs/` 设计文档 + `tests/` Vitest）。

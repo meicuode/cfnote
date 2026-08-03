@@ -16,6 +16,7 @@ import type { Notebook, Article } from '../types'
 import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
 import { workspaceOf, entryPane, backPane, canGoBack, paneForRoute, type Pane } from '../lib/pane'
 import { createSingleFlight } from '../lib/singleFlight'
+import { importTitle } from '../lib/importTitle'
 import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -573,7 +574,7 @@ export default function Layout({ token, username, onLogout }: Props) {
       const arts: { id: number; notebook_id: number; title: string; content: string }[] = []
       for (const f of files) {
         const content = await f.text()
-        const title = f.name.replace(/\.(md|markdown|txt)$/i, '') || f.name
+        const title = importTitle(f)
         arts.push({ id: arts.length + 1, notebook_id: 1, title, content })
       }
       setImportProgress('正在导入文章...')

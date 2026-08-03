@@ -35,12 +35,20 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
     }
   }
 
-  // 本地文件/文件夹选择:过滤出支持的文档类型后批量导入
-  const handleFiles = async (list: FileList | null) => {
-    if (!list || loading) return
-    const files = Array.from(list).filter((f) => DOC_EXT.test(f.name))
+  // 本地文件/文件夹选择:过滤出支持的文档类型后批量导入。
+  // 收的是 File[] 而不是 FileList —— 调用处必须先 Array.from 快照再重置 input,
+  // 理由见下面 onChange 的注释
+  const handleFiles = async (list: File[]) => {
+    if (loading) return
+    if (list.length === 0) {
+      // 选了东西却一个文件都没到手,几乎只可能是取用姿势不对(或者用户取消了选择),
+      // 跟「选到了但类型不对」是两码事,分开说才诊断得动
+      setError('浏览器没有交出任何文件,请重试')
+      return
+    }
+    const files = list.filter((f) => DOC_EXT.test(f.name))
     if (files.length === 0) {
-      setError('所选内容中没有 .md / .markdown / .txt 文件')
+      setError(`收到 ${list.length} 个文件,其中没有 .md / .markdown / .txt`)
       return
     }
     setError('')
@@ -49,6 +57,16 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
     } catch (e: any) {
       setError(e.message || '导入失败')
     }
+  }
+
+  // input 选完要清空 value,否则下次选同一个文件/文件夹不会触发 change。
+  // 但 e.target.files 是活引用:Blink 的 FileInputType::SetValue 会就地
+  // file_list_->clear(),清空之后先前拿到的那个 FileList 长度直接变 0。
+  // 所以必须先 Array.from 快照(File 对象本身在 FileList 被清空后仍然有效)再重置
+  const pickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const snapshot = Array.from(e.target.files || [])
+    e.target.value = ''
+    handleFiles(snapshot)
   }
 
   return (
@@ -101,7 +119,7 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
                 accept=".md,.markdown,.txt"
                 className="hidden"
                 disabled={loading}
-                onChange={(e) => { const fl = e.target.files; e.target.value = ''; handleFiles(fl) }}
+                onChange={pickFiles}
               />
             </label>
             <label className={`flex-1 flex items-center justify-center gap-2 border border-dashed border-gray-300 rounded-lg py-2.5 text-sm text-gray-600 hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 transition-colors cursor-pointer ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -111,15 +129,17 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
               选择文件夹
               <input
                 type="file"
+                multiple
                 className="hidden"
                 disabled={loading}
                 {...({ webkitdirectory: '', directory: '' } as any)}
-                onChange={(e) => { const fl = e.target.files; e.target.value = ''; handleFiles(fl) }}
+                onChange={pickFiles}
               />
             </label>
           </div>
           <p className="mt-2 text-xs text-gray-400">
-            支持 .md / .markdown / .txt，文件名作为标题，导入到当前笔记本；文件夹会递归读取全部支持的文档，重复文章自动跳过。
+            支持 .md / .markdown / .txt，文件名作为标题，导入到当前笔记本；文件夹会递归读取全部支持的文档，
+            子目录里的文档标题会带上相对路径（如 <code>技术/前端笔记</code>）以免同名混淆，重复文章自动跳过。
           </p>
         </div>
 
