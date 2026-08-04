@@ -70,3 +70,31 @@ export async function shouldBePrivate(env: Env, userId: number, notebookId: numb
 export function shouldBePrivateIn(rows: NotebookRow[], notebookId: number): boolean {
   return inPrivateBranch(rows, notebookId)
 }
+
+/**
+ * 从 id 到根的祖先链里,**还在回收站中**的那些(不含自己)。P16.3。
+ *
+ * 恢复一个子本时要把它的祖先一起恢复出来,否则会留下「子本活着、父本在回收站」的状态:
+ * `buildTree` 会把它兜回根(P16.1 的容错),于是你恢复的东西没回到原来的位置,
+ * 而层级一深根本看不出来它挪过。
+ *
+ * **只恢复祖先这个壳,祖先自己的笔记仍留在回收站**——你点的是恢复这一本,
+ * 不该顺带把另一本的笔记也捞回来。
+ *
+ * 与 `inPrivateBranch` 同款的 `seen` 防环:手改过的备份可能造出环,
+ * 这里绝不能变成死循环。
+ */
+export function trashedAncestors(rows: NotebookRow[], id: number): number[] {
+  const byId = new Map(rows.map((n) => [n.id, n]))
+  const out: number[] = []
+  const seen = new Set<number>([id])
+  let cur = byId.get(id)?.parent_id
+  while (cur != null && !seen.has(cur)) {
+    seen.add(cur)
+    const nb = byId.get(cur)
+    if (!nb) break
+    if (nb.deleted_at) out.push(nb.id)
+    cur = nb.parent_id
+  }
+  return out
+}

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 interface Props {
   title: string
@@ -6,6 +6,12 @@ interface Props {
   confirmText?: string
   /** 确认按钮与图标配色:red=危险(默认,删除类),amber=谨慎操作(如设为私有),emerald=正向操作 */
   variant?: 'red' | 'amber' | 'emerald'
+  /**
+   * 非空 = 必须原样打出这段文字才能确认(P16.3)。
+   * 只留给「量大到误点代价很高」的那几次——用滥了人会养成盲目打字的习惯,
+   * 那比没有这道闸更糟,因为它还顺带稀释了真正该停下的那几处。
+   */
+  typeToConfirm?: string
   onConfirm: () => void
   onCancel: () => void
 }
@@ -17,16 +23,21 @@ const VARIANTS = {
 } as const
 
 // 主题化确认弹窗(替代原生 confirm):Esc 取消,Enter 确认
-export default function ConfirmDialog({ title, message, confirmText = '删除', variant = 'red', onConfirm, onCancel }: Props) {
+export default function ConfirmDialog({ title, message, confirmText = '删除', variant = 'red', typeToConfirm, onConfirm, onCancel }: Props) {
   const v = VARIANTS[variant]
+  const [typed, setTyped] = useState('')
+  // 要求打字时,没打对就不算「已就绪」——Enter 与按钮都走这一个判断,不能各写一份
+  const armed = !typeToConfirm || typed.trim() === typeToConfirm
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
-      if (e.key === 'Enter') onConfirm()
+      // Enter 也要过 armed:否则打字确认形同虚设(输入框里回车就提交了)
+      if (e.key === 'Enter' && armed) onConfirm()
     }
     window.addEventListener('keydown', handler, true)
     return () => window.removeEventListener('keydown', handler, true)
-  }, [onCancel, onConfirm])
+  }, [onCancel, onConfirm, armed])
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center" onClick={(e) => { e.stopPropagation(); onCancel() }}>
@@ -43,6 +54,19 @@ export default function ConfirmDialog({ title, message, confirmText = '删除', 
             {message && <p className="text-xs text-gray-500 mt-1 leading-relaxed">{message}</p>}
           </div>
         </div>
+        {typeToConfirm && (
+          <div className="mt-3">
+            <label className="block text-xs text-gray-600 mb-1">
+              这一次数量较大。请输入 <b className="text-gray-900">{typeToConfirm}</b> 以确认
+            </label>
+            <input
+              autoFocus
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-400 focus:border-transparent"
+            />
+          </div>
+        )}
         <div className="flex justify-end gap-2 mt-4">
           <button
             onClick={onCancel}
@@ -52,7 +76,8 @@ export default function ConfirmDialog({ title, message, confirmText = '删除', 
           </button>
           <button
             onClick={onConfirm}
-            className={`px-3.5 py-1.5 text-sm rounded-lg text-white transition-colors ${v.btn}`}
+            disabled={!armed}
+            className={`px-3.5 py-1.5 text-sm rounded-lg text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${v.btn}`}
           >
             {confirmText}
           </button>

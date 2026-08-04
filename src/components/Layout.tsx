@@ -376,10 +376,14 @@ export default function Layout({ token, username, onLogout }: Props) {
     return res
   }
 
-  /** 私密开关两个方向的后果清单:未上锁的(含其中几篇已公开/有分享链接)+ 已上锁的 */
+  /**
+   * 这一支的后果清单:未上锁的(含其中几篇已公开/有分享链接)、已上锁的、以及合计。
+   * P16.3 起「设为私密」与「删除笔记本」共用它——两个确认框问的都是
+   * **确认之后别人看不见了什么**,没必要开两个接口各查一遍。
+   */
   const privateImpact = async (id: number) =>
-    get<{ notebooks: number; articles: number; published: number; shared: number; private: number }>(
-      `/notebooks/${id}/private-impact`,
+    get<{ notebooks: number; articles: number; published: number; shared: number; private: number; total: number }>(
+      `/notebooks/${id}/impact`,
     )
 
   const deleteNotebook = async (id: number) => {

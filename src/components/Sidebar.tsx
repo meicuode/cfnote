@@ -4,6 +4,7 @@ import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
 import { buildTree, descendantIds, inPrivateBranch, privacySource, type TreeNode } from '../lib/notebookTree'
+import { deleteNotebookPrompt, type DeletePrompt } from '../lib/deleteNotebook'
 import type { Notebook } from '../types'
 
 interface Props {
@@ -18,10 +19,10 @@ interface Props {
   onMove: (id: number, parent: number | null) => Promise<any>
   /** P16.5 私密笔记本:只改标志位,服务端会把整支已有笔记一并上锁 */
   onSetPrivate: (id: number, isPrivate: boolean) => Promise<any>
-  /** 设为私密之前的后果清单 */
+  /** 设为私密 / 删除之前的后果清单(P16.3 起两处共用同一个接口) */
   onPrivateImpact: (id: number) => Promise<{
     ok: boolean
-    data?: { notebooks: number; articles: number; published: number; shared: number; private: number }
+    data?: { notebooks: number; articles: number; published: number; shared: number; private: number; total: number }
   }>
   onOpenFiles: () => void
   /** 文件管理是否为当前视图,用于高亮 */
@@ -63,7 +64,7 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
-  const [confirmId, setConfirmId] = useState<number | null>(null)
+  const [delAsk, setDelAsk] = useState<{ id: number; prompt: DeletePrompt } | null>(null)
   const [moving, setMoving] = useState<number | null>(null)
   // P16.5 上锁确认:设为私密 / 移进私密分支之前摊开后果,确认即强制,没有「只锁新的」
   const [lockAsk, setLockAsk] = useState<{
@@ -137,8 +138,33 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
 
   const handleDelete = () => {
     if (!contextMenu) return
-    setConfirmId(contextMenu.id)
+    void askThenDelete(contextMenu.id)
+  }
+
+  /**
+   * 删除笔记本之前,先把后果摊开(P16.3)。
+   *
+   * P16.1 时有子本就直接拒绝,因为「删父连子孙一起进、恢复时整棵回来」还没做;
+   * 现在恢复侧补齐了,级联才敢开——代价是误点一次会带走一整棵树,所以这个确认框
+   * 是这批唯一必须做的 UI:摊开「其中几篇已发布会从博客下线」,超过阈值还要打字确认。
+   * 文案与强度判定在 src/lib/deleteNotebook.ts(纯函数 + 单测)——
+   * 「published 为 0 时那句该消失」这种分支埋在 JSX 里就只能靠人眼复核。
+   */
+  const askThenDelete = async (id: number) => {
     setContextMenu(null)
+    const name = notebooks.find((x) => x.id === id)?.name || ''
+    const res = await onPrivateImpact(id)
+    const d = res.ok ? res.data : undefined
+    setDelAsk({
+      id,
+      prompt: deleteNotebookPrompt(name, {
+        notebooks: d?.notebooks ?? 1,
+        // total = 未私有 + 已私有:进回收站的是全部,不只是能被别人看见的那些
+        articles: d?.total ?? 0,
+        published: d?.published ?? 0,
+        shared: d?.shared ?? 0,
+      }),
+    })
   }
 
   /**
@@ -503,12 +529,10 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
               {privacySource(notebooks, contextMenu.id) === 'self' ? '取消私密笔记本' : '设为私密笔记本'}
             </button>
           )}
-          {/* 有子本时服务端会拒绝(P16.1),这里直接置灰,免得点了没反应还看不到原因 */}
+          {/* P16.3:有子本不再置灰——删除会级联整棵子树,后果由确认框摊开 */}
           <button
             onClick={handleDelete}
-            disabled={notebooks.some((n) => n.parent_id === contextMenu.id)}
-            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 whitespace-nowrap disabled:text-gray-300 disabled:hover:bg-transparent"
-            title={notebooks.some((n) => n.parent_id === contextMenu.id) ? '请先删除或移走它的子笔记本' : undefined}
+            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 whitespace-nowrap"
           >
             删除笔记本
           </button>
@@ -548,13 +572,14 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
         </div>
       )}
 
-      {confirmId !== null && (
+      {delAsk && (
         <ConfirmDialog
-          title="把此笔记本移入回收站？"
-          message="其中的笔记会一并移入回收站,30 天内可整本恢复(向量索引即时移除,公开与置顶取消)。附件不会被删除——要等彻底清除时才按引用计数清理。"
-          confirmText="移入回收站"
-          onConfirm={() => { const id = confirmId; setConfirmId(null); onDelete(id) }}
-          onCancel={() => setConfirmId(null)}
+          title={delAsk.prompt.title}
+          message={delAsk.prompt.message}
+          confirmText={delAsk.prompt.confirmText}
+          typeToConfirm={delAsk.prompt.typeToConfirm}
+          onConfirm={() => { const id = delAsk.id; setDelAsk(null); onDelete(id) }}
+          onCancel={() => setDelAsk(null)}
         />
       )}
 

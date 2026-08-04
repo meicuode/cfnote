@@ -3,7 +3,7 @@ import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent, recountNotebo
 import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
-import { loadNotebookRows, shouldBePrivateIn, hasLiveNotebook } from '../notebookPrivacy'
+import { loadNotebookRows, shouldBePrivateIn, hasLiveNotebook, trashedAncestors, chunked } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -67,10 +67,15 @@ export async function purgeExpiredTrash(env: Env): Promise<number> {
         `DELETE FROM articles WHERE id IN (${results.map(() => '?').join(',')})`
       ).bind(...results.map((r) => r.id)).run()
     }
-    // 超期且名下已无任何文章的笔记本(此时外键 CASCADE 无事可做)
+    // 超期且名下已无任何文章的笔记本(此时外键 CASCADE 无事可做)。
+    // P16.3 补 NOT EXISTS(子笔记本):删父级联之后,父子的 deleted_at 相同、同时到期,
+    // 而语句内的删除顺序是未指定的——先删掉父本就会留下指向空号的子本。
+    // 与其去推理「谁先到期」这种要绕一圈才成立的保证,不如让孤儿在结构上不可能出现:
+    // 有子本残留就这一轮不删,父本留到下一次扫描(子本清完了自然轮到它)。
     await env.DB.prepare(
       `DELETE FROM notebooks WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')
-         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)`
+         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)
+         AND NOT EXISTS (SELECT 1 FROM notebooks c WHERE c.parent_id = notebooks.id)`
     ).run()
     return results ? results.length : 0
   } catch {
@@ -328,10 +333,14 @@ articles.post('/trash/empty', async (c) => {
         `DELETE FROM articles WHERE id IN (${rows.map(() => '?').join(',')})`
       ).bind(...rows.map((r) => r.id)).run()
     }
-    // P14.1:回收站里的笔记本一并清掉(此时名下已无文章,CASCADE 无事可做)
+    // P14.1:回收站里的笔记本一并清掉(此时名下已无文章,CASCADE 无事可做)。
+    // 这里的守卫只挡「还有**活着的**子本」——清空回收站要的就是全清,
+    // 回收站里的子本会在同一条语句里一起没,不该互相拦住;
+    // 但一个活着的子本挂在被清掉的父本下面就成了孤儿(P16.3)
     const nb = await c.env.DB.prepare(
       `DELETE FROM notebooks WHERE user_id = ? AND deleted_at IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)`
+         AND NOT EXISTS (SELECT 1 FROM articles WHERE notebook_id = notebooks.id)
+         AND NOT EXISTS (SELECT 1 FROM notebooks c WHERE c.parent_id = notebooks.id AND c.deleted_at IS NULL)`
     ).bind(user.id).run()
     return ok({ purged: rows.length, notebooks: nb.meta?.changes ?? 0 })
   } catch (e: any) {
@@ -352,10 +361,17 @@ articles.post('/:id/restore', async (c) => {
     // 原笔记本可能也在回收站里(P14.1 整本删除)——那就**连带把它一起恢复**。
     // 否则会出现「笔记本已删、里面却有活笔记」的矛盾态:侧栏看不到这本,笔记也就无处可去。
     // 笔记本被彻底删掉(旧数据/极端情况)才落到最近使用的那本。
+    //
+    // P16.3:光恢复直属那一本还不够,**祖先链上还在回收站里的也要一起恢复**。
+    // P16.1 加了树之后,只恢复直属本会让它的 parent_id 指向一个还在回收站里的父本,
+    // buildTree 于是把它兜回根——你恢复的笔记出现在了另一个位置,而层级一深根本看不出来。
+    // 这个洞在 P16.3 之前就已经能踩到,不是级联删除引入的。
     let targetNb = article.notebook_id
     let restoredNotebook: string | null = null
+    const privRows = await loadNotebookRows(c.env, user.id)
     const nb = await c.env.DB.prepare('SELECT id, name, deleted_at FROM notebooks WHERE id = ? AND user_id = ?')
       .bind(targetNb, user.id).first<{ id: number; name: string; deleted_at: string | null }>()
+    const reviveNbs: number[] = []
     if (!nb) {
       const first = await c.env.DB.prepare(
         'SELECT id FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1'
@@ -363,16 +379,23 @@ articles.post('/:id/restore', async (c) => {
       if (!first) return err('请先创建一个笔记本再恢复')
       targetNb = first.id
     } else if (nb.deleted_at) {
-      await c.env.DB.prepare("UPDATE notebooks SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?")
-        .bind(nb.id).run()
+      reviveNbs.push(nb.id, ...trashedAncestors(privRows, nb.id))
       restoredNotebook = nb.name
+    } else {
+      // 本身活着,但祖先可能还在回收站里(父子一起删、只恢复了子本的笔记)
+      reviveNbs.push(...trashedAncestors(privRows, nb.id))
+    }
+    for (const part of chunked(reviveNbs)) {
+      await c.env.DB.prepare(
+        `UPDATE notebooks SET deleted_at = NULL, updated_at = datetime('now')
+          WHERE user_id = ? AND id IN (${part.map(() => '?').join(',')})`
+      ).bind(user.id, ...part).run()
     }
 
     // P16.5.3:恢复也要过私密不变式。软删除刻意不清 is_private,但**回收站里的笔记
     // 躲得过那道不变式**——PUT /api/notebooks/:id 拉平时只扫 deleted_at IS NULL。
     // 于是「删掉一篇公开笔记 → 把它的笔记本设为私密 → 恢复」就能让一篇非私有笔记
     // 落回私密支里,而你以为整棵是锁着的。恢复目标在私密分支就强制上锁。
-    const privRows = await loadNotebookRows(c.env, user.id)
     const forcePriv = shouldBePrivateIn(privRows, targetNb)
 
     await c.env.DB.batch([
