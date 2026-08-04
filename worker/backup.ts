@@ -30,7 +30,11 @@ export async function buildExportPayload(
   env: Env, user: BackupUser, withVersions: boolean,
 ): Promise<Record<string, unknown>> {
   const [notebooks, articles, convs, msgs, settingsRows, fileRows, folderRows, commentRows, versionRows] = await Promise.all([
-    env.DB.prepare('SELECT id, name, description, color, created_at, updated_at FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
+    // parent_id / is_private 是 P16.8 补的:P16.1 建了树、P16.5 加了私密标志,
+    // 但这条 SELECT 一直没跟上,于是**恢复出来的是一层平铺、私密笔记本变回普通笔记本**。
+    // 后者尤其阴:老笔记的 is_private 在 articles 里带着,看着没事,可笔记本本身不再私密,
+    // 此后新写进这一支的笔记不再自动上锁——正是 P16.5.2 说的「泄露风险是延迟的,而你不会注意到」。
+    env.DB.prepare('SELECT id, name, description, color, parent_id, is_private, created_at, updated_at FROM notebooks WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
     // P12.11 补上博客那一层:此前只导正文,恢复之后所有文章都变回未公开、浏览数归零
     env.DB.prepare('SELECT id, notebook_id, title, content, tags, pinned, is_public, is_private, COALESCE(is_page, 0) AS is_page, published_at, views, created_at, updated_at FROM articles WHERE user_id = ? AND deleted_at IS NULL ORDER BY id').bind(user.id).all(),
     env.DB.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = ? ORDER BY id').bind(user.id).all(),

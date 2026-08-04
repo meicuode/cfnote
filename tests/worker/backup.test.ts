@@ -111,6 +111,85 @@ describe('备份导出/导入', () => {
     expect(siteUrl).toBeNull()
   })
 
+  it('笔记本树与私密标志能往返(P16.8:这两列此前根本没进备份)', async () => {
+    const token = await bootstrap()
+    // 三层树 + 中间一层私密 + 自定义颜色
+    const root = await newNotebook(token, 'ERP笔记')
+    const mid = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '内部资料', parent_id: root, color: '#FF00AA' }),
+    })).body.data!.id
+    const leaf = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '薪酬', parent_id: mid }),
+    })).body.data!.id
+    await newArticle(token, leaf, '三层深的笔记')
+    await api(`/api/notebooks/${mid}`, { method: 'PUT', token, body: j({ is_private: 1 }) })
+
+    const dump = await exportAll(token)
+    // 先确认导出里真的带上了这两列——不然下面的断言可能是靠同名复用蒙对的
+    const dumped = dump.notebooks.find((n: any) => n.name === '内部资料')
+    expect(dumped.is_private).toBe(1)
+    expect(dump.notebooks.find((n: any) => n.name === '薪酬').parent_id).toBe(dumped.id)
+
+    await dropAll()
+    const token2 = await bootstrap('restored', 'test-password')
+    const res = await api('/api/import', { method: 'POST', token: token2, body: JSON.stringify(dump) })
+    expect(res.body.ok, res.body.error).toBe(true)
+
+    const rows = await env.DB.prepare('SELECT id, name, parent_id, is_private, color FROM notebooks').all<any>()
+    const by = new Map((rows.results || []).map((n) => [n.name, n]))
+    // 层级回来了
+    expect(by.get('内部资料')!.parent_id).toBe(by.get('ERP笔记')!.id)
+    expect(by.get('薪酬')!.parent_id).toBe(by.get('内部资料')!.id)
+    // 私密标志回来了(丢了的话:老笔记看着还是私有的,但此后新写进这一支的不再自动上锁)
+    expect(by.get('内部资料')!.is_private).toBe(1)
+    expect(by.get('ERP笔记')!.is_private).toBe(0)
+    // 颜色也回来了(备份里一直有,恢复侧此前只写 name)
+    expect(by.get('内部资料')!.color).toBe('#FF00AA')
+  })
+
+  it('恢复后往私密支里新建笔记,仍然自动上锁', async () => {
+    // 上一条验的是「标志位存回来了」,这条验的是**行为**真的跟着回来了。
+    // 私密继承是沿祖先链算的,parent_id 若没接上,子本里新建的笔记就不会上锁
+    const token = await bootstrap()
+    const root = await newNotebook(token, '私密根')
+    const child = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '子本', parent_id: root }),
+    })).body.data!.id
+    await newArticle(token, child, '占位')
+    await api(`/api/notebooks/${root}`, { method: 'PUT', token, body: j({ is_private: 1 }) })
+
+    const dump = await exportAll(token)
+    await dropAll()
+    const token2 = await bootstrap('restored', 'test-password')
+    await api('/api/import', { method: 'POST', token: token2, body: JSON.stringify(dump) })
+
+    const newChild = await env.DB.prepare("SELECT id FROM notebooks WHERE name = '子本'").first<{ id: number }>()
+    const fresh = await newArticle(token2, newChild!.id, '恢复之后新建的')
+    const row = await env.DB.prepare('SELECT is_private FROM articles WHERE id = ?').bind(fresh).first<{ is_private: number }>()
+    expect(row!.is_private).toBe(1)
+  })
+
+  it('导进一个已有同名笔记本的库:不冲掉现有的层级与私密标志', async () => {
+    // 与「settings 只在当前没有该项时才恢复」同一条规矩:
+    // 往一个已经配好的站里导备份,不该把人家现在的结构挪走
+    const token = await bootstrap()
+    const a = await newNotebook(token, '技术')
+    const b = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '归档', parent_id: a }),
+    })).body.data!.id
+    await newArticle(token, b, '甲')
+    const dump = await exportAll(token)
+
+    // 目标库里「归档」已存在且挂在根上
+    await dropAll()
+    const token2 = await bootstrap('restored', 'test-password')
+    const existing = await newNotebook(token2, '归档')
+    await api('/api/import', { method: 'POST', token: token2, body: JSON.stringify(dump) })
+
+    const row = await env.DB.prepare('SELECT parent_id FROM notebooks WHERE id = ?').bind(existing).first<{ parent_id: number | null }>()
+    expect(row!.parent_id).toBeNull() // 没被备份里的层级挪走
+  })
+
   it('重复导入同一份备份:文章不翻倍,评论也不翻倍', async () => {
     const { token } = await seedEverything()
     const dump = await exportAll(token)

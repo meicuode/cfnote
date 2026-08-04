@@ -371,19 +371,58 @@ system.post('/import', async (c) => {
     const nbByName = new Map(existingNbs.map((n) => [n.name, n.id]))
 
     const nbMap = new Map<number, number>() // 备份中的 id -> 本库 id
-    const toCreate: { oldId: number; name: string }[] = []
+    const freshIds = new Set<number>() // 这次真新建出来的(同名复用的不算)
+    const toCreate: { oldId: number; name: string; description: string; color: string; isPrivate: number }[] = []
     for (const nb of data.notebooks) {
       if (typeof nb?.name !== 'string' || !nb.name) continue
       const existed = nbByName.get(nb.name)
       if (existed) nbMap.set(nb.id, existed)
-      else toCreate.push({ oldId: nb.id, name: nb.name })
+      else toCreate.push({
+        oldId: nb.id,
+        name: nb.name,
+        // P16.8:这三列备份里一直有,恢复侧却只写了 name——有笔记本设过颜色的话恢复出来全是默认绿
+        description: typeof nb.description === 'string' ? nb.description : '',
+        color: typeof nb.color === 'string' && nb.color ? nb.color : '#10B981',
+        isPrivate: nb.is_private ? 1 : 0,
+      })
     }
     if (toCreate.length > 0) {
       const created = await c.env.DB.batch(toCreate.map((nb) =>
-        c.env.DB.prepare('INSERT INTO notebooks (user_id, name) VALUES (?, ?)').bind(user.id, nb.name)
+        c.env.DB.prepare('INSERT INTO notebooks (user_id, name, description, color, is_private) VALUES (?, ?, ?, ?, ?)')
+          .bind(user.id, nb.name, nb.description, nb.color, nb.isPrivate)
       ))
-      created.forEach((r, i) => nbMap.set(toCreate[i].oldId, r.meta.last_row_id as number))
+      created.forEach((r, i) => {
+        const id = r.meta.last_row_id as number
+        nbMap.set(toCreate[i].oldId, id)
+        freshIds.add(id)
+      })
     }
+
+    // 1b. 回填 parent_id(第二遍)。备份里的 parent_id 是**备份自己的 id**,要过 nbMap 换成本库 id,
+    // 而父本可能与子本同在上面那个 batch 里刚建出来、插入时还拿不到它的新 id——
+    // 与 P12.11 重挂评论父子关系同一个两遍法。
+    //
+    // 只回填**这次新建的**:同名复用的笔记本在本库已经有自己的位置,不该被备份里的层级冲掉
+    // (与「settings 只在当前没有该项时才恢复」同一条规矩——往一个已经配好的站里导备份,
+    // 不该把人家现在的结构挪走)。同理复用的那些也不改 is_private:把一个现存笔记本悄悄设成私密,
+    // 就会造出 P16.5.1 明令禁止的那个状态——笔记本挂着锁、里面老笔记全是敞的,
+    // 而拉平整支需要 PUT /api/notebooks/:id 那套不变式机器,不是导入该顺手做的事。
+    //
+    // **必须排在下面 loadNotebookRows 之前**:私密沿祖先链继承,链还没接上就取表,
+    // 子本里的笔记会被判成「不在私密分支」而漏锁。
+    // 环(手改过的备份)不在这里挡:buildTree 与 inPrivateBranch 都带 seen 集合,
+    // 就地打断成根且不会死循环,这是 P16.1 立的两条容错,不另立第二道。
+    const reparent: D1PreparedStatement[] = []
+    for (const nb of data.notebooks) {
+      const mine = nbMap.get(nb?.id)
+      if (mine === undefined || !freshIds.has(mine)) continue
+      if (nb?.parent_id == null) continue
+      const parent = nbMap.get(nb.parent_id)
+      if (parent === undefined || parent === mine) continue
+      reparent.push(c.env.DB.prepare('UPDATE notebooks SET parent_id = ? WHERE id = ? AND user_id = ?')
+        .bind(parent, mine, user.id))
+    }
+    if (reparent.length > 0) await c.env.DB.batch(reparent)
 
     // 2. 文章:按 标题+内容哈希 去重后批量插入(未向量化)
     // 笔记本表在上一步可能新建过行,私密分支判断必须放在那之后取(P16.5),整批只取一次
