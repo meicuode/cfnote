@@ -3,7 +3,7 @@ import { ok, err } from '../utils'
 import { purgeUnreferencedAttachments } from './files'
 import { vectorizeArticle } from './articles'
 import { wouldCycle, subtreeIds, inPrivateBranch } from '../../src/lib/notebookTree'
-import { loadNotebookRows } from '../notebookPrivacy'
+import { loadNotebookRows, hasLiveNotebook, chunked } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 
 export const notebooks = new Hono<AppEnv>()
@@ -130,14 +130,18 @@ notebooks.put('/:id', async (c) => {
     let locked = 0
     const after = await loadNotebookRows(c.env, user.id)
     if (inPrivateBranch(after, notebook.id)) {
-      const ids = subtreeIds(after, notebook.id)
-      const r = await c.env.DB.prepare(
-        `UPDATE articles SET is_private = 1, is_public = 0, share_token = NULL, share_expires_at = NULL,
-                updated_at = datetime('now')
-         WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
-           AND notebook_id IN (${ids.map(() => '?').join(',')})`
-      ).bind(user.id, ...ids).run()
-      locked = r.meta?.changes ?? 0
+      // 分片:ids 等于「这一支的笔记本数」,SQLite 绑定变量上限 999。
+      // 眼下个人库到不了,但 P16.4 把整个本地知识库的目录树导进来之后就不好说了,
+      // 而其他地方(files.ts / fm.ts)本来就都分片,这里不分是不一致
+      for (const part of chunked(subtreeIds(after, notebook.id))) {
+        const r = await c.env.DB.prepare(
+          `UPDATE articles SET is_private = 1, is_public = 0, share_token = NULL, share_expires_at = NULL,
+                  updated_at = datetime('now')
+           WHERE user_id = ? AND deleted_at IS NULL AND is_private = 0
+             AND notebook_id IN (${part.map(() => '?').join(',')})`
+        ).bind(user.id, ...part).run()
+        locked += r.meta?.changes ?? 0
+      }
     }
 
     const updated = await c.env.DB.prepare('SELECT * FROM notebooks WHERE id = ?').bind(id).first()
@@ -158,23 +162,28 @@ notebooks.get('/:id/private-impact', async (c) => {
   try {
     const rows = await loadNotebookRows(c.env, user.id)
     const id = Number(c.req.param('id'))
-    if (!rows.some((n) => n.id === id)) return err('笔记本不存在', 404)
-    const ids = subtreeIds(rows, id)
-    const ph = ids.map(() => '?').join(',')
-    const row = await c.env.DB.prepare(
-      `SELECT SUM(CASE WHEN is_private = 0 THEN 1 ELSE 0 END) AS open_cnt,
-              SUM(CASE WHEN is_private = 0 AND is_public = 1 THEN 1 ELSE 0 END) AS pub,
-              SUM(CASE WHEN is_private = 0 AND share_token IS NOT NULL THEN 1 ELSE 0 END) AS shared,
-              SUM(CASE WHEN is_private = 1 THEN 1 ELSE 0 END) AS priv
-       FROM articles
-       WHERE user_id = ? AND deleted_at IS NULL AND notebook_id IN (${ph})`
-    ).bind(user.id, ...ids).first<{ open_cnt: number; pub: number; shared: number; priv: number }>()
+    if (!hasLiveNotebook(rows, id)) return err('笔记本不存在', 404)
+    const acc = { open_cnt: 0, pub: 0, shared: 0, priv: 0 }
+    for (const part of chunked(subtreeIds(rows, id))) {
+      const row = await c.env.DB.prepare(
+        `SELECT SUM(CASE WHEN is_private = 0 THEN 1 ELSE 0 END) AS open_cnt,
+                SUM(CASE WHEN is_private = 0 AND is_public = 1 THEN 1 ELSE 0 END) AS pub,
+                SUM(CASE WHEN is_private = 0 AND share_token IS NOT NULL THEN 1 ELSE 0 END) AS shared,
+                SUM(CASE WHEN is_private = 1 THEN 1 ELSE 0 END) AS priv
+         FROM articles
+         WHERE user_id = ? AND deleted_at IS NULL AND notebook_id IN (${part.map(() => '?').join(',')})`
+      ).bind(user.id, ...part).first<{ open_cnt: number; pub: number; shared: number; priv: number }>()
+      acc.open_cnt += row?.open_cnt ?? 0
+      acc.pub += row?.pub ?? 0
+      acc.shared += row?.shared ?? 0
+      acc.priv += row?.priv ?? 0
+    }
     return ok({
-      notebooks: ids.length,
-      articles: row?.open_cnt ?? 0,
-      published: row?.pub ?? 0,
-      shared: row?.shared ?? 0,
-      private: row?.priv ?? 0,
+      notebooks: subtreeIds(rows, id).length,
+      articles: acc.open_cnt,
+      published: acc.pub,
+      shared: acc.shared,
+      private: acc.priv,
     })
   } catch (e: any) {
     return err('检查失败: ' + e.message, 500)
@@ -255,9 +264,21 @@ notebooks.post('/:id/restore', async (c) => {
       'SELECT id, title, content FROM articles WHERE notebook_id = ? AND user_id = ? AND deleted_at IS NOT NULL'
     ).bind(id, user.id).all<{ id: number; title: string; content: string }>()
 
+    // P16.5.3:整本恢复同样要过私密不变式(与单篇恢复同一条理由——回收站里的笔记
+    // 躲得过 PUT 时的拉平,它只扫 deleted_at IS NULL)。
+    // loadNotebookRows 连回收站里的一起取,所以祖先即使也在回收站里,链仍然是完整的。
+    const privRows = await loadNotebookRows(c.env, user.id)
+    const forcePriv = inPrivateBranch(privRows, Number(id))
+
     await c.env.DB.batch([
-      c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, updated_at = datetime('now') WHERE notebook_id = ? AND user_id = ? AND deleted_at IS NOT NULL")
-        .bind(id, user.id),
+      forcePriv
+        ? c.env.DB.prepare(
+            `UPDATE articles SET deleted_at = NULL, is_private = 1, is_public = 0,
+                    share_token = NULL, share_expires_at = NULL, updated_at = datetime('now')
+             WHERE notebook_id = ? AND user_id = ? AND deleted_at IS NOT NULL`
+          ).bind(id, user.id)
+        : c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, updated_at = datetime('now') WHERE notebook_id = ? AND user_id = ? AND deleted_at IS NOT NULL")
+            .bind(id, user.id),
       c.env.DB.prepare("UPDATE notebooks SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?").bind(id),
       c.env.DB.prepare('UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL) WHERE id = ?')
         .bind(id, id),

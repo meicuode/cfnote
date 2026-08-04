@@ -3,7 +3,7 @@ import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../uti
 import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
-import { loadNotebookRows, shouldBePrivateIn } from '../notebookPrivacy'
+import { loadNotebookRows, shouldBePrivateIn, hasLiveNotebook } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -90,7 +90,7 @@ articles.post('/', async (c) => {
     // 笔记本存在性校验与「私密分支继承」合并成同一次全表取(个人库就几十行)。
     // 这条路覆盖了新建笔记、网页剪藏、AI 对话保存 —— 全都走 POST /api/articles
     const nbRows = await loadNotebookRows(c.env, user.id)
-    if (!nbRows.some((n) => n.id === notebook_id)) return err('笔记本不存在', 404)
+    if (!hasLiveNotebook(nbRows, notebook_id)) return err('笔记本不存在', 404)
     const priv = shouldBePrivateIn(nbRows, notebook_id) ? 1 : 0
 
     const hash = await contentHash(content || '')
@@ -129,7 +129,7 @@ articles.post('/import', async (c) => {
 
     // Verify notebook belongs to user(顺带取到私密分支判断,P16.5)
     const nbRows = await loadNotebookRows(c.env, user.id)
-    if (!nbRows.some((n) => n.id === notebook_id)) return err('笔记本不存在', 404)
+    if (!hasLiveNotebook(nbRows, notebook_id)) return err('笔记本不存在', 404)
     const priv = shouldBePrivateIn(nbRows, notebook_id) ? 1 : 0
 
     // Fetch article content via shared Jina Reader helper
@@ -372,9 +372,21 @@ articles.post('/:id/restore', async (c) => {
       restoredNotebook = nb.name
     }
 
+    // P16.5.3:恢复也要过私密不变式。软删除刻意不清 is_private,但**回收站里的笔记
+    // 躲得过那道不变式**——PUT /api/notebooks/:id 拉平时只扫 deleted_at IS NULL。
+    // 于是「删掉一篇公开笔记 → 把它的笔记本设为私密 → 恢复」就能让一篇非私有笔记
+    // 落回私密支里,而你以为整棵是锁着的。恢复目标在私密分支就强制上锁。
+    const privRows = await loadNotebookRows(c.env, user.id)
+    const forcePriv = shouldBePrivateIn(privRows, targetNb)
+
     await c.env.DB.batch([
-      c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, notebook_id = ?, updated_at = datetime('now') WHERE id = ?")
-        .bind(targetNb, article.id),
+      forcePriv
+        ? c.env.DB.prepare(
+            `UPDATE articles SET deleted_at = NULL, notebook_id = ?, is_private = 1, is_public = 0,
+                    share_token = NULL, share_expires_at = NULL, updated_at = datetime('now') WHERE id = ?`
+          ).bind(targetNb, article.id)
+        : c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, notebook_id = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(targetNb, article.id),
       c.env.DB.prepare('UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL) WHERE id = ?')
         .bind(targetNb, targetNb),
     ])
@@ -599,7 +611,7 @@ articles.put('/:id', async (c) => {
     // If moving to another notebook, verify ownership
     if (notebook_id && notebook_id !== article.notebook_id) {
       const nbRows = await loadNotebookRows(c.env, user.id)
-      if (!nbRows.some((n) => n.id === notebook_id)) return err('目标笔记本不存在', 404)
+      if (!hasLiveNotebook(nbRows, notebook_id)) return err('目标笔记本不存在', 404)
       // P16.5:挪进私密分支就自动上锁(安全方向)。挪出去**不解锁**——
       // 不能因为拖错地方就把一篇私有笔记暴露出去。请求里显式带了 is_private 的以它为准
       if (is_private === undefined && shouldBePrivateIn(nbRows, notebook_id)) {

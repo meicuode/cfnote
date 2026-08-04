@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem } from '../utils'
+import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem, getUser } from '../utils'
 import { vectorizeArticle } from './articles'
 import { syncArticleFiles } from './files'
 import { buildExportPayload, SENSITIVE_PATTERNS, CHANNELS_KEY } from '../backup'
@@ -205,8 +205,23 @@ system.get('/status', async (c) => {
 })
 
 // POST /api/init - Initialize database tables
+//
+// 免鉴权(部署后第一件事就是它,那时还没有账号)。全套语句都是 IF NOT EXISTS,
+// 所以对已初始化的库本来就是空操作、取不到也删不掉任何数据。
+//
+// 但**匿名调用不能无限次跑**:每次十几条 D1 语句,而请求数(10 万/天)是这个部署最紧的
+// 额度,匿名可调等于给了一个免费放大器。所以已初始化 + 未登录 → 直接短路。
+// **登录态照旧无条件重跑**:上面那句注释说的「改表结构直接改 SCHEMA、通过 /api/init
+// 应用」是既定用法(加新表就靠它),不能因为防刷把这条路堵死。
 system.post('/init', async (c) => {
   try {
+    const inited = await c.env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    ).first().catch(() => null)
+    if (inited && !(await getUser(c.req.raw, c.env))) {
+      return ok({ message: '数据库已初始化', already: true })
+    }
+
     const statements = SCHEMA.split(';')
       .map((s) => s.trim())
       .filter((s) => s.length > 0)

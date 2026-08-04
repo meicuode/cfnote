@@ -18,14 +18,41 @@ export interface NotebookRow {
   name: string
   parent_id: number | null
   is_private: number
+  /** 非 null = 在回收站里。私密性判断不看它,存在性校验必须看 */
+  deleted_at: string | null
 }
 
-/** 取该用户全部未删除的笔记本(层级判断要沿祖先链走,拿不到全表就走不了) */
+/**
+ * 取该用户的**全部**笔记本,含回收站里的。
+ *
+ * 为什么连已删的一起取:私密性沿祖先链继承,而祖先可能正躺在回收站里
+ * (P16.1 只挡「有活着的子本时不许删」,父子一起删是允许的)。漏掉已删的祖先,
+ * 那条链就断了,`inPrivateBranch` 会误判成「不在私密分支」——从回收站恢复一篇笔记时
+ * 正好踩到,笔记落进私密支里却不带锁。私密判断只用 id / parent_id / is_private,
+ * 与「活没活着」无关。
+ *
+ * **但存在性校验必须另走 `hasLiveNotebook`**:那道校验的语义是「能不能往这儿写」,
+ * 回收站里的笔记本不能。两个诉求共用一次查询,但判断分开。
+ */
 export async function loadNotebookRows(env: Env, userId: number): Promise<NotebookRow[]> {
   const { results } = await env.DB.prepare(
-    'SELECT id, name, parent_id, is_private FROM notebooks WHERE user_id = ? AND deleted_at IS NULL'
+    'SELECT id, name, parent_id, is_private, deleted_at FROM notebooks WHERE user_id = ?'
   ).bind(userId).all<NotebookRow>()
   return results || []
+}
+
+/** 这个笔记本存在且不在回收站里(=可以往里写) */
+export function hasLiveNotebook(rows: NotebookRow[], id: number): boolean {
+  return rows.some((n) => n.id === id && !n.deleted_at)
+}
+
+/** SQLite 单条语句的绑定变量上限是 999,IN (...) 一律按这个分片 */
+export const IN_CHUNK = 100
+
+export function chunked<T>(list: T[], size = IN_CHUNK): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size))
+  return out
 }
 
 /**
