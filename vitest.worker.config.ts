@@ -18,5 +18,11 @@ export default defineConfig({
   test: {
     name: 'worker',
     include: ['tests/worker/**/*.test.ts'],
+    // 默认 5 秒对这批用例太紧:每个 it 都真的丢表建表 + 跑 bootstrap(注册与登录各一轮
+    // 10 万次迭代的 PBKDF2),而 `npm test` 里 unit 与 worker 两个 project 是并行的,
+    // CPU 一抢就集体超时——P16.6 第一次跑就是这样挂了 3 个我根本没碰的文件,
+    // 排查方向被带偏成「是不是共用面回归了」。抬到 20 秒:真卡死照样会被抓住,
+    // 但不会再让并行调度的抖动伪装成断言失败
+    testTimeout: 20000,
   },
 })

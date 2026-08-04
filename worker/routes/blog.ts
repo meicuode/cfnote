@@ -8,6 +8,8 @@ import { parseBlogSkin, BLOG_SKIN_KEY } from '../../src/lib/blogSkin'
 import { CUSTOM_JS_KEY, MAX_CUSTOM_JS } from '../../src/lib/blogScripts'
 import { clampLimit, clampOffset, MAX_QUERY_LEN } from '../../src/lib/blogQuery'
 import { notifyPendingComment } from './notify'
+import { rateCheck, rateBump, nowSec } from '../rateLimit'
+import type { RateRule } from '../../src/lib/rateLimit'
 import * as repo from '../repo/blogRepo'
 import type { AppEnv } from '../types'
 
@@ -72,20 +74,19 @@ async function shouldCountView(id: string, ip: string): Promise<boolean> {
   }
 }
 
-// 评论限流:每 IP 每分钟至多 1 条(Cache API,与浏览计数同款——零配额、按 colo 生效、缓存不可用时优雅降级为放行)
+// 评论限流:每 IP 每分钟至多 1 条。计数与窗口的实现挪去 worker/rateLimit.ts,与登录限流共用一套——
+// 「同一个 Worker 里评论有限流、登录没有」是 P16.6 那次审计里最刺眼的一处不一致,
+// 而它的成因就是这类东西每处各写各的。
+//
+// 上面的浏览计数去重**没有**并进来:它是去重标记不是限流,降级方向还正好相反
+// (缓存不可用时去重该退化为「照常计数」,限流该退化为「照常放行」),合成一个函数反而要多一个开关。
+const COMMENT_RULE: RateRule = { max: 1, windowSec: 60 }
+
 async function commentRateLimited(ip: string): Promise<boolean> {
-  if (!ip) return false
-  try {
-    const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode('cmt:' + ip))
-    const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
-    const key = new Request(`https://comment-rl.cfnote.internal/${hex}`)
-    const cache = (caches as unknown as { default: Cache }).default
-    if (await cache.match(key)) return true
-    await cache.put(key, new Response('1', { headers: { 'Cache-Control': 'public, max-age=60' } }))
-    return false
-  } catch {
-    return false
-  }
+  const now = nowSec()
+  if ((await rateCheck('cmt', ip, COMMENT_RULE, now)).limited) return true
+  await rateBump('cmt', ip, COMMENT_RULE, now)
+  return false
 }
 
 /**

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent } from '../utils'
+import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent, recountNotebook } from '../utils'
 import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
@@ -100,9 +100,7 @@ articles.post('/', async (c) => {
 
     const articleId = result.meta.last_row_id
 
-    await c.env.DB.prepare(
-      'UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?'
-    ).bind(notebook_id).run()
+    await recountNotebook(c.env, notebook_id).run()
 
     // 同步附件引用索引(内容为事实源,索引派生)
     await syncArticleFiles(c.env, user.id, articleId as number, content || '')
@@ -156,9 +154,7 @@ articles.post('/import', async (c) => {
     const articleId = result.meta.last_row_id
 
     // Update notebook count
-    await c.env.DB.prepare(
-      'UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?'
-    ).bind(notebook_id).run()
+    await recountNotebook(c.env, notebook_id).run()
 
     await syncArticleFiles(c.env, user.id, articleId as number, articleContent)
 
@@ -387,8 +383,7 @@ articles.post('/:id/restore', async (c) => {
           ).bind(targetNb, article.id)
         : c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, notebook_id = ?, updated_at = datetime('now') WHERE id = ?")
             .bind(targetNb, article.id),
-      c.env.DB.prepare('UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL) WHERE id = ?')
-        .bind(targetNb, targetNb),
+      recountNotebook(c.env, targetNb),
     ])
 
     // 重建向量索引(软删除时已清):失败不阻塞恢复,可由 reindex 补
@@ -609,6 +604,7 @@ articles.put('/:id', async (c) => {
     const page = is_page === undefined ? (article.is_page ? 1 : 0) : (is_page ? 1 : 0)
 
     // If moving to another notebook, verify ownership
+    let movedFrom: number | null = null
     if (notebook_id && notebook_id !== article.notebook_id) {
       const nbRows = await loadNotebookRows(c.env, user.id)
       if (!hasLiveNotebook(nbRows, notebook_id)) return err('目标笔记本不存在', 404)
@@ -618,10 +614,9 @@ articles.put('/:id', async (c) => {
         priv = 1
         pub = 0
       }
-      await c.env.DB.batch([
-        c.env.DB.prepare('UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime(\'now\') WHERE id = ?').bind(article.notebook_id),
-        c.env.DB.prepare('UPDATE notebooks SET article_count = article_count + 1, updated_at = datetime(\'now\') WHERE id = ?').bind(notebook_id),
-      ])
+      // 两本的计数留到文章真正搬完之后再算(见下)。原先在这里做 ±1,
+      // 有两个毛病:重算会读到还没搬走的旧状态,而增量写一旦下面那条 UPDATE 失败就永久漂移
+      movedFrom = article.notebook_id
     }
 
     const newTitle = title?.trim() || article.title
@@ -634,6 +629,11 @@ articles.put('/:id', async (c) => {
     await c.env.DB.prepare(
       "UPDATE articles SET title = ?, content = ?, content_hash = ?, notebook_id = ?, is_public = ?, is_private = ?, is_page = ?, published_at = ?, tags = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(newTitle, newContent, newHash, newNotebook, pub, priv, page, publishedAt, newTags, newPinned, id).run()
+
+    // 换本之后两边一起重算(必须在上面那条 UPDATE 之后:此前文章还挂在旧本上)
+    if (movedFrom !== null) {
+      await c.env.DB.batch([recountNotebook(c.env, movedFrom), recountNotebook(c.env, newNotebook)])
+    }
 
     // 设为私有 → 撤销私密分享链接(私有笔记不可分享,不变式与文件分享一致)
     if (priv && article.share_token) {
@@ -692,9 +692,8 @@ articles.delete('/:id', async (c) => {
       c.env.DB.prepare(
         "UPDATE articles SET deleted_at = datetime('now'), is_public = 0, pinned = 0, is_vectorized = 0, share_token = NULL, share_expires_at = NULL, remind_at = NULL WHERE id = ?"
       ).bind(id),
-      c.env.DB.prepare(
-        "UPDATE notebooks SET article_count = article_count - 1, updated_at = datetime('now') WHERE id = ?"
-      ).bind(article.notebook_id),
+      // 放在软删之后:batch 的语句按顺序在同一个事务里跑,这条 COUNT(*) 看得到上面刚打的 deleted_at
+      recountNotebook(c.env, article.notebook_id),
     ])
 
     return ok({ message: '已移入回收站,30 天后自动清除' })

@@ -268,19 +268,38 @@ export async function contentHash(text: string): Promise<string> {
 
 // ---- Helpers ----
 
-export function json<T>(data: T, status = 200): Response {
+export function json<T>(data: T, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   })
 }
 
-export function err(message: string, status = 400): Response {
-  return json({ ok: false, error: message }, status)
+export function err(message: string, status = 400, headers?: Record<string, string>): Response {
+  return json({ ok: false, error: message }, status, headers)
 }
 
 export function ok<T>(data?: T): Response {
   return json({ ok: true, data })
+}
+
+/**
+ * 重算某个笔记本的 article_count(P16.6)。
+ *
+ * article_count 是派生值,写法只留这一种:**永远重算,不做 ±1**。
+ * 增量写只要漏一次就永久漂移,而且没有任何自愈路径 —— batch 里另一条语句失败、
+ * 两个请求并发各读到同一个旧值、或者像换笔记本那样把计数写在文章真正搬走之前,
+ * 计数就再也对不回来了,除非有人手动去改库。
+ * 重算多一次 COUNT(*),走 idx_articles_notebook,个人库量级可以忽略,
+ * 换来的是「下一次写入自动纠正」。
+ *
+ * 返回 D1PreparedStatement 而不是直接执行:换笔记本要把两本放进同一个 batch。
+ */
+export function recountNotebook(env: Env, notebookId: number): D1PreparedStatement {
+  return env.DB.prepare(
+    `UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL),
+            updated_at = datetime('now') WHERE id = ?`
+  ).bind(notebookId, notebookId)
 }
 
 function bufToHex(buf: Uint8Array): string {

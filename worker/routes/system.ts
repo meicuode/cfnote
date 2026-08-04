@@ -432,8 +432,13 @@ system.post('/import', async (c) => {
     }
     if (inserts.length > 0) {
       const created = await c.env.DB.batch(inserts)
+      // 一条语句刷全部笔记本(逐本 recountNotebook 在导入时是 N 条语句)。
+      // deleted_at IS NULL 这个条件是 P16.6 补的:少了它会把回收站里的文章也算进去,
+      // 与其他所有重算点的口径不一致——「同一个派生值有两种算法」迟早对不上
       await c.env.DB.prepare(
-        "UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = notebooks.id), updated_at = datetime('now') WHERE user_id = ?"
+        `UPDATE notebooks SET article_count =
+           (SELECT COUNT(*) FROM articles WHERE notebook_id = notebooks.id AND deleted_at IS NULL),
+         updated_at = datetime('now') WHERE user_id = ?`
       ).bind(user.id).run()
       // 登记导入文章的附件引用索引(R2 对象按原 key 恢复后,可访问性判定随之恢复)
       for (let i = 0; i < created.length; i++) {

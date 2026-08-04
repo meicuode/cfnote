@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { ok, err } from '../utils'
+import { ok, err, recountNotebook } from '../utils'
 import { purgeUnreferencedAttachments } from './files'
 import { vectorizeArticle } from './articles'
 import { wouldCycle, subtreeIds, inPrivateBranch } from '../../src/lib/notebookTree'
@@ -280,8 +280,7 @@ notebooks.post('/:id/restore', async (c) => {
         : c.env.DB.prepare("UPDATE articles SET deleted_at = NULL, updated_at = datetime('now') WHERE notebook_id = ? AND user_id = ? AND deleted_at IS NOT NULL")
             .bind(id, user.id),
       c.env.DB.prepare("UPDATE notebooks SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?").bind(id),
-      c.env.DB.prepare('UPDATE notebooks SET article_count = (SELECT COUNT(*) FROM articles WHERE notebook_id = ? AND deleted_at IS NULL) WHERE id = ?')
-        .bind(id, id),
+      recountNotebook(c.env, Number(id)),
     ])
 
     // 重建向量:逐篇失败不阻塞恢复(可由 /api/reindex 补)
