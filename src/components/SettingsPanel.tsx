@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
 import { CHANNEL_META, CHANNEL_TYPES, isSecretField, isMaskedValue, type NotifyChannel, type ChannelType } from '../lib/notifyChannels'
 import { PRERENDER_KEY, parsePrerenderMode, type PrerenderMode } from '../lib/blogSeo'
@@ -18,11 +18,30 @@ const MODELS: ModelInfo[] = [
   { id: '@cf/qwen/qwq-32b', label: 'QwQ 32B', description: '推理型，中文表现优秀', type: '推理', cost: '~87 neurons' },
 ]
 
+/**
+ * 分类导航(P17)。此前所有设置项堆在一个 max-w-lg 的窗口里往下滚,到 P16.9 已经
+ * 长到十几屏——找一项要滚半天,而各节之间只靠一行小标题分隔,看着是一整片。
+ *
+ * 没有「系统」这一类:系统日志是独立面板(顶栏那个图标),在这里放一个「请从顶栏打开」
+ * 的空分类,比不放还差。
+ */
+export type SettingsCategory = 'ai' | 'blog' | 'comments' | 'files' | 'notify' | 'backup' | 'account'
+
+const CATEGORIES: { id: SettingsCategory; label: string; hint: string; icon: string }[] = [
+  { id: 'ai', label: 'AI 对话', hint: '模型与 API Key', icon: '🤖' },
+  { id: 'blog', label: '博客', hint: '预渲染、自定义脚本', icon: '📝' },
+  { id: 'comments', label: '评论', hint: '开关与审核', icon: '💬' },
+  { id: 'files', label: '文件', hint: '列表多选方式', icon: '📁' },
+  { id: 'notify', label: '通知', hint: '提醒推送渠道', icon: '🔔' },
+  { id: 'backup', label: '备份', hint: '导出、导入、自动备份', icon: '💾' },
+  { id: 'account', label: '账号', hint: '修改密码', icon: '👤' },
+]
+
 interface Props {
   token: string
   onClose: () => void
-  /** 打开时滚到并高亮某一节(目前只有 'files',由文件管理右上角的齿轮传进来) */
-  focus?: 'files' | null
+  /** 打开时直接落在某一分类(文件管理右上角的齿轮传 'files') */
+  focus?: SettingsCategory | null
   /** 改密码后换成新签发的 token(P16.9) */
   onTokenChange?: (token: string) => void
 }
@@ -42,6 +61,10 @@ interface BackupInfo {
 
 export default function SettingsPanel({ token, onClose, focus, onTokenChange }: Props) {
   const api = useApi(token)
+  // 窄屏是「分类列表 → 某一类」的返回栈,所以初值可以是 null;桌面两栏同屏,
+  // null 会让右边空着,所以直接落在第一类上
+  const [cat, setCat] = useState<SettingsCategory | null>(
+    () => focus ?? (typeof window !== 'undefined' && window.innerWidth >= 640 ? 'ai' : null))
   const [selected, setSelected] = useState('')
   const [jinaKey, setJinaKey] = useState('')
   const [showJinaKey, setShowJinaKey] = useState(false)
@@ -79,29 +102,24 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
   // 不进 /api/settings ——否则每次打开文件管理都要多打一次请求。
   const [fmCheckbox, setFmCheckbox] = useState<CheckboxMode>(() =>
     parseCheckboxMode(typeof localStorage !== 'undefined' ? localStorage.getItem(FM_CHECKBOX_KEY) : null))
-  const filesRef = useRef<HTMLDivElement | null>(null)
 
   const applyFmCheckbox = (m: CheckboxMode) => {
     setFmCheckbox(m)
     localStorage.setItem(FM_CHECKBOX_KEY, m)
   }
 
-  // 从文件管理的齿轮进来时滚到「文件管理」那一节并短暂高亮(复用 index.css 的 .cfnote-highlight)
+  // Esc:窄屏且已进到某一分类时先退回分类列表,再按才关面板。
+  // 桌面下 cat 恒不为 null(默认落在第一类),所以这个分支只在窄屏生效——
+  // 用 window.innerWidth 判断而不是加一个状态,是因为它只在按键那一刻读一次
   useEffect(() => {
-    if (focus !== 'files' || loading) return
-    const el = filesRef.current
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    el.classList.add('cfnote-highlight')
-    const t = setTimeout(() => el.classList.remove('cfnote-highlight'), 6000)
-    return () => clearTimeout(t)
-  }, [focus, loading])
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (cat !== null && window.innerWidth < 640) setCat(null)
+      else onClose()
+    }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [onClose, cat])
 
   useEffect(() => {
     (async () => {
@@ -469,31 +487,78 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
     }
   }
 
+  const curCat = CATEGORIES.find((c) => c.id === cat)
+
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[6vh]" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col overflow-hidden"
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden mx-3"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <svg className="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* 窄屏:从某一类退回分类列表。桌面两栏同屏,不需要 */}
+            {cat !== null && (
+              <button
+                onClick={() => setCat(null)}
+                className="sm:hidden p-1 -ml-1 rounded-lg hover:bg-gray-100 text-gray-500 shrink-0"
+                aria-label="返回设置分类"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
+            <svg className={`w-5 h-5 text-emerald-500 shrink-0 ${cat !== null ? 'max-sm:hidden' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            <span className="font-semibold text-gray-900">设置</span>
+            {/* 窄屏进到某一类后标题换成那一类的名字:此时分类列表已经不在屏幕上, */}
+            {/* 只写「设置」的话没有任何东西告诉你现在在哪一类 */}
+            <span className="font-semibold text-gray-900 truncate">
+              设置<span className="sm:hidden">{curCat ? ` · ${curCat.label}` : ''}</span>
+            </span>
           </div>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600">
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 shrink-0">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* 左导航 + 右内容。窄屏一次只显示一层(cat === null 时是分类列表) */}
+        <div className="flex-1 flex min-h-0">
+          <nav className={`w-44 shrink-0 border-r border-gray-100 bg-gray-50/60 overflow-y-auto p-2 ${
+            cat === null ? 'max-sm:w-full max-sm:border-r-0' : 'max-sm:hidden'
+          }`}>
+            {CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => setCat(c.id)}
+                className={`w-full text-left rounded-lg px-2.5 py-2 mb-0.5 transition-colors ${
+                  cat === c.id
+                    ? 'bg-emerald-50 text-emerald-700 max-sm:bg-transparent max-sm:text-gray-800'
+                    : 'text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-sm shrink-0">{c.icon}</span>
+                  <span className="text-sm font-medium truncate">{c.label}</span>
+                  <svg className="w-4 h-4 ml-auto text-gray-300 shrink-0 sm:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </span>
+                <span className={`block text-[11px] truncate ml-6 ${cat === c.id ? 'text-emerald-600/70 max-sm:text-gray-400' : 'text-gray-400'}`}>
+                  {c.hint}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+          {/* Content */}
+          <div className={`flex-1 overflow-y-auto p-4 space-y-4 min-w-0 ${cat === null ? 'max-sm:hidden' : ''}`}>
           {loading && (
             <div className="text-center py-12">
               <div className="inline-block w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
@@ -505,7 +570,7 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
             <div className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</div>
           )}
 
-          {!loading && (
+          {!loading && cat === 'ai' && (
             <>
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">AI 模型</h3>
@@ -586,6 +651,11 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                   </div>
                 </div>
               </div>
+            </>
+          )}
+
+          {!loading && cat === 'notify' && (
+            <>
               {/* 通知渠道 / 提醒推送(P10.3) */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">通知渠道 / 提醒推送</h3>
@@ -671,9 +741,13 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                   </p>
                 )}
               </div>
+            </>
+          )}
 
+          {!loading && cat === 'files' && (
+            <>
               {/* 文件管理(P13.7) */}
-              <div ref={filesRef} className="rounded-xl">
+              <div className="rounded-xl">
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">文件管理</h3>
                 <p className="text-[11px] text-gray-400 mb-2">
                   文件列表默认按 Windows 资源管理器的方式多选:单击选中、Ctrl/⌘ 点选、Shift 连选、Ctrl/⌘+A 全选、双击打开。
@@ -700,7 +774,11 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                 ))}
                 <p className="text-[11px] text-gray-400 mt-1">该选项只影响这台设备,改完立即生效(不用点保存)。</p>
               </div>
+            </>
+          )}
 
+          {!loading && cat === 'comments' && (
+            <>
               {/* 评论(P11.2) */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">评论</h3>
@@ -715,7 +793,11 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                 </label>
                 <p className="text-[11px] text-gray-400 mt-1">默认需审核:新评论进入待审核队列,在「博客管理 → 评论」通过后才公开显示。</p>
               </div>
+            </>
+          )}
 
+          {!loading && cat === 'blog' && (
+            <>
               {/* 博客预渲染(P12.6) */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">博客详情页预渲染</h3>
@@ -781,8 +863,12 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                   最后一个是逃生阀，脚本写崩了用它打开博客页再回来改。主题的导入导出不会携带这段代码。
                 </p>
               </div>
+            </>
+          )}
 
-              {/* 账号密码(P16.9)。放在备份之前:两者都是账号级的事,而这一节更要紧 */}
+          {!loading && cat === 'account' && (
+            <>
+              {/* 账号密码(P16.9) */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">账号密码</h3>
                 <p className="text-[11px] text-gray-400 mb-2">
@@ -825,7 +911,11 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                   {pwBusy ? '修改中…' : '修改密码并登出其他设备'}
                 </button>
               </div>
+            </>
+          )}
 
+          {!loading && cat === 'backup' && (
+            <>
               {/* 数据备份 */}
               <div>
                 <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">数据备份</h3>
@@ -971,15 +1061,21 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
               </div>
             </>
           )}
+          </div>
         </div>
 
-        {/* Footer */}
-        {!loading && (
-          <div className="p-4 border-t border-gray-100 flex justify-end">
+        {/* Footer。保存按钮对所有分类共用一个:字段散在几类里,但 PUT /api/settings
+            本来就是整份提交,分类只是显示上的分组。窄屏停在分类列表那一层时不显示——
+            那一层没有任何可改的字段 */}
+        {!loading && cat !== null && (
+          <div className="p-4 border-t border-gray-100 flex items-center justify-between gap-3 shrink-0">
+            <span className="text-[11px] text-gray-400 min-w-0 truncate">
+              {cat === 'files' ? '这一类改完立即生效，不用保存' : '保存对所有分类一起生效'}
+            </span>
             <button
               onClick={handleSave}
               disabled={saving || !selected}
-              className="px-4 py-2 bg-emerald-500 text-white text-sm font-medium rounded-lg hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 bg-emerald-500 text-white text-sm font-medium rounded-lg hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
             >
               {saving ? '保存中...' : '保存'}
             </button>

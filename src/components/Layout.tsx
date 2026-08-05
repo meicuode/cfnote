@@ -5,7 +5,7 @@ import ArticleList, { type TrashNotebook, type TrashImpact } from './ArticleList
 import ArticleEditor from './ArticleEditor'
 import SearchPanel from './SearchPanel'
 import StatsPanel from './StatsPanel'
-import SettingsPanel from './SettingsPanel'
+import SettingsPanel, { type SettingsCategory } from './SettingsPanel'
 import SystemLogsPanel from './SystemLogsPanel'
 import ImportDialog from './ImportDialog'
 import AiChatPanel from './AiChatPanel'
@@ -47,8 +47,8 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
   const [showImport, setShowImport] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
-  // 设置面板打开后要滚到哪一节(目前只有文件管理右上角的齿轮会用到)
-  const [settingsFocus, setSettingsFocus] = useState<'files' | null>(null)
+  // 设置面板打开后直接落在某一分类(P17:左侧导航,不再是滚到某一节)
+  const [settingsFocus, setSettingsFocus] = useState<SettingsCategory | null>(null)
   const [showLogs, setShowLogs] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
   // 文件管理子视图(P11.6):与 URL 的 ?fm= 同步,侧栏二级菜单与右侧列表共用
