@@ -652,20 +652,29 @@ export default function Layout({ token, username, onLogout }: Props) {
         done += part.length
       }
 
-      // 分批建立向量索引(每批一次独立请求;剩余不再减少说明持续失败,停止)
+      // 分批建立向量索引(每批一次独立请求;剩余不再减少说明持续失败,停止)。
+      // **errors 必须收下**:接口一直在返回它,设置页那条循环也一直在报,
+      // 只有这里丢掉了——于是索引失败的表现就只剩「以后搜不到这几篇」,查都没法查。
+      // 一次导进来几百篇时尤其要紧
       let lastRemaining = Infinity
+      const vecErrors: string[] = []
       while (imported > 0) {
-        const r = await post<{ processed: number; remaining: number }>('/reindex', {})
+        const r = await post<{ processed: number; remaining: number; errors?: string[] }>('/reindex', {})
         if (!r.ok || !r.data) break
+        vecErrors.push(...(r.data.errors || []))
         if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
         lastRemaining = r.data.remaining
         setImportProgress(`正在建立向量索引... 剩余 ${r.data.remaining} 篇`)
       }
 
-      // 跳过的必须说出来:静默少几篇是这个功能最坏的失败方式。
-      // 全都成功才关掉对话框——有跳过就留在原地,让人看得见那行字
-      if (skipped > 0) {
-        setImportResult(`新增 ${imported} 篇，跳过 ${skipped} 篇（同一笔记本里标题与内容都相同）`)
+      // 跳过与索引失败都必须说出来:静默少几篇、静默搜不到,是这个功能最坏的两种
+      // 失败方式,而它们都不报错。有话要说就不关对话框,让人看得见那行字
+      const notes = [
+        skipped > 0 ? `跳过 ${skipped} 篇（同一笔记本里标题与内容都相同）` : '',
+        vecErrors.length > 0 ? `${vecErrors.length} 篇没能建立索引（搜索里找不到它们）：${vecErrors[0]}` : '',
+      ].filter(Boolean)
+      if (notes.length > 0) {
+        setImportResult(`新增 ${imported} 篇，` + notes.join('；'))
       } else {
         setShowImport(false)
       }
