@@ -5,6 +5,7 @@ import { syncArticleFiles } from './files'
 import { buildExportPayload, SENSITIVE_PATTERNS, CHANNELS_KEY } from '../backup'
 import { MASK_PREFIX, maskChannels, mergeMaskedChannels, type NotifyChannel } from '../../src/lib/notifyChannels'
 import { loadNotebookRows, shouldBePrivateIn } from '../notebookPrivacy'
+import { pathOf } from '../../src/lib/notebookTree'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -364,18 +365,42 @@ system.post('/import', async (c) => {
       return err('文件格式不正确：请选择 CFNote 导出的 JSON 备份文件')
     }
 
-    // 1. 笔记本:同名复用,否则创建(单条 batch 完成全部插入)
+    // 1. 笔记本:**按完整路径**复用,否则创建(P16.3.1;此前是平铺按名字)
+    //
+    // 按名字匹配在树里是错的:不同分支可以有同名笔记本(`技术/归档` 与 `读书/归档`),
+    // 会被并成一本,而且并进去的那本还带着另一支的层级与私密性。
+    //
+    // 路径键不能靠拼接分隔符:笔记本名字里可以有斜杠,
+    // 用 `/` 连的话「叫 a/b 的根笔记本」和「a 下面的 b」会算成同一个键。（键的构造见下方 pathKey）
+    //
+    // **老备份(P16.8 之前没有 parent_id)天然退化为按名字匹配**——每条路径都只有一段,
+    // 与改造前的行为逐字一致,所以不必为老文件另开一条分支。
     const { results: existingNbs } = await c.env.DB.prepare(
-      'SELECT id, name FROM notebooks WHERE user_id = ?'
-    ).bind(user.id).all<{ id: number; name: string }>()
-    const nbByName = new Map(existingNbs.map((n) => [n.name, n.id]))
+      'SELECT id, name, parent_id FROM notebooks WHERE user_id = ?'
+    ).bind(user.id).all<{ id: number; name: string; parent_id: number | null }>()
+    const local = existingNbs || []
+    // 路径键走 JSON.stringify(数组) 而不是拼接:笔记本名字里可以有任何字符(包括斜杠),
+    // 挑不出一个「一定不会出现」的分隔符——那正是「叫 a/b 的根笔记本」和「a 下面的 b」
+    // 会撞成同一个键的由来。JSON 自己负责转义,键还是纯 ASCII、能直接打印出来看
+    const pathKey = (segs: string[]) => JSON.stringify(segs)
+    const localByPath = new Map<string, number>()
+    for (const n of local) {
+      const k = pathKey(pathOf(local, n.id))
+      // 同路径重复(同一层两个同名笔记本,应用是允许的)取先出现的那个,
+      // 与此前「同名复用取第一个」保持一致
+      if (!localByPath.has(k)) localByPath.set(k, n.id)
+    }
+
+    const backupNbs: { id: number; name: string; parent_id: number | null; description?: unknown; color?: unknown; is_private?: unknown }[] =
+      (data.notebooks || [])
+        .filter((n: any) => typeof n?.name === 'string' && n.name && typeof n?.id === 'number')
+        .map((n: any) => ({ ...n, parent_id: typeof n.parent_id === 'number' ? n.parent_id : null }))
 
     const nbMap = new Map<number, number>() // 备份中的 id -> 本库 id
-    const freshIds = new Set<number>() // 这次真新建出来的(同名复用的不算)
+    const freshIds = new Set<number>() // 这次真新建出来的(路径已存在而复用的不算)
     const toCreate: { oldId: number; name: string; description: string; color: string; isPrivate: number }[] = []
-    for (const nb of data.notebooks) {
-      if (typeof nb?.name !== 'string' || !nb.name) continue
-      const existed = nbByName.get(nb.name)
+    for (const nb of backupNbs) {
+      const existed = localByPath.get(pathKey(pathOf(backupNbs, nb.id)))
       if (existed) nbMap.set(nb.id, existed)
       else toCreate.push({
         oldId: nb.id,

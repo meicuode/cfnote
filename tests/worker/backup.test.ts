@@ -190,6 +190,53 @@ describe('备份导出/导入', () => {
     expect(row!.parent_id).toBeNull() // 没被备份里的层级挪走
   })
 
+  it('同名但不同路径的笔记本不会被并成一本(P16.3.1)', async () => {
+    // 平铺按名字匹配在树里是错的:`技术/归档` 与 `读书/归档` 是两本,
+    // 并成一本还会把另一支的层级和私密性一起带过去
+    const token = await bootstrap()
+    const tech = await newNotebook(token, '技术')
+    const book = await newNotebook(token, '读书')
+    const a = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '归档', parent_id: tech }),
+    })).body.data!.id
+    const b = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '归档', parent_id: book }),
+    })).body.data!.id
+    await newArticle(token, a, '技术归档里的')
+    await newArticle(token, b, '读书归档里的')
+
+    const dump = await exportAll(token)
+    await dropAll()
+    const token2 = await bootstrap('restored', 'test-password')
+    const res = await api('/api/import', { method: 'POST', token: token2, body: JSON.stringify(dump) })
+    expect(res.body.ok, res.body.error).toBe(true)
+
+    const rows = await env.DB.prepare("SELECT id, name, parent_id FROM notebooks WHERE name = '归档'").all<any>()
+    expect((rows.results || []).length).toBe(2) // 两本,不是一本
+    const parents = await env.DB.prepare("SELECT id, name FROM notebooks WHERE name IN ('技术','读书')").all<any>()
+    const pnames = new Map((parents.results || []).map((n: any) => [n.id, n.name]))
+    expect(new Set((rows.results || []).map((n: any) => pnames.get(n.parent_id))))
+      .toEqual(new Set(['技术', '读书']))
+  })
+
+  it('老备份(没有 parent_id)退化成按名字匹配,行为与改造前一致', async () => {
+    // P16.8 之前导出的文件没有 parent_id,每条路径只有一段=名字。
+    // 不为老文件另开分支,靠的就是这个天然退化
+    const token = await bootstrap()
+    await newNotebook(token, '技术')
+    const dump = await exportAll(token)
+    for (const n of dump.notebooks) delete n.parent_id // 伪造一份老备份
+
+    // 目标库里已有同名的「技术」→ 应当复用而不是再建一本
+    await dropAll()
+    const token2 = await bootstrap('restored', 'test-password')
+    await newNotebook(token2, '技术')
+    await api('/api/import', { method: 'POST', token: token2, body: JSON.stringify(dump) })
+
+    const c = await env.DB.prepare("SELECT COUNT(*) AS c FROM notebooks WHERE name = '技术'").first<{ c: number }>()
+    expect(c!.c).toBe(1)
+  })
+
   it('重复导入同一份备份:文章不翻倍,评论也不翻倍', async () => {
     const { token } = await seedEverything()
     const dump = await exportAll(token)
