@@ -125,6 +125,25 @@ export function pathOf(list: NotebookLike[], id: number): string[] {
 }
 
 /**
+ * 同一个父下面有没有另一本已经叫这个名字(P17.1 重命名用)。
+ *
+ * **不是禁止,只是提示。** 服务端没有唯一约束,同级重名不会让任何现有功能出错——
+ * 它坏的是**以后**:P16.3.1 起 `/api/import` 按「从根到自己的完整路径」匹配笔记本,
+ * 而两本同级同名会算出同一条路径,于是导入落进哪一本取决于 SQL 的行序。
+ * 这个后果是延迟的、静默的,发现时早忘了当初重的名,所以要在改名那一刻说出来。
+ *
+ * 排除 selfId 自己(改成和原来一样的名字不算重名);大小写敏感、首尾空白已由调用方 trim。
+ */
+export function siblingNameTaken(
+  list: NotebookLike[], selfId: number, name: string, parentId: number | null | undefined,
+): boolean {
+  const target = name.trim()
+  if (!target) return false
+  const parent = parentId ?? null
+  return list.some((n) => n.id !== selfId && (n.parent_id ?? null) === parent && n.name === target)
+}
+
+/**
  * 该笔记本自己、或它的任一祖先,是不是私密笔记本(P16.5)。
  *
  * **私有性沿树向下继承,而且不允许在私有子树里挖公开的洞**:标了「内部资料」私有,

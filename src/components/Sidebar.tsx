@@ -3,7 +3,8 @@ import ConfirmDialog from './ConfirmDialog'
 import TagBrowserDialog from './TagBrowserDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
-import { buildTree, descendantIds, inPrivateBranch, privacySource, type TreeNode } from '../lib/notebookTree'
+import { buildTree, descendantIds, inPrivateBranch, privacySource, siblingNameTaken, type TreeNode } from '../lib/notebookTree'
+import { menuPosition } from '../lib/fmUtils'
 import { deleteNotebookPrompt, type DeletePrompt } from '../lib/deleteNotebook'
 import type { Notebook } from '../types'
 
@@ -17,6 +18,8 @@ interface Props {
   onDelete: (id: number) => Promise<any>
   /** P16.1 移动笔记本:parent 为 null 表示移到根 */
   onMove: (id: number, parent: number | null) => Promise<any>
+  /** P17.1 重命名。后端 PUT /api/notebooks/:id 一直支持,只是此前没有入口 */
+  onRename: (id: number, name: string) => Promise<any>
   /** P16.5 私密笔记本:只改标志位,服务端会把整支已有笔记一并上锁 */
   onSetPrivate: (id: number, isPrivate: boolean) => Promise<any>
   /** 设为私密 / 删除之前的后果清单(P16.3 起两处共用同一个接口) */
@@ -40,6 +43,15 @@ const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899'
 const INDENT_PX = 12
 const MAX_INDENT_DEPTH = 6
 
+// 右键菜单的尺寸。与文件管理那个(P13.8)同一套量纲,只是条目更少更窄——
+// 这里最长的一条是「新建子笔记本」六个字,160 够放,不必跟着它的 184。
+// 高度要算出来才能定翻转方向,而「先渲染再量再挪」会闪一帧
+const NB_MENU_W = 160
+const NB_MENU_PAD = 8
+const NB_MENU_ITEM_H = 30
+/** 五个条目 + 一条分隔线(按 9px ≈ 0.3 个条目高算进去) */
+const NB_MENU_ITEMS = 5.3
+
 /**
  * 笔记本图标(P16.5.2):封面 + 深一档的书脊,整体取笔记本自己的颜色。
  *
@@ -59,11 +71,15 @@ function NotebookIcon({ color }: { color: string }) {
   )
 }
 
-export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onSetPrivate, onPrivateImpact, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
+export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onCreate, onDelete, onMove, onRename, onSetPrivate, onPrivateImpact, onOpenFiles, filesActive, fileNavSlot, blogView, onOpenBlog }: Props) {
   const [showNew, setShowNew] = useState<{ parent: number | null } | null>(null)
   const [newName, setNewName] = useState('')
   const [creating, setCreating] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ id: number; x: number; y: number } | null>(null)
+  // P17.1 就地重命名:renaming 是那一行的 id,renameName 是输入框里的值
+  const [renaming, setRenaming] = useState<number | null>(null)
+  const [renameName, setRenameName] = useState('')
+  const [renameBusy, setRenameBusy] = useState(false)
   const [delAsk, setDelAsk] = useState<{ id: number; prompt: DeletePrompt } | null>(null)
   const [moving, setMoving] = useState<number | null>(null)
   // P16.5 上锁确认:设为私密 / 移进私密分支之前摊开后果,确认即强制,没有「只锁新的」
@@ -134,6 +150,39 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
   const handleContextMenu = (e: React.MouseEvent, id: number) => {
     e.preventDefault()
     setContextMenu({ id, x: e.clientX, y: e.clientY })
+  }
+
+  // ---- P17.1 就地重命名 ----
+
+  const startRename = (id: number) => {
+    setContextMenu(null)
+    setRenaming(id)
+    setRenameName(notebooks.find((n) => n.id === id)?.name || '')
+  }
+
+  const cancelRename = () => { setRenaming(null); setRenameName('') }
+
+  /**
+   * 提交改名。**同级重名放行、只提示**——服务端没有唯一约束,重名不会让任何
+   * 现有功能出错,拦下来反而是凭空造一条规则。要说的是那个延迟的后果:
+   * 导入按完整路径匹配(P16.3.1),两本同级同名会算出同一条路径。提示在输入框
+   * 底下常驻显示,看见了还按 Enter 就是知情的选择。
+   *
+   * 没改、或者只改了首尾空白 → 什么都不发:改名是最容易「点进去又退出来」的操作,
+   * 每次都发一趟 PUT 等于把免费额度里最紧的请求数花在没有变化的写入上。
+   */
+  const commitRename = async () => {
+    if (renaming === null || renameBusy) return
+    const name = renameName.trim()
+    const cur = notebooks.find((n) => n.id === renaming)
+    if (!name || !cur || name === cur.name) { cancelRename(); return }
+    setRenameBusy(true)
+    try {
+      await onRename(renaming, name)
+      cancelRename()
+    } finally {
+      setRenameBusy(false)
+    }
   }
 
   const handleDelete = () => {
@@ -235,6 +284,41 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
     const pad = 10 + Math.min(depth, MAX_INDENT_DEPTH) * INDENT_PX
     // 自己标的锁是实的,从上级继承来的是淡的 —— 一眼能看出「这锁能不能在这儿解」
     const priv = privacySource(notebooks, nb.id)
+
+    // P17.1 就地编辑:整行换成输入框,与资源管理器/VS Code 一致——
+    // 改完立刻在树里看到结果,不必在弹窗与侧栏之间对照
+    if (renaming === nb.id) {
+      const dup = siblingNameTaken(notebooks, nb.id, renameName, nb.parent_id)
+      return (
+        <div key={nb.id} className="mb-0.5" style={{ paddingLeft: pad + 16, paddingRight: 8 }}>
+          <input
+            type="text"
+            value={renameName}
+            onChange={(e) => setRenameName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitRename()
+              if (e.key === 'Escape') cancelRename()
+            }}
+            // 失焦即提交:改完点别处走人是最自然的收尾,而「改了字但没生效」
+            // 在树形侧栏里毫无提示——你看到的还是旧名字,以为改过了
+            onBlur={commitRename}
+            autoFocus
+            // 选中全部而不是把光标放末尾:重命名多半是整个换掉
+            onFocus={(e) => e.currentTarget.select()}
+            disabled={renameBusy}
+            className={`w-full text-sm border rounded px-2 py-1 focus:outline-none focus:ring-1 ${
+              dup ? 'border-amber-400 focus:ring-amber-400' : 'border-emerald-300 focus:ring-emerald-500'
+            }`}
+          />
+          {dup && (
+            <p className="text-[11px] text-amber-600 mt-0.5 leading-snug">
+              同级已有一本叫「{renameName.trim()}」，导入时按路径匹配会分不清这两本
+            </p>
+          )}
+        </div>
+      )
+    }
+
     return (
       <div key={nb.id}>
         <div
@@ -263,6 +347,11 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           )}
           <button
             onClick={() => onSelect(nb)}
+            // 双击改名(P17.1)。展开/折叠挂在左边那个箭头上,双击这里没有别的既定含义
+            onDoubleClick={(e) => { e.preventDefault(); startRename(nb.id) }}
+            // F2 是 Windows 的既定改名键。选中的那一本才响应——键盘焦点在哪一行,
+            // 改的就是哪一行,不必再引入一个「当前高亮」的概念
+            onKeyDown={(e) => { if (e.key === 'F2') { e.preventDefault(); startRename(nb.id) } }}
             className="flex-1 min-w-0 text-left flex items-center gap-2.5 py-2 pr-1"
           >
             <NotebookIcon color={nb.color} />
@@ -493,51 +582,73 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
         </div>
       </div>
 
-      {/* Context menu */}
-      {contextMenu && (
+      {/* 右键菜单。宽度、间距、落点翻转全部对齐文件管理那个(P13.8),
+          它早就把这几件事做对了,而这边是 P16.1 随手写的:px-4 py-2 + whitespace-nowrap,
+          宽度被最长那条「取消私密笔记本」撑开,而且贴着屏幕底部右键时有一半在视口外 */}
+      {contextMenu && (() => {
+        const priv = privacySource(notebooks, contextMenu.id)
+        const pos = menuPosition(
+          contextMenu.x, contextMenu.y, NB_MENU_W, NB_MENU_PAD * 2 + NB_MENU_ITEMS * NB_MENU_ITEM_H,
+          window.innerWidth, window.innerHeight,
+        )
+        return (
         <div
-          className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed py-1 rounded-xl bg-white border border-gray-100 shadow-2xl z-50"
+          style={{ left: pos.x, top: pos.y, width: NB_MENU_W }}
         >
           <button
-            onClick={() => { setShowNew({ parent: contextMenu.id }); setNewName(''); setContextMenu(null) }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+            onClick={() => startRename(contextMenu.id)}
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-2 transition-colors"
           >
-            新建子笔记本
+            <span className="w-4 shrink-0 text-xs text-center">✏️</span>
+            <span className="truncate">重命名</span>
+          </button>
+          <button
+            onClick={() => { setShowNew({ parent: contextMenu.id }); setNewName(''); setContextMenu(null) }}
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-2 transition-colors"
+          >
+            <span className="w-4 shrink-0 text-xs text-center">➕</span>
+            <span className="truncate">新建子笔记本</span>
           </button>
           <button
             onClick={() => { setMoving(contextMenu.id); setContextMenu(null) }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-2 transition-colors"
           >
-            移动到…
+            <span className="w-4 shrink-0 text-xs text-center">📂</span>
+            <span className="truncate">移动到…</span>
           </button>
           {/* P16.5:继承来的私有不能在这一层解——要解就去标了私有的那个祖先上解 */}
-          {privacySource(notebooks, contextMenu.id) === 'inherited' ? (
+          {priv === 'inherited' ? (
             <button
               disabled
-              className="w-full text-left px-4 py-2 text-sm text-gray-300 whitespace-nowrap"
+              className="w-full text-left px-3 py-1.5 text-sm text-gray-300 flex items-center gap-2"
               title="它的上级是私密笔记本;要取消请到标了私有的那一本上操作"
             >
-              已随上级私密
+              <span className="w-4 shrink-0 text-xs text-center">🔒</span>
+              <span className="truncate">已随上级私密</span>
             </button>
           ) : (
             <button
-              onClick={() => handleTogglePrivate(contextMenu.id, privacySource(notebooks, contextMenu.id) !== 'self')}
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 whitespace-nowrap"
+              onClick={() => handleTogglePrivate(contextMenu.id, priv !== 'self')}
+              className="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-emerald-50 flex items-center gap-2 transition-colors"
               title="私密笔记本:之后写进这一支的笔记自动设为私有"
             >
-              {privacySource(notebooks, contextMenu.id) === 'self' ? '取消私密笔记本' : '设为私密笔记本'}
+              <span className="w-4 shrink-0 text-xs text-center">{priv === 'self' ? '🔓' : '🔒'}</span>
+              <span className="truncate">{priv === 'self' ? '取消私密' : '设为私密'}</span>
             </button>
           )}
+          <div className="my-1 h-px bg-gray-100" />
           {/* P16.3:有子本不再置灰——删除会级联整棵子树,后果由确认框摊开 */}
           <button
             onClick={handleDelete}
-            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 whitespace-nowrap"
+            className="w-full text-left px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors"
           >
-            删除笔记本
+            <span className="w-4 shrink-0 text-xs text-center">🗑️</span>
+            <span className="truncate">删除笔记本</span>
           </button>
         </div>
-      )}
+        )
+      })()}
 
       {/* P16.1 移动:候选里排除自己与自己的子孙(否则会造出环),服务端还会再判一次 */}
       {moving !== null && (

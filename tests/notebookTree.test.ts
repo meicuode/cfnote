@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildTree, descendantIds, subtreeIds, wouldCycle, pathOf, inPrivateBranch, privacySource } from '../src/lib/notebookTree'
+import { buildTree, descendantIds, subtreeIds, wouldCycle, pathOf, inPrivateBranch, privacySource, siblingNameTaken } from '../src/lib/notebookTree'
 
 const nb = (id: number, name: string, parent_id: number | null = null) => ({ id, name, parent_id })
 
@@ -163,5 +163,48 @@ describe('inPrivateBranch / privacySource', () => {
       { id: 2, name: '乙', parent_id: 1, is_private: 1 },
     ]
     expect(inPrivateBranch(cyc, 1)).toBe(true)
+  })
+})
+
+describe('siblingNameTaken(P17.1 重命名的同级重名提示)', () => {
+  // 根: ERP笔记 / 随手记;ERP笔记 下: 销售管理 / 采购管理
+  it('同一个父下面已有同名的 → true', () => {
+    expect(siblingNameTaken(TREE, 5, '销售管理', 1)).toBe(true)
+  })
+
+  it('改成和自己原来一样的名字不算重名', () => {
+    // 否则一进编辑框就亮警告,而用户什么都还没改
+    expect(siblingNameTaken(TREE, 2, '销售管理', 1)).toBe(false)
+  })
+
+  it('不同父下面同名互不相干', () => {
+    // 「ERP笔记/销售管理」与根上的「销售管理」是两条不同的路径
+    expect(siblingNameTaken(TREE, 9, '销售管理', null)).toBe(false)
+  })
+
+  it('根上的重名照样算', () => {
+    expect(siblingNameTaken(TREE, 1, '随手记', null)).toBe(true)
+  })
+
+  it('首尾空白不影响判断', () => {
+    expect(siblingNameTaken(TREE, 5, '  销售管理  ', 1)).toBe(true)
+  })
+
+  it('空名字不判重名(它由「不提交」那条规则拦下)', () => {
+    expect(siblingNameTaken(TREE, 5, '   ', 1)).toBe(false)
+  })
+
+  it('大小写与全半角不同就是不同的名字', () => {
+    // 不做归一:笔记本名是用户写的字面量,「ERP」与「erp」是两个名字。
+    // 归一之后「为什么提示重名,明明不一样」比漏一次提示更难解释
+    const T = [{ id: 1, name: 'ERP', parent_id: null }, { id: 2, name: 'erp', parent_id: null }]
+    expect(siblingNameTaken(T, 1, 'erp', null)).toBe(true)   // 与 id=2 撞上
+    expect(siblingNameTaken(T, 3, 'Erp', null)).toBe(false)  // 两本都不是它
+  })
+
+  it('parent_id 的 undefined 与 null 当成同一个「根」', () => {
+    // 侧栏传的是 nb.parent_id,老数据里可能是 undefined
+    const T = [{ id: 1, name: '甲', parent_id: null }, { id: 2, name: '乙', parent_id: undefined as any }]
+    expect(siblingNameTaken(T, 2, '甲', undefined)).toBe(true)
   })
 })

@@ -389,6 +389,18 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
     return res
   }
 
+  // P17.1 重命名。走同一个 PUT(它一直支持 name),改完要重拉侧栏,
+  // 而且**当前打开的那一本也要跟着换名字**——否则列表标题栏还挂着旧名,
+  // 看着像没改成
+  const renameNotebook = async (id: number, name: string) => {
+    const res = await put<Notebook>(`/notebooks/${id}`, { name })
+    if (res.ok) {
+      await loadNotebooks()
+      if (activeNotebook?.id === id) setActiveNotebook((nb) => (nb ? { ...nb, name } : nb))
+    }
+    return res
+  }
+
   // P16.5 私密笔记本。服务端保证不变式:落进私密分支就把整支已有笔记一并上锁,
   // 所以这里不需要再补一个「应用私有」的调用——那种要调用方记得的接口迟早被绕过
   const setNotebookPrivate = async (id: number, isPrivate: boolean) => {
@@ -869,6 +881,7 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
             onCreate={createNotebook}
             onDelete={deleteNotebook}
             onMove={moveNotebook}
+            onRename={renameNotebook}
             onSetPrivate={setNotebookPrivate}
             onPrivateImpact={privateImpact}
             onOpenFiles={() => { setShowFiles(true); setBlogView(null); setPane('main') }}
