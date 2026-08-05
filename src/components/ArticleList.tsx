@@ -3,7 +3,7 @@ import ConfirmDialog from './ConfirmDialog'
 import { EyeOffIcon } from './ArticleEditor'
 import { fmtSize } from '../lib/fmUtils'
 import { parseTags } from '../types'
-import type { Article } from '../types'
+import type { Article, PrivateException } from '../types'
 
 /** 回收站里的笔记本(P14.1) */
 export interface TrashNotebook {
@@ -33,6 +33,15 @@ interface Props {
   trash?: boolean
   /** 回收站里的笔记本(P14.1),整本恢复或彻底删除 */
   trashNotebooks?: TrashNotebook[]
+  /** P16.2 深视图:连子孙笔记本的文章一起显示。undefined = 这个视图没有深浅之分 */
+  deep?: boolean
+  onToggleDeep?: (v: boolean) => void
+  /** P16.2 这一支下面有几个子笔记本(0 就不显示深浅开关——没有子级时它是个无意义的勾) */
+  childCount?: number
+  /** P16.2 私密审计视图的例外项:在私密分支里却没上锁的活笔记 */
+  privateExceptions?: PrivateException[]
+  /** 按 id 打开一篇(例外项手里只有 id,没有完整 Article——不伪造一个假对象糊过去) */
+  onSelectId?: (id: number) => void
   onSelect: (article: Article) => void
   onCreate: () => void
   onDelete: (id: number) => Promise<any>
@@ -49,6 +58,7 @@ interface Props {
 
 export default function ArticleList({
   articles, activeArticle, notebookName, deletingId, virtual, trash, trashNotebooks,
+  deep, onToggleDeep, childCount, privateExceptions, onSelectId,
   onSelect, onCreate, onDelete, onImport, onRestore, onPurge, onEmptyTrash, onTogglePin,
   onRestoreNotebook, onPurgeNotebook, onTrashImpact,
 }: Props) {
@@ -103,6 +113,7 @@ export default function ArticleList({
             {articles.length} 篇文章
             {trash && trashNotebooks && trashNotebooks.length > 0 ? ` · ${trashNotebooks.length} 个笔记本` : ''}
             {trash ? ' · 30 天后自动清除' : ''}
+            {deep ? ' · 含子级' : ''}
           </span>
         </div>
         {trash && (articles.length > 0 || (trashNotebooks?.length ?? 0) > 0) && onEmptyTrash && (
@@ -115,6 +126,21 @@ export default function ArticleList({
         )}
         {notebookName && !virtual && (
           <div className="flex items-center gap-1">
+            {/* 深/浅视图(P16.2):只在真有子笔记本时出现——没有子级时这个勾是个无意义的开关 */}
+            {onToggleDeep && (childCount ?? 0) > 0 && (
+              <label
+                className="flex items-center gap-1 mr-1 text-xs text-gray-500 cursor-pointer select-none"
+                title={`连同 ${childCount} 个子笔记本里的文章一起显示`}
+              >
+                <input
+                  type="checkbox"
+                  checked={!!deep}
+                  onChange={e => onToggleDeep(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-gray-300 text-emerald-500 focus:ring-emerald-500"
+                />
+                含子级
+              </label>
+            )}
             <button
               onClick={onImport}
               className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 transition-colors"
@@ -139,6 +165,35 @@ export default function ArticleList({
 
       {/* Article list */}
       <div className="flex-1 overflow-y-auto">
+        {/* 私密审计视图的例外项(P16.2):在私密分支里却没上锁的活笔记。
+            P16.5.1 的不变式保证这个数恒为 0,所以它一旦不为 0 就必须显眼——
+            要么有写入路径绕过了拉平(bug),要么有人显式取消过(该复核的决定)。
+            放在列表最前面,理由和回收站里的笔记本一样:这才是你来这个页面要看的东西 */}
+        {privateExceptions && privateExceptions.length > 0 && (
+          <div className="border-b border-gray-100 bg-red-50/60">
+            <p className="px-4 pt-2.5 pb-1 text-[11px] text-red-700">
+              ⚠️ {privateExceptions.length} 篇笔记在私密笔记本里，却<strong>没有</strong>私有标记
+              —— 它们不受私密保护，其中已发布的仍在博客上
+            </p>
+            {privateExceptions.map((ex) => (
+              <div
+                key={`ex-${ex.id}`}
+                onClick={() => onSelectId?.(ex.id)}
+                className={`px-4 py-2 flex items-center gap-2 ${onSelectId ? 'cursor-pointer hover:bg-red-100/50' : ''}`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-gray-800 truncate">{ex.title}</p>
+                  <p className="text-[11px] text-gray-500 truncate">{ex.notebook_path}</p>
+                </div>
+                {!!ex.is_public && (
+                  <span className="text-[11px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 shrink-0">
+                    博客上可见
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {/* 回收站里的笔记本(P14.1):整本恢复或彻底删除。放在最前面——
             误删一整本才是这批要解决的问题,它不该混在几百篇散装笔记里 */}
         {trash && trashNotebooks && trashNotebooks.length > 0 && (
@@ -255,6 +310,21 @@ export default function ArticleList({
             <p className="text-xs text-gray-400 mt-1 line-clamp-2">
               {(article as any).summary || article.content?.slice(0, 100) || '空文章'}
             </p>
+            {/* 归属路径(P16.2):深视图和私密审计视图带,浅视图不带。
+                深视图下如果不给路径,「技术/前端/React」和「读书/前端」两篇同名的标题
+                就只是两行一样的字,根本看不出来从哪来的。私密审计视图平铺全部私有笔记,
+                更是必须有路径——那个页面正是用来看「我以为锁了,结果没锁」的例外的 */}
+            {article.notebook_path && (
+              <p className="text-[11px] text-gray-400 mt-0.5 truncate flex items-center gap-1">
+                <span className="shrink-0">📁</span>
+                <span className="truncate">{article.notebook_path}</span>
+                {article.inherited === 0 && (
+                  <span className="shrink-0 text-amber-600" title="所在笔记本不在私密分支里,这篇是显式标记的私有笔记">
+                    ⚠️ 显式
+                  </span>
+                )}
+              </p>
+            )}
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               {trash && article.deleted_at ? (
                 <>

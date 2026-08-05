@@ -64,7 +64,27 @@ export interface Article {
   remind_at?: string | null
   /** 回收站列表附带的原笔记本名 */
   notebook?: string | null
+  /** P16.2 深视图与私密审计视图附带的归属路径(「技术 / 前端」);浅视图不给 */
+  notebook_path?: string
+  /** P16.2 私密审计视图:1 = 所在笔记本本身就在私密分支里(私有是"应该的") */
+  inherited?: number
   created_at: string
+  updated_at: string
+}
+
+/**
+ * 私密审计视图里的**例外项**(P16.2):在私密分支里却没上锁的活笔记。
+ *
+ * P16.5.1 的不变式保证这个数恒为 0,所以它不为 0 只有两种可能:
+ * 有写入路径绕过了拉平(bug),或者有人在某一篇上显式取消过私有(需要定期复核的决定)。
+ * 两种都得看得见——这正是这个视图存在的理由。
+ */
+export interface PrivateException {
+  id: number
+  notebook_id: number
+  title: string
+  is_public: number
+  notebook_path: string
   updated_at: string
 }
 

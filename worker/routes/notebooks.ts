@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { ok, err, recountNotebook } from '../utils'
 import { purgeUnreferencedAttachments } from './files'
 import { vectorizeArticle } from './articles'
-import { wouldCycle, subtreeIds, inPrivateBranch } from '../../src/lib/notebookTree'
+import { wouldCycle, subtreeIds, inPrivateBranch, pathOf } from '../../src/lib/notebookTree'
 import { loadNotebookRows, hasLiveNotebook, chunked, trashedAncestors } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 
@@ -395,23 +395,58 @@ notebooks.delete('/:id/purge', async (c) => {
 })
 
 // GET /api/notebooks/:id/articles - List articles in a notebook
+// GET /api/notebooks/:id/articles?deep=1 - 这一本的文章;deep=1 时连子孙本的一起给(P16.2)
+//
+// 浅视图是默认:「点笔记本 = 看这一本」是所有文件管理器的既定行为,树深了也不会
+// 突然给你几百条。深视图解决的是另一半问题——P16.4 把整个本地知识库导进来之后,
+// 一篇笔记具体落在哪一层是当初的目录决定的,而你回想不起来;「这一支下面有什么」
+// 才是真正的问题。
+//
+// 深视图**必须给出归属路径**,否则列表就是一堆不知道从哪来的标题。路径在这里拼好
+// (服务端已经有整张笔记本表),而不是让前端再查一遍树。
 notebooks.get('/:id/articles', async (c) => {
   const user = c.get('user')
-  const notebookId = c.req.param('id')
+  const notebookId = Number(c.req.param('id'))
+  const deep = c.req.query('deep') === '1'
   try {
-    // Verify notebook belongs to user
-    const nb = await c.env.DB.prepare('SELECT id FROM notebooks WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .bind(notebookId, user.id).first()
-    if (!nb) return err('笔记本不存在', 404)
+    const rows = await loadNotebookRows(c.env, user.id)
+    if (!hasLiveNotebook(rows, notebookId)) return err('笔记本不存在', 404)
 
-    const { results } = await c.env.DB.prepare(
-      `SELECT id, notebook_id, title,
-              SUBSTR(content, 1, 150) as summary,
-              is_vectorized, is_public, is_private, tags, pinned, created_at, updated_at
-       FROM articles WHERE notebook_id = ? AND deleted_at IS NULL
-       ORDER BY pinned DESC, updated_at DESC`
-    ).bind(notebookId).all()
-    return ok(results)
+    // 浅视图就是「只有自己」这一种特例,不为它另写一条 SQL——
+    // 两条查询走两套 WHERE,迟早在某一条上漏掉 deleted_at
+    const ids = deep
+      ? subtreeIds(rows, notebookId).filter((n) => hasLiveNotebook(rows, n))
+      : [notebookId]
+
+    const all: any[] = []
+    for (const part of chunked(ids)) {
+      const { results } = await c.env.DB.prepare(
+        `SELECT id, notebook_id, title,
+                SUBSTR(content, 1, 150) as summary,
+                is_vectorized, is_public, is_private, tags, pinned, created_at, updated_at
+         FROM articles WHERE user_id = ? AND deleted_at IS NULL
+           AND notebook_id IN (${part.map(() => '?').join(',')})`
+      ).bind(user.id, ...part).all()
+      all.push(...(results || []))
+    }
+    // 分片查回来的顺序不保证,排序统一在这里做一次(与浅视图的 ORDER BY 同口径)
+    all.sort((a, b) =>
+      (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
+      String(b.updated_at).localeCompare(String(a.updated_at)))
+
+    if (!deep) return ok(all)
+
+    // 归属路径只在深视图给:浅视图里每条都一样,白占带宽
+    const pathCache = new Map<number, string>()
+    for (const a of all) {
+      let p = pathCache.get(a.notebook_id)
+      if (p === undefined) {
+        p = pathOf(rows, a.notebook_id).join(' / ')
+        pathCache.set(a.notebook_id, p)
+      }
+      a.notebook_path = p
+    }
+    return ok(all)
   } catch (e: any) {
     return err('获取文章列表失败: ' + e.message, 500)
   }

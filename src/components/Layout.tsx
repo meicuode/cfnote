@@ -12,12 +12,12 @@ import AiChatPanel from './AiChatPanel'
 import RemindersPanel from './RemindersPanel'
 import { isDue, type ReminderItem } from '../lib/reminders'
 import { PRIVATE_NOTEBOOK, TRASH_NOTEBOOK, TAG_VIEW_ID, tagNotebook } from '../types'
-import type { Notebook, Article } from '../types'
+import type { Notebook, Article, PrivateException } from '../types'
 import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
 import { workspaceOf, entryPane, backPane, canGoBack, paneForRoute, type Pane } from '../lib/pane'
 import { createSingleFlight } from '../lib/singleFlight'
 import { planImport, chunkBySize } from '../lib/importPlan'
-import { pathOf } from '../lib/notebookTree'
+import { pathOf, descendantIds } from '../lib/notebookTree'
 import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -188,16 +188,37 @@ export default function Layout({ token, username, onLogout }: Props) {
   }, [loadReminders])
   const dueCount = reminders.filter((r) => isDue(r.remind_at, nowTick)).length
 
-  const loadArticles = useCallback(async (nb: Notebook) => {
+  // 深视图(P16.2):点笔记本默认只看这一本,勾上「显示所有子级」才连子孙本一起看。
+  // 默认浅是刻意的——「点文件夹 = 看这个文件夹」是所有文件管理器的既定行为,
+  // 而 P16.4 之后一支下面可能有几百篇,默认深会让点每一本都变成一次大查询
+  const [deep, setDeep] = useState(false)
+  // 私密审计视图的例外项:在私密分支里却没上锁的活笔记。正常恒为 0
+  const [privExceptions, setPrivExceptions] = useState<PrivateException[]>([])
+
+  const loadArticles = useCallback(async (nb: Notebook, deepView = deep) => {
     // 虚拟视图:我的私有 / 回收站 / 标签(name 即标签名);其余为真实笔记本
     const url =
       nb.id === PRIVATE_NOTEBOOK.id ? '/articles/private'
       : nb.id === TRASH_NOTEBOOK.id ? '/articles/trash'
       : nb.id === TAG_VIEW_ID ? `/articles/by-tag?tag=${encodeURIComponent(nb.name)}`
-      : `/notebooks/${nb.id}/articles`
+      : `/notebooks/${nb.id}/articles${deepView ? '?deep=1' : ''}`
+
+    // 「我的私有」返回的是 {articles, exceptions} 而不是裸数组——它是对账页,
+    // 例外项跟列表得一起拿(免费额度里紧的是请求数,不该为它多打一个接口)
+    if (nb.id === PRIVATE_NOTEBOOK.id) {
+      const res = await get<{ articles: Article[]; exceptions: PrivateException[] }>(url)
+      if (res.ok && res.data) {
+        setArticles(res.data.articles || [])
+        setPrivExceptions(res.data.exceptions || [])
+      }
+      return
+    }
+    setPrivExceptions([])
     const res = await get<Article[]>(url)
     if (res.ok && res.data) setArticles(res.data)
-  }, [get])
+    // deep 进依赖表,所以散落各处的 loadArticles(activeNotebook) 会自动沿用当前视图,
+    // 不必逐个调用点补参数——漏一个的表现是「删完一篇,列表悄悄从深切回浅」
+  }, [get, deep])
 
   useEffect(() => {
     if (activeNotebook) {
@@ -904,6 +925,12 @@ export default function Layout({ token, username, onLogout }: Props) {
             trash={inTrash}
             trashNotebooks={trashNotebooks}
             deletingId={deletingArticleId}
+            deep={deep}
+            onToggleDeep={setDeep}
+            childCount={activeNotebook && activeNotebook.id > 0
+              ? descendantIds(notebooks, activeNotebook.id).length : 0}
+            privateExceptions={activeNotebook?.id === PRIVATE_NOTEBOOK.id ? privExceptions : undefined}
+            onSelectId={loadArticleDetail}
             onSelect={openArticle}
             onCreate={createArticle}
             onDelete={deleteArticle}

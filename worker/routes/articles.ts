@@ -3,6 +3,7 @@ import { ok, err, chunkText, contentHash, jinaReadUrl, trackEvent, recountNotebo
 import { syncArticleFiles, purgeUnreferencedAttachments, previewPurgeImpact } from './files'
 import { escapeLike } from './search'
 import { versionsToPrune } from '../../src/lib/versionRetention'
+import { pathOf, inPrivateBranch } from '../../src/lib/notebookTree'
 import { loadNotebookRows, shouldBePrivateIn, hasLiveNotebook, trashedAncestors, chunked } from '../notebookPrivacy'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
@@ -180,17 +181,62 @@ articles.post('/import', async (c) => {
 })
 
 // GET /api/articles/private - 所有私有笔记(「我的私有」虚拟笔记本;须注册在 /:id 之前)
+// GET /api/articles/private - 「我的私有」审计视图(P16.2)
+//
+// 这不只是个筛选列表,是**私密功能的对账页**。P16.5 系列反复讲「容器决定默认,
+// 个体可以例外,例外必须是显式动作」——可在此之前没有任何地方能把这些例外列出来看一眼。
+// 设过一次就再也想不起来了,而它们恰恰是「你以为整支锁着」这个判断的反例。
+//
+// 所以每条都带上:
+//   - notebook_path  这篇到底在哪一支(平铺列表里没有它就是一堆孤立标题)
+//   - inherited      它所在的笔记本是不是私密分支(私有是"应该的")
+// 另外单列出 exceptions:**在私密分支里却没上锁的活笔记**。正常情况下这个数恒为 0
+// (P16.5.1 的不变式保证),不为 0 就说明有一条写入路径绕过了拉平,或者有人显式取消过。
+// 两种都得看得见——前者是 bug,后者是需要定期复核的决定。
 articles.get('/private', async (c) => {
   const user = c.get('user')
   try {
+    const rows = await loadNotebookRows(c.env, user.id)
     const { results } = await c.env.DB.prepare(
       `SELECT id, notebook_id, title,
               SUBSTR(content, 1, 150) as summary,
               is_vectorized, is_public, is_private, tags, pinned, created_at, updated_at
        FROM articles WHERE user_id = ? AND is_private = 1 AND deleted_at IS NULL
        ORDER BY pinned DESC, updated_at DESC`
-    ).bind(user.id).all()
-    return ok(results)
+    ).bind(user.id).all<any>()
+
+    const pathCache = new Map<number, string>()
+    const branchCache = new Map<number, boolean>()
+    const decorate = (a: any) => {
+      let p = pathCache.get(a.notebook_id)
+      if (p === undefined) {
+        p = pathOf(rows, a.notebook_id).join(' / ')
+        pathCache.set(a.notebook_id, p)
+      }
+      let b = branchCache.get(a.notebook_id)
+      if (b === undefined) {
+        b = inPrivateBranch(rows, a.notebook_id)
+        branchCache.set(a.notebook_id, b)
+      }
+      return { ...a, notebook_path: p, inherited: b ? 1 : 0 }
+    }
+    const list = (results || []).map(decorate)
+
+    // 私密分支里没上锁的活笔记 = 不变式的破口。只查这些分支,不是全表扫
+    const privNbs = rows.filter((n) => !n.deleted_at && inPrivateBranch(rows, n.id)).map((n) => n.id)
+    const exceptions: any[] = []
+    for (const part of chunked(privNbs)) {
+      const { results: ex } = await c.env.DB.prepare(
+        `SELECT id, notebook_id, title, is_public, updated_at
+         FROM articles WHERE user_id = ? AND is_private = 0 AND deleted_at IS NULL
+           AND notebook_id IN (${part.map(() => '?').join(',')})`
+      ).bind(user.id, ...part).all<any>()
+      for (const a of ex || []) {
+        exceptions.push({ ...a, notebook_path: pathOf(rows, a.notebook_id).join(' / ') })
+      }
+    }
+
+    return ok({ articles: list, exceptions })
   } catch (e: any) {
     return err('获取私有笔记失败: ' + e.message, 500)
   }
