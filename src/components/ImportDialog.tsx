@@ -1,18 +1,22 @@
 import { useState, useEffect, useRef } from 'react'
+import { DOC_EXT } from '../lib/importTitle'
 
 interface Props {
   loading: boolean
   progress?: string
+  /** 导入完成但有跳过项时的说明。有值时对话框不自动关,让人看得见 */
+  result?: string
   onImport: (url: string) => Promise<void>
-  onImportFiles: (files: File[]) => Promise<void>
+  onImportFiles: (files: File[], keepTree: boolean) => Promise<void>
   onClose: () => void
 }
 
-const DOC_EXT = /\.(md|markdown|txt)$/i
-
-export default function ImportDialog({ loading, progress, onImport, onImportFiles, onClose }: Props) {
+export default function ImportDialog({ loading, progress, result, onImport, onImportFiles, onClose }: Props) {
   const [url, setUrl] = useState('')
   const [error, setError] = useState('')
+  // P16.4:默认把文件夹层级建成笔记本树。取消勾选退回 P15.4 的老行为
+  // (全部进当前笔记本,相对路径写进标题),留作逃生口
+  const [keepTree, setKeepTree] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
@@ -53,7 +57,7 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
     }
     setError('')
     try {
-      await onImportFiles(files)
+      await onImportFiles(files, keepTree)
     } catch (e: any) {
       setError(e.message || '导入失败')
     }
@@ -137,9 +141,27 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
               />
             </label>
           </div>
+          <label className={`mt-3 flex items-start gap-2 text-sm text-gray-600 cursor-pointer ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <input
+              type="checkbox"
+              checked={keepTree}
+              disabled={loading}
+              onChange={e => setKeepTree(e.target.checked)}
+              className="mt-0.5 w-4 h-4 rounded border-gray-300 text-emerald-500 focus:ring-emerald-500"
+            />
+            <span>
+              保留文件夹结构
+              <span className="block text-xs text-gray-400 mt-0.5">
+                子目录会建成对应的子笔记本，同名的直接复用；不勾选则全部平铺到当前笔记本。
+              </span>
+            </span>
+          </label>
           <p className="mt-2 text-xs text-gray-400">
-            支持 .md / .markdown / .txt，文件名作为标题，导入到当前笔记本；文件夹会递归读取全部支持的文档，
-            子目录里的文档标题会带上相对路径（如 <code>技术/前端笔记</code>）以免同名混淆，重复文章自动跳过。
+            支持 .md / .markdown / .txt，文件名作为标题，导入到当前笔记本。
+            {keepTree
+              ? '选中的那层文件夹本身不建笔记本——它的内容直接进当前笔记本，再往下的子目录才建。'
+              : '子目录里的文档标题会带上相对路径（如 技术/前端笔记）以免同名混淆。'}
+            重复文章自动跳过。
           </p>
         </div>
 
@@ -147,6 +169,11 @@ export default function ImportDialog({ loading, progress, onImport, onImportFile
           <p className="mt-3 text-sm text-emerald-600 bg-emerald-50 rounded-lg p-2 flex items-center gap-2">
             <span className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin shrink-0" />
             {progress}
+          </p>
+        )}
+        {result && (
+          <p className="mt-3 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg p-2">
+            导入完成：{result}
           </p>
         )}
         {error && <p className="mt-3 text-sm text-red-600 bg-red-50 rounded-lg p-2">{error}</p>}

@@ -376,8 +376,13 @@ system.post('/import', async (c) => {
     // **老备份(P16.8 之前没有 parent_id)天然退化为按名字匹配**——每条路径都只有一段,
     // 与改造前的行为逐字一致,所以不必为老文件另开一条分支。
     const { results: existingNbs } = await c.env.DB.prepare(
-      'SELECT id, name, parent_id FROM notebooks WHERE user_id = ?'
+      'SELECT id, name, parent_id FROM notebooks WHERE user_id = ? AND deleted_at IS NULL'
     ).bind(user.id).all<{ id: number; name: string; parent_id: number | null }>()
+    // **只看没在回收站里的**(P16.4):路径撞上一本已删的笔记本时,若复用它,
+    // 导进来的笔记就直接躺进回收站——界面上等于凭空消失。这跟 loadNotebookRows
+    // 刻意连已删的一起取是两回事:那边算的是私密继承(与死活无关),
+    // 这边问的是「能不能往这儿写」,同 hasLiveNotebook 一个口径。
+    // 活笔记本的祖先必然也活着(P16.3 删父级联、恢复带祖先壳),所以路径链不会断。
     const local = existingNbs || []
     // 路径键走 JSON.stringify(数组) 而不是拼接:笔记本名字里可以有任何字符(包括斜杠),
     // 挑不出一个「一定不会出现」的分隔符——那正是「叫 a/b 的根笔记本」和「a 下面的 b」
@@ -453,11 +458,19 @@ system.post('/import', async (c) => {
     // 笔记本表在上一步可能新建过行,私密分支判断必须放在那之后取(P16.5),整批只取一次
     const privRows = await loadNotebookRows(c.env, user.id)
     const { results: existingArts } = await c.env.DB.prepare(
-      'SELECT id, title, content_hash FROM articles WHERE user_id = ?'
-    ).bind(user.id).all<{ id: number; title: string; content_hash: string }>()
+      'SELECT id, notebook_id, title, content_hash FROM articles WHERE user_id = ?'
+    ).bind(user.id).all<{ id: number; notebook_id: number; title: string; content_hash: string }>()
+    // 去重键 = 笔记本 + 标题 + 内容哈希。**笔记本这一项是 P16.4 补的**:
+    // 在此之前是纯「标题 + 哈希」,而文件夹导入把目录建成笔记本树之后,标题从
+    // `技术/README` 变回了 `README`——每个子目录各放一份一模一样的 README.md 时,
+    // 第一份进库,其余全被判重跳过,那是真丢数据(importTitle.ts 顶上那段注释警告的就是这个)。
+    //
+    // 代价是导出后把某篇挪了个笔记本、再导入,会多出一份而不是被认出来。
+    // 「静默少一篇」比「看得见的重复一篇」坏得多,取后者。
+    const artKey = (nbId: number, title: string, hash: string) => JSON.stringify([nbId, title, hash])
     // 值是本库文章 id:评论要按「备份里的 article_id → 本库 id」重挂;
     // 跳过的重复文章同样要进这张表,否则它们的评论会全丢
-    const existingKeys = new Map(existingArts.map((a) => [`${a.title}${a.content_hash}`, a.id]))
+    const existingKeys = new Map(existingArts.map((a) => [artKey(a.notebook_id, a.title, a.content_hash), a.id]))
 
     const artMap = new Map<number, number>() // 备份中的文章 id -> 本库 id
 
@@ -470,7 +483,7 @@ system.post('/import', async (c) => {
       if (!nbId || typeof a?.title !== 'string' || !a.title) { skipped++; continue }
       const content = typeof a.content === 'string' ? a.content : ''
       const hash = await contentHash(content)
-      const key = `${a.title}${hash}`
+      const key = artKey(nbId, a.title, hash)
       if (existingKeys.has(key)) {
         const dup = existingKeys.get(key)
         if (dup !== undefined && dup > 0 && typeof a.id === 'number') artMap.set(a.id, dup)

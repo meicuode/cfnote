@@ -237,6 +237,89 @@ describe('备份导出/导入', () => {
     expect(c!.c).toBe(1)
   })
 
+  it('目标笔记本嵌套在树里时,发整条祖先链就能复用它,不会在根上另建一本(P16.4)', async () => {
+    // 本地文件导入合成的那份载荷走的就是这条路。P16.3.1 改成按完整路径匹配之后,
+    // 只发目标自己的名字(老写法)会跟根上的同名笔记本比,对不上 → 另建一本,
+    // 导入的文件全进了那本。修法就是把祖先链一起发出去
+    const token = await bootstrap()
+    const tech = await newNotebook(token, '技术')
+    const fe = (await api<{ id: number }>('/api/notebooks', {
+      method: 'POST', token, body: j({ name: '前端', parent_id: tech }),
+    })).body.data!.id
+
+    const res = await api('/api/import', {
+      method: 'POST', token,
+      body: j({
+        app: 'cfnote', export_version: 1,
+        notebooks: [{ id: 1, name: '技术', parent_id: null }, { id: 2, name: '前端', parent_id: 1 }],
+        articles: [{ id: 1, notebook_id: 2, title: '导进来的', content: '正文' }],
+      }),
+    })
+    expect(res.body.ok, res.body.error).toBe(true)
+
+    // 一本都没多出来
+    const all = await env.DB.prepare("SELECT COUNT(*) AS c FROM notebooks WHERE name = '前端'").first<{ c: number }>()
+    expect(all!.c).toBe(1)
+    // 而且落在原来那本里,不是根上某本
+    const art = await env.DB.prepare("SELECT notebook_id FROM articles WHERE title = '导进来的'").first<{ notebook_id: number }>()
+    expect(art!.notebook_id).toBe(fe)
+  })
+
+  it('标题与内容都相同但在不同笔记本里,不会互相判重(P16.4)', async () => {
+    // 文件夹导入建树之后标题只剩文件名,每个子目录各放一份一样的 README.md 是常态。
+    // 去重键少了 notebook_id 的话,第一份进库、其余全被跳过——那是真丢
+    const token = await bootstrap()
+    const res = await api<{ articles_imported: number; articles_skipped: number }>('/api/import', {
+      method: 'POST', token,
+      body: j({
+        app: 'cfnote', export_version: 1,
+        notebooks: [{ id: 1, name: '根', parent_id: null },
+                    { id: 2, name: '技术', parent_id: 1 }, { id: 3, name: '读书', parent_id: 1 }],
+        articles: [
+          { id: 1, notebook_id: 2, title: 'README', content: '同一份内容' },
+          { id: 2, notebook_id: 3, title: 'README', content: '同一份内容' },
+        ],
+      }),
+    })
+    expect(res.body.ok, res.body.error).toBe(true)
+    expect(res.body.data!.articles_imported).toBe(2)
+    expect(res.body.data!.articles_skipped).toBe(0)
+
+    const rows = await env.DB.prepare("SELECT notebook_id FROM articles WHERE title = 'README'").all<any>()
+    expect((rows.results || []).length).toBe(2)
+    // 同一本里的真重复仍然要跳过——这条不能跟着一起放开
+    const again = await api<{ articles_skipped: number }>('/api/import', {
+      method: 'POST', token,
+      body: j({
+        app: 'cfnote', export_version: 1,
+        notebooks: [{ id: 1, name: '根', parent_id: null }, { id: 2, name: '技术', parent_id: 1 }],
+        articles: [{ id: 1, notebook_id: 2, title: 'README', content: '同一份内容' }],
+      }),
+    })
+    expect(again.body.data!.articles_skipped).toBe(1)
+  })
+
+  it('路径撞上回收站里的笔记本时不复用它,笔记不会一进来就在回收站(P16.4)', async () => {
+    const token = await bootstrap()
+    const gone = await newNotebook(token, '归档')
+    await api(`/api/notebooks/${gone}`, { method: 'DELETE', token })
+
+    await api('/api/import', {
+      method: 'POST', token,
+      body: j({
+        app: 'cfnote', export_version: 1,
+        notebooks: [{ id: 1, name: '归档', parent_id: null }],
+        articles: [{ id: 1, notebook_id: 1, title: '新的', content: '正文' }],
+      }),
+    })
+
+    const art = await env.DB.prepare("SELECT notebook_id FROM articles WHERE title = '新的'").first<{ notebook_id: number }>()
+    expect(art!.notebook_id).not.toBe(gone)
+    const nb = await env.DB.prepare('SELECT deleted_at FROM notebooks WHERE id = ?')
+      .bind(art!.notebook_id).first<{ deleted_at: string | null }>()
+    expect(nb!.deleted_at).toBeNull()
+  })
+
   it('重复导入同一份备份:文章不翻倍,评论也不翻倍', async () => {
     const { token } = await seedEverything()
     const dump = await exportAll(token)

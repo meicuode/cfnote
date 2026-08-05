@@ -16,7 +16,8 @@ import type { Notebook, Article } from '../types'
 import { parseLocation, buildLocation, isEmptyRoute, type MainRoute, type RouteView, type RoutePanel, type FmSub } from '../lib/route'
 import { workspaceOf, entryPane, backPane, canGoBack, paneForRoute, type Pane } from '../lib/pane'
 import { createSingleFlight } from '../lib/singleFlight'
-import { importTitle } from '../lib/importTitle'
+import { planImport, chunkBySize } from '../lib/importPlan'
+import { pathOf } from '../lib/notebookTree'
 import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
@@ -592,32 +593,68 @@ export default function Layout({ token, username, onLogout }: Props) {
     }
   }
 
-  // 批量导入本地文档(.md/.markdown/.txt):复用备份导入接口 + 分批建索引
+  // 批量导入本地文档(.md/.markdown/.txt):复用备份导入接口 + 分批建索引。
+  //
+  // P16.4 起默认把文件夹层级建成笔记本树。做法是把目录翻译成备份里的 notebooks 数组,
+  // 建树全靠服务端 P16.3.1 的**按完整路径匹配**——路径在就复用、不在就建,
+  // 正好是这里要的语义,接口一行没改。
   const [importProgress, setImportProgress] = useState('')
-  const importLocalFiles = async (files: File[]) => {
-    if (!activeNotebook || files.length === 0) return
+  const [importResult, setImportResult] = useState('')
+  const importLocalFiles = async (files: File[], keepTree: boolean) => {
+    if (!activeNotebook || activeNotebook.id < 0 || files.length === 0) return
     setImporting(true)
+    setImportResult('')
     setImportProgress(`正在读取 ${files.length} 个文件...`)
     try {
-      const arts: { id: number; notebook_id: number; title: string; content: string }[] = []
-      for (const f of files) {
-        const content = await f.text()
-        const title = importTitle(f)
-        arts.push({ id: arts.length + 1, notebook_id: 1, title, content })
+      // 目标笔记本要发**整条祖先链**:服务端拿「从根到自己」当键,只发它自己的名字的话,
+      // `技术/前端` 会被当成根上的 `前端` 而对不上,于是在根上另建一本同名的,
+      // 导入的文件全进了那本。这是 P16.3.1 换成路径匹配后引进的回归,一并修在这里
+      const destPath = pathOf(notebooks, activeNotebook.id)
+      // 路径算不出来(侧栏数据还没到 / 这本刚被删)时宁可停下:退回只发名字会走上面那条错路,
+      // 而它的表现是「东西导进去了,但不在你以为的地方」——比报错难查得多
+      if (destPath.length === 0) throw new Error('无法确定目标笔记本的位置，请刷新后重试')
+      const plan = planImport(files, destPath, keepTree)
+      if (plan.articles.length === 0) return
+
+      // 切片上传:一次性塞进一个 POST 时请求体、Worker CPU、D1 batch 三头都顶着上限,
+      // 而整个本地知识库正是这个功能最该扛住的场景。
+      // 每片都带**完整的** notebooks:第一片把树建出来,后面几片按路径复用同一棵,
+      // 路径匹配天生幂等,中途失败重发也不会长出第二棵树。
+      // 正文也按片读,不先把整库读进内存——切片本来就是为了别一次拿那么多
+      const chunks = chunkBySize(plan.articles, (a) => files[a.index].size)
+      let imported = 0
+      let skipped = 0
+      let done = 0
+      for (const part of chunks) {
+        setImportProgress(
+          chunks.length > 1
+            ? `正在导入 ${done + 1}-${done + part.length} / ${plan.articles.length} 篇...`
+            : `正在导入 ${plan.articles.length} 篇文章...`
+        )
+        const articles = []
+        for (const a of part) {
+          articles.push({
+            id: a.index + 1, // 载荷内部编号:这批没有评论要重挂,只需保证不撞
+            notebook_id: a.notebook_id,
+            title: a.title,
+            content: await files[a.index].text(),
+          })
+        }
+        const res = await post<{ articles_imported: number; articles_skipped: number }>('/import', {
+          app: 'cfnote',
+          export_version: 1,
+          notebooks: plan.notebooks,
+          articles,
+        })
+        if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
+        imported += res.data.articles_imported
+        skipped += res.data.articles_skipped
+        done += part.length
       }
-      setImportProgress('正在导入文章...')
-      const res = await post<{ articles_imported: number; articles_skipped: number }>('/import', {
-        app: 'cfnote',
-        export_version: 1,
-        notebooks: [{ id: 1, name: activeNotebook.name }],
-        articles: arts,
-      })
-      if (!res.ok || !res.data) throw new Error(res.error || '导入失败')
-      const { articles_imported } = res.data
 
       // 分批建立向量索引(每批一次独立请求;剩余不再减少说明持续失败,停止)
       let lastRemaining = Infinity
-      while (articles_imported > 0) {
+      while (imported > 0) {
         const r = await post<{ processed: number; remaining: number }>('/reindex', {})
         if (!r.ok || !r.data) break
         if (r.data.remaining === 0 || r.data.remaining >= lastRemaining) break
@@ -625,7 +662,13 @@ export default function Layout({ token, username, onLogout }: Props) {
         setImportProgress(`正在建立向量索引... 剩余 ${r.data.remaining} 篇`)
       }
 
-      setShowImport(false)
+      // 跳过的必须说出来:静默少几篇是这个功能最坏的失败方式。
+      // 全都成功才关掉对话框——有跳过就留在原地,让人看得见那行字
+      if (skipped > 0) {
+        setImportResult(`新增 ${imported} 篇，跳过 ${skipped} 篇（同一笔记本里标题与内容都相同）`)
+      } else {
+        setShowImport(false)
+      }
       loadArticles(activeNotebook)
       loadNotebooks()
     } finally {
@@ -950,9 +993,10 @@ export default function Layout({ token, username, onLogout }: Props) {
         <ImportDialog
           loading={importing}
           progress={importProgress}
+          result={importResult}
           onImport={importArticle}
           onImportFiles={importLocalFiles}
-          onClose={() => !importing && setShowImport(false)}
+          onClose={() => { if (!importing) { setShowImport(false); setImportResult('') } }}
         />
       )}
 
