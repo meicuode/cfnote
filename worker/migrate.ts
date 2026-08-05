@@ -115,6 +115,17 @@ const NOTEBOOK_COLUMNS: Record<string, string> = {
   is_private: 'ALTER TABLE notebooks ADD COLUMN is_private INTEGER DEFAULT 0',
 }
 
+// P16.9 JWT 吊销。签发时把这个值写进 token,鉴权时比对;改密码 +1,于是所有旧 token 当场失效。
+//
+// **退出登录不 bump**:你在手机上退出,不该把桌面也踢下线。只有改密码才表达
+// 「断掉所有旧会话」这个意思——两者是不同的诉求,共用一个开关就没法只做前者。
+//
+// DEFAULT 0 让老库与老 token 天然对得上:老 token 里没有 epoch 字段,
+// 读出来是 undefined,与 0 归一后相等,所以升级后不会把已登录的人全踢出去。
+const USER_COLUMNS: Record<string, string> = {
+  token_epoch: 'ALTER TABLE users ADD COLUMN token_epoch INTEGER DEFAULT 0',
+}
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -166,6 +177,16 @@ async function doEnsure(env: Env): Promise<void> {
     const nbHave = new Set(nbCols.map((r) => r.name))
     for (const [col, sql] of Object.entries(NOTEBOOK_COLUMNS)) {
       if (!nbHave.has(col)) await env.DB.prepare(sql).run()
+    }
+  }
+  // P16.9 users 补 token_epoch。同上:PRAGMA 对不存在的表返回 0 行而不报错,必须判空。
+  // **这一列缺失时鉴权会把所有人挡在外面**(查不到列 → 查询抛错 → fail closed),
+  // 所以它必须在 ensureSchema 里,而不是等哪个接口第一次用到才建
+  const { results: userCols } = await env.DB.prepare('PRAGMA table_info(users)').all<{ name: string }>()
+  if (userCols && userCols.length > 0) {
+    const userHave = new Set(userCols.map((r) => r.name))
+    for (const [col, sql] of Object.entries(USER_COLUMNS)) {
+      if (!userHave.has(col)) await env.DB.prepare(sql).run()
     }
   }
 }

@@ -31,9 +31,11 @@ interface Props {
   token: string
   username: string
   onLogout: () => void
+  /** 改密码后换成新签发的 token(P16.9):旧的已被吊销 */
+  onTokenChange?: (token: string) => void
 }
 
-export default function Layout({ token, username, onLogout }: Props) {
+export default function Layout({ token, username, onLogout, onTokenChange }: Props) {
   const { get, post, put, del } = useApi(token, onLogout)
   // 文件管理共享数据(P11.6):侧栏二级菜单与右侧文件列表同一份 overview / 文件夹操作
   const fm = useFileManager(token)
@@ -1017,6 +1019,7 @@ export default function Layout({ token, username, onLogout }: Props) {
         <SettingsPanel
           token={token}
           focus={settingsFocus}
+          onTokenChange={onTokenChange}
           onClose={() => { setShowSettings(false); setSettingsFocus(null) }}
         />
       )}

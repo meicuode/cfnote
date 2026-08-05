@@ -74,12 +74,60 @@ auth.post('/login', async (c) => {
       return err('用户名或密码错误', 401)
     }
 
-    const token = await createJWT({ uid: user.id, username: user.username }, c.env.JWT_SECRET)
+    const token = await createJWT(
+      { uid: user.id, username: user.username, epoch: user.token_epoch ?? 0 },
+      c.env.JWT_SECRET,
+    )
     // 手滑几次再输对,不该给后面留个半满的窗口
     await rateReset(LOGIN_SCOPE, ip)
 
     return ok({ token, username: user.username })
   } catch (e: any) {
     return err('登录失败: ' + e.message, 500)
+  }
+})
+
+// POST /api/auth/password {old_password, new_password} - 改密码,并吊销所有旧 token(P16.9)
+//
+// 在此之前根本没有改密码这个接口:密码是 /api/init 之后注册时定下的,想换只能去改数据库。
+// 而 token 有 7 天有效期、服务端不存状态,于是「我怀疑 token 泄露了」这件事无法处理——
+// 你能做的只有等它过期。
+//
+// 吊销靠 users.token_epoch:签发时写进 token,鉴权时比对,这里 +1 就让全部旧 token 当场失效。
+// **换密码必然换 salt**,所以旧密码算出来的哈希也不再匹配——两道各自独立。
+auth.post('/password', async (c) => {
+  const me = c.get('user')
+  try {
+    const { old_password, new_password } = await c.req.json<{ old_password: string; new_password: string }>()
+    if (!old_password || !new_password) return err('旧密码和新密码都不能为空')
+    if (new_password.length < 6) return err('新密码至少6个字符')
+    if (old_password === new_password) return err('新密码不能与旧密码相同')
+
+    const user = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(me.id).first<User>()
+    if (!user) return err('用户不存在', 404)
+
+    // 已登录才能走到这里,但仍然要验旧密码:token 被别人拿到时,
+    // 「改掉密码把主人锁在外面」不该是一步就能做到的事。
+    //
+    // 旧密码不对返回 **400 而不是 401**:走到这个 handler 说明中间件已经认过 token,
+    // 会话是有效的,错的是请求体里的一个字段。而且前端 useApi 把所有 401 统一改写成
+    // 「未登录或登录已过期」——用 401 的话,用户打错一个字会看到「登录已过期」,
+    // 而他明明登录着。同一个状态码在一个接口上表达两件事,客户端就分不开了。
+    const oldHash = await hashPassword(old_password, user.salt)
+    if (oldHash !== user.password_hash) return err('旧密码不正确')
+
+    const salt = generateSalt()
+    const hash = await hashPassword(new_password, salt)
+    const epoch = (user.token_epoch ?? 0) + 1
+    await c.env.DB.prepare(
+      'UPDATE users SET password_hash = ?, salt = ?, token_epoch = ? WHERE id = ?'
+    ).bind(hash, salt, epoch, me.id).run()
+
+    // 立刻签一张新 token 一并返回:不给的话用户改完密码,自己手里这张也失效了,
+    // 表现是「改密码成功,然后整个界面开始报未登录」——正确但难看,而且会让人以为改坏了
+    const token = await createJWT({ uid: user.id, username: user.username, epoch }, c.env.JWT_SECRET)
+    return ok({ token, username: user.username })
+  } catch (e: any) {
+    return err('修改密码失败: ' + e.message, 500)
   }
 })

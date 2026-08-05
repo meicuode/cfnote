@@ -23,6 +23,8 @@ interface Props {
   onClose: () => void
   /** 打开时滚到并高亮某一节(目前只有 'files',由文件管理右上角的齿轮传进来) */
   focus?: 'files' | null
+  /** 改密码后换成新签发的 token(P16.9) */
+  onTokenChange?: (token: string) => void
 }
 
 /** GET /api/backups 的返回:列表与配置一次拉完,不为一个开关多打一趟请求 */
@@ -38,7 +40,7 @@ interface BackupInfo {
   files: { name: string; size: number; created_at: string }[]
 }
 
-export default function SettingsPanel({ token, onClose, focus }: Props) {
+export default function SettingsPanel({ token, onClose, focus, onTokenChange }: Props) {
   const api = useApi(token)
   const [selected, setSelected] = useState('')
   const [jinaKey, setJinaKey] = useState('')
@@ -151,6 +153,35 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
       setError(res.error || '保存失败')
     }
     setSaving(false)
+  }
+
+  // P16.9 改密码。改完会吊销所有旧 token(包括自己手里这张),接口直接返回一张新的
+  const [pwOld, setPwOld] = useState('')
+  const [pwNew, setPwNew] = useState('')
+  const [pwNew2, setPwNew2] = useState('')
+  const [pwBusy, setPwBusy] = useState(false)
+  const [pwMsg, setPwMsg] = useState('')
+  const [pwErr, setPwErr] = useState('')
+
+  const changePassword = async () => {
+    setPwErr('')
+    setPwMsg('')
+    // 两次确认在前端拦:这是打错字的问题,不值得占一次请求
+    if (pwNew !== pwNew2) { setPwErr('两次输入的新密码不一致'); return }
+    if (pwNew.length < 6) { setPwErr('新密码至少 6 个字符'); return }
+    setPwBusy(true)
+    try {
+      const res = await api.post<{ token: string }>('/auth/password', {
+        old_password: pwOld, new_password: pwNew,
+      })
+      if (!res.ok || !res.data) { setPwErr(res.error || '修改失败'); return }
+      // 必须换掉本地 token,否则接下来每个请求都是 401——旧的已经被吊销了
+      onTokenChange?.(res.data.token)
+      setPwOld(''); setPwNew(''); setPwNew2('')
+      setPwMsg('密码已修改，其他设备上的登录已全部失效')
+    } finally {
+      setPwBusy(false)
+    }
   }
 
   // 分批触发向量索引直到没有剩余;剩余不再减少说明持续失败,停止。返回失败信息列表。
@@ -749,6 +780,50 @@ export default function SettingsPanel({ token, onClose, focus }: Props) {
                   这四种情况一律不注入：管理端页面、布局预览 <code>?preview=1</code>、私密分享页 <code>/blog/share/…</code>、以及带 <code>?nojs=1</code> 打开时——
                   最后一个是逃生阀，脚本写崩了用它打开博客页再回来改。主题的导入导出不会携带这段代码。
                 </p>
+              </div>
+
+              {/* 账号密码(P16.9)。放在备份之前:两者都是账号级的事,而这一节更要紧 */}
+              <div>
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">账号密码</h3>
+                <p className="text-[11px] text-gray-400 mb-2">
+                  改完密码，<strong>所有设备上已登录的会话都会立刻失效</strong>，这台设备会自动换成新的登录凭据。
+                  怀疑登录凭据泄露时，改一次密码就能把它们全部断掉。
+                </p>
+                <div className="space-y-2">
+                  <input
+                    type="password"
+                    value={pwOld}
+                    onChange={(e) => { setPwOld(e.target.value); setPwErr(''); setPwMsg('') }}
+                    placeholder="当前密码"
+                    autoComplete="current-password"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-emerald-400"
+                  />
+                  <input
+                    type="password"
+                    value={pwNew}
+                    onChange={(e) => { setPwNew(e.target.value); setPwErr(''); setPwMsg('') }}
+                    placeholder="新密码(至少 6 个字符)"
+                    autoComplete="new-password"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-emerald-400"
+                  />
+                  <input
+                    type="password"
+                    value={pwNew2}
+                    onChange={(e) => { setPwNew2(e.target.value); setPwErr(''); setPwMsg('') }}
+                    placeholder="再输一次新密码"
+                    autoComplete="new-password"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+                {pwErr && <p className="text-[11px] text-red-500 mt-1.5">{pwErr}</p>}
+                {pwMsg && <p className="text-[11px] text-emerald-600 mt-1.5">{pwMsg}</p>}
+                <button
+                  onClick={changePassword}
+                  disabled={pwBusy || !pwOld || !pwNew || !pwNew2}
+                  className="mt-2 px-3 py-1.5 text-xs rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {pwBusy ? '修改中…' : '修改密码并登出其他设备'}
+                </button>
               </div>
 
               {/* 数据备份 */}

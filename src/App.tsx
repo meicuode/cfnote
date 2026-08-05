@@ -87,5 +87,15 @@ function MainApp() {
   if (state === 'setup') return <SetupPage onComplete={handleSetupComplete} jwtMissing={jwtMissing} />
   if (state === 'login') return <LoginPage onLogin={(t, u) => { login(t, u); setState('app') }} jwtMissing={jwtMissing} />
 
-  return <Layout token={token!} username={username!} onLogout={() => { logout(); setState('login') }} />
+  return (
+    <Layout
+      token={token!}
+      username={username!}
+      onLogout={() => { logout(); setState('login') }}
+      // 改密码会吊销所有旧 token(P16.9),包括自己手里这张。复用 login() 是因为它
+      // 顺带同步了附件读取用的 cfnote_t cookie——只换 localStorage 的话,
+      // 页面里的 <img> 会继续拿着已失效的 cookie,私有附件全变成裂图
+      onTokenChange={(t) => login(t, username!)}
+    />
+  )
 }

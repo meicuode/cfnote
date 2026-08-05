@@ -19,6 +19,8 @@ export interface User {
   username: string
   password_hash: string
   salt: string
+  /** P16.9 token 世代:改密码 +1,旧 token 因 epoch 不匹配而失效。老库为 NULL,按 0 处理 */
+  token_epoch?: number | null
   created_at: string
 }
 

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
+  token_epoch INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
 

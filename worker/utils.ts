@@ -206,6 +206,9 @@ export async function createJWT(payload: Record<string, unknown>, secret: string
   if (!secret) throw new Error('JWT_SECRET 未配置，请在 Worker 的 Settings → Variables and Secrets 中添加（类型选 Secret）')
   const header = { alg: 'HS256', typ: 'JWT' }
   const now = Math.floor(Date.now() / 1000)
+  // P16.9:改密码时 users.token_epoch +1,鉴权时比对 payload.epoch === row.token_epoch,
+  // 于是旧 token 因不匹配而失效。epoch 是 payload 的一部分,签进签名里——不能靠改 JWT_SECRET
+  // 来吊销(那会让注册时签发的那张、以及所有人手里的全部失效,单用户的就直接把自己锁在外面了)
   const fullPayload = { ...payload, iat: now, exp: now + 7 * 24 * 3600 }
   const segments = [b64url(JSON.stringify(header)), b64url(JSON.stringify(fullPayload))]
   const data = segments.join('.')
@@ -407,11 +410,37 @@ export async function ragSearch(
 
 // ---- Auth Middleware Helper ----
 
+/**
+ * token 里的 epoch 与库里的是否还对得上(P16.9)。
+ *
+ * **fail closed:查不到用户、或查询本身出错,一律当作无效。** 这跟 P16.6 的限流
+ * 刻意相反(那边拿不到缓存就放行),两个方向都是想清楚的:
+ *   - 限流失败还放行,损失的是「挡不住暴力破解」,但保住了「主人永远进得来」——
+ *     单用户系统没有第二条路进去,把自己锁在门外是不可接受的。
+ *   - 这里失败就拒绝,看着更狠,但 **D1 挂了整个应用本来就用不了**(所有数据都在 D1),
+ *     fail closed 不额外损失任何可用性,却能保证被吊销的 token 不会因为一次抖动就复活。
+ * 「安全方向的默认」不是口号,得看那个方向具体损失什么。
+ *
+ * 老 token 没有 epoch 字段、老库 token_epoch 为 NULL,两边都归一到 0 后相等——
+ * 所以这一批上线不会把已经登录的人踢出去,不必为老 token 另写兼容分支。
+ */
+async function epochValid(env: Env, uid: number, tokenEpoch: unknown): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare('SELECT token_epoch FROM users WHERE id = ?')
+      .bind(uid).first<{ token_epoch: number | null }>()
+    if (!row) return false // 用户被删了,token 不该还能用
+    return (row.token_epoch ?? 0) === (typeof tokenEpoch === 'number' ? tokenEpoch : 0)
+  } catch {
+    return false
+  }
+}
+
 export async function getUser(request: Request, env: Env): Promise<{ id: number; username: string } | null> {
   const auth = request.headers.get('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
   const payload = await verifyJWT(auth.slice(7), env.JWT_SECRET)
   if (!payload || !payload.uid) return null
+  if (!(await epochValid(env, payload.uid as number, payload.epoch))) return null
   return { id: payload.uid as number, username: payload.username as string }
 }
 
@@ -425,5 +454,8 @@ export async function getUserLoose(request: Request, env: Env): Promise<{ id: nu
   if (!m) return null
   const payload = await verifyJWT(m[1], env.JWT_SECRET)
   if (!payload || !payload.uid) return null
+  // cookie 这条路也要过 epoch:漏了它,改完密码旧 token 仍能靠 cookie 读到全部附件——
+  // 而附件里正是截图、扫描件这类最私密的东西
+  if (!(await epochValid(env, payload.uid as number, payload.epoch))) return null
   return { id: payload.uid as number, username: payload.username as string }
 }
