@@ -185,6 +185,31 @@ export interface SearchResult {
   match?: 'vector' | 'keyword' | 'both'
 }
 
+/**
+ * 默认搜索的一条结果(P17.5)。与 SearchResult 分开是因为它们的性质不同:
+ * SearchResult 是 AI 对话的引用来源(一条 = 一个切片),这里一条 = 一篇文章,
+ * 底下挂若干片段。硬合并成一个类型会让「chunk_text 到底是哪一段」永远含糊。
+ */
+export interface SearchHit {
+  article_id: number
+  article_title: string
+  notebook_id: number
+  notebook_name: string
+  /** exact = 正文/标题里有你搜的词;semantic = 只是意思相近 */
+  tier: 'exact' | 'semantic'
+  /** 最高切片相似度。exact 层可能为 0(向量腿没召回它) */
+  score: number
+  snippets: { text: string; kind: 'exact' | 'semantic' }[]
+  /** 还有几处匹配没展示 */
+  more: number
+}
+
+export interface SearchResponse {
+  results: SearchHit[]
+  /** 服务端切好的查询词,前端拿它做高亮(不重复实现一遍切词) */
+  terms: string[]
+}
+
 export interface AiSearchResult {
   answer: string
   sources: SearchResult[]
