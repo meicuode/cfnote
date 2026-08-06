@@ -124,6 +124,18 @@ const NOTEBOOK_COLUMNS: Record<string, string> = {
 // 读出来是 undefined,与 0 归一后相等,所以升级后不会把已登录的人全踢出去。
 const USER_COLUMNS: Record<string, string> = {
   token_epoch: 'ALTER TABLE users ADD COLUMN token_epoch INTEGER DEFAULT 0',
+  // P17.2 恢复码。忘了密码时唯一的自助出路——在此之前只能去 Cloudflare 控制台
+  // 删掉 users 那一行再重新注册,而那要同时清 sqlite_sequence,否则新用户拿到 id=2、
+  // 所有笔记还挂在 user_id=1 上,表现是「笔记全没了」。
+  //
+  // **明文存,而且刻意存在 users 表上**:buildExportPayload 导的是 notebooks/articles/
+  // conversations/messages/settings/files/folders/comments/versions——没有 users 表。
+  // 所以放这儿是结构性地不进备份,而不是靠「记得维护 SENSITIVE_PATTERNS 那条正则」;
+  // 放 settings 里的话,key 名不含 key/token/secret 就会随每一份备份 JSON 下载到本地。
+  //
+  // 老库补出来是 NULL,由 /api/status 提示去设置里生成一个,不自动补——
+  // 迁移里塞随机值意味着用户从不知道它存在,而这个码只有抄下来才有意义。
+  recovery_code: 'ALTER TABLE users ADD COLUMN recovery_code TEXT',
 }
 
 export function ensureSchema(env: Env): Promise<void> {

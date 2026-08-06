@@ -21,6 +21,8 @@ export interface User {
   salt: string
   /** P16.9 token 世代:改密码 +1,旧 token 因 epoch 不匹配而失效。老库为 NULL,按 0 处理 */
   token_epoch?: number | null
+  /** P17.2 恢复码(明文,128 bit hex)。老库补出来是 NULL,由设置页生成 */
+  recovery_code?: string | null
   created_at: string
 }
 

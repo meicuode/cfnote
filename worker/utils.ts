@@ -1,4 +1,5 @@
 import type { Env } from '../src/types'
+import { RECOVERY_CODE_BYTES } from '../src/lib/recoveryCode'
 
 // ---- Allowed LLM Models ----
 
@@ -196,6 +197,20 @@ export async function hashPassword(password: string, salt: string): Promise<stri
 
 export function generateSalt(): string {
   const buf = new Uint8Array(16)
+  crypto.getRandomValues(buf)
+  return bufToHex(buf)
+}
+
+/**
+ * 恢复码(P17.2):128 bit 随机,hex 存明文。
+ *
+ * **不哈希**,因为它要能被人读出来——设置页要显示、忘了密码时还要能从 D1 控制台
+ * 直接复制。哈希之后这两件事都做不了,而恢复码的全部价值就在这两件事上。
+ * 代价是能读库的人能重置密码,但那个人本来就能改库;换来的是不必为了
+ * 「重置密码」去删用户行(见 src/lib/recoveryCode.ts 顶上那段)。
+ */
+export function generateRecoveryCode(): string {
+  const buf = new Uint8Array(RECOVERY_CODE_BYTES)
   crypto.getRandomValues(buf)
   return bufToHex(buf)
 }

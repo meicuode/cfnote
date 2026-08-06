@@ -9,6 +9,7 @@ import {
   parseInterval, parseKeep, retentionSpan, type BackupInterval,
 } from '../lib/backupPlan'
 import { formatBytes } from '../lib/format'
+import { formatRecoveryCode } from '../lib/recoveryCode'
 import type { Settings, ModelInfo } from '../types'
 
 const MODELS: ModelInfo[] = [
@@ -180,6 +181,34 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
   const [pwBusy, setPwBusy] = useState(false)
   const [pwMsg, setPwMsg] = useState('')
   const [pwErr, setPwErr] = useState('')
+
+  // P17.2 恢复码。进「账号」那一类时才拉——它是明文凭据,没打开这一页就不该出现在
+  // 任何一次响应里,而设置面板初始化时那两个请求是每次打开都发的
+  const [recovery, setRecovery] = useState<string | null>(null)
+  const [recoveryShown, setRecoveryShown] = useState(false)
+  const [recoveryBusy, setRecoveryBusy] = useState(false)
+  const [recoveryAsk, setRecoveryAsk] = useState(false)
+
+  useEffect(() => {
+    if (cat !== 'account' || recovery !== null) return
+    api.get<{ recovery_code: string }>('/auth/recovery-code').then((r) => {
+      if (r.ok && r.data) setRecovery(r.data.recovery_code)
+    })
+  }, [cat, api, recovery])
+
+  const regenRecovery = async () => {
+    setRecoveryBusy(true)
+    try {
+      const r = await api.post<{ recovery_code: string }>('/auth/recovery-code', {})
+      if (r.ok && r.data) {
+        setRecovery(r.data.recovery_code)
+        setRecoveryShown(true)   // 换完必须看得见,否则这次操作等于把旧的作废了却没给新的
+      }
+      setRecoveryAsk(false)
+    } finally {
+      setRecoveryBusy(false)
+    }
+  }
 
   const changePassword = async () => {
     setPwErr('')
@@ -910,6 +939,85 @@ export default function SettingsPanel({ token, onClose, focus, onTokenChange }: 
                 >
                   {pwBusy ? '修改中…' : '修改密码并登出其他设备'}
                 </button>
+              </div>
+
+              {/* 恢复码(P17.2)。忘了密码时唯一的自助出路 */}
+              <div className="pt-4 border-t border-gray-100">
+                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">恢复码</h3>
+                <p className="text-[11px] text-gray-400 mb-2 leading-relaxed">
+                  忘记密码时，在登录页点「忘记密码」，用它就能重置。
+                  <strong>请抄下来收好</strong>——没有它的话，只能去 Cloudflare 控制台改数据库。
+                </p>
+                {recovery === null ? (
+                  <p className="text-[11px] text-gray-400">读取中…</p>
+                ) : recovery === '' ? (
+                  // 老库补出来是 NULL:迁移里不塞随机值,因为那样用户从不知道它存在,
+                  // 而这个码只有抄下来才有意义
+                  <div>
+                    <p className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mb-2">
+                      ⚠️ 还没有恢复码（这个库建于该功能之前）。生成一个并抄下来。
+                    </p>
+                    <button
+                      onClick={regenRecovery}
+                      disabled={recoveryBusy}
+                      className="px-3 py-1.5 text-xs rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40 transition-colors"
+                    >
+                      {recoveryBusy ? '生成中…' : '生成恢复码'}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* 默认遮住:设置面板常在别人也看得见的屏幕上打开过。
+                        但遮的是「默认」不是「能力」——它的用途就是让人抄下来,
+                        像 API Key 那样永远只给后四位等于没有 */}
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 min-w-0 font-mono text-xs bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2 tracking-wider select-all break-all">
+                        {recoveryShown ? formatRecoveryCode(recovery) : '•'.repeat(8) + '-' + '•'.repeat(8) + '-' + '•'.repeat(8) + '-' + '•'.repeat(8)}
+                      </code>
+                      <button
+                        onClick={() => setRecoveryShown((v) => !v)}
+                        className="text-xs text-emerald-600 hover:underline shrink-0"
+                      >
+                        {recoveryShown ? '隐藏' : '显示'}
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <button
+                        onClick={() => navigator.clipboard?.writeText(formatRecoveryCode(recovery))}
+                        className="text-xs text-emerald-600 hover:underline"
+                      >
+                        复制
+                      </button>
+                      <button
+                        onClick={() => setRecoveryAsk(true)}
+                        disabled={recoveryBusy}
+                        className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40"
+                      >
+                        重新生成
+                      </button>
+                    </div>
+                    {recoveryAsk && (
+                      <div className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                        <p className="mb-2">
+                          换一个新的？<b>现在这个会当场作废</b>——如果你把它抄在了纸上或密码管理器里，记得一并更新。
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={regenRecovery}
+                            disabled={recoveryBusy}
+                            className="px-2.5 py-1 rounded-lg bg-gray-800 text-white hover:bg-gray-700 disabled:opacity-40"
+                          >
+                            {recoveryBusy ? '生成中…' : '确认更换'}
+                          </button>
+                          <button onClick={() => setRecoveryAsk(false)} className="text-gray-500 hover:text-gray-700">取消</button>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+                      用掉一次就会自动换成新的，重置后记得回这里抄新的。改密码<b>不会</b>动它。
+                    </p>
+                  </>
+                )}
               </div>
             </>
           )}

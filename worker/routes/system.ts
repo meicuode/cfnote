@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
   token_epoch INTEGER DEFAULT 0,
+  recovery_code TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 

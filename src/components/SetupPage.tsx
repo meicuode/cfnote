@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { formatRecoveryCode } from '../lib/recoveryCode'
 
 interface Props {
   onComplete: (token: string, username: string) => void
@@ -12,6 +13,9 @@ export default function SetupPage({ onComplete, jwtMissing }: Props) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPwd, setConfirmPwd] = useState('')
+  // P17.2:注册就给恢复码,摆出来让人抄下来再放行进应用
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [loginData, setLoginData] = useState<{ token: string; username: string } | null>(null)
 
   const handleInit = async () => {
     setLoading(true)
@@ -53,7 +57,9 @@ export default function SetupPage({ onComplete, jwtMissing }: Props) {
       const loginJson = await loginRes.json() as any
       if (!loginJson.ok) throw new Error(loginJson.error)
 
-      onComplete(loginJson.data.token, loginJson.data.username)
+      // 先把恢复码摆出来,点了「我记下了」才进应用
+      setRecoveryCode(regJson.data.recovery_code || '')
+      setLoginData({ token: loginJson.data.token, username: loginJson.data.username })
     } catch (e: any) {
       setError(e.message)
     } finally {
@@ -83,7 +89,30 @@ export default function SetupPage({ onComplete, jwtMissing }: Props) {
           </div>
         )}
 
-        {step === 'welcome' && (
+        {/* 注册成功:先把恢复码交出去再放行 */}
+        {recoveryCode && loginData ? (
+          <div className="space-y-4">
+            <div className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+              注册成功！在进入之前，<b>请务必抄下这个恢复码</b>。
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">你的恢复码</label>
+              <code className="block w-full text-center font-mono text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-3 tracking-wider select-all break-all">
+                {formatRecoveryCode(recoveryCode)}
+              </code>
+              <div className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mt-2 leading-relaxed space-y-1">
+                <p>⚠️ <b>这是你忘记密码时唯一的自助出路</b>。不抄下来的话,下次忘了密码就只能去 Cloudflare 控制台改数据库。</p>
+                <p>💡 以后可以在「设置 → 账号」里查看或换一个。</p>
+              </div>
+            </div>
+            <button
+              onClick={() => onComplete(loginData.token, loginData.username)}
+              className="w-full bg-emerald-500 text-white rounded-lg px-4 py-3 font-medium hover:bg-emerald-600 transition-colors"
+            >
+              我记下了，进入
+            </button>
+          </div>
+        ) : step === 'welcome' ? (
           <div className="text-center">
             <p className="text-gray-600 mb-6">
               欢迎使用 CFNote！这是您第一次使用，需要先初始化系统并创建账户。
@@ -96,9 +125,9 @@ export default function SetupPage({ onComplete, jwtMissing }: Props) {
               {loading ? '初始化中...' : '初始化系统'}
             </button>
           </div>
-        )}
+        ) : null}
 
-        {step === 'register' && (
+        {step === 'register' && !recoveryCode && (
           <div>
             <p className="text-gray-600 mb-6 text-center">系统已就绪，请创建您的账户</p>
             <div className="space-y-4">

@@ -23,7 +23,7 @@ import type { Env } from '../src/types'
 const app = new Hono<AppEnv>()
 
 // Auth middleware: skip for public routes, enforce JWT for everything else
-const PUBLIC_ROUTES = ['/api/status', '/api/init', '/api/auth/login', '/api/auth/register']
+const PUBLIC_ROUTES = ['/api/status', '/api/init', '/api/auth/login', '/api/auth/register', '/api/auth/recover']
 
 app.use('/api/*', async (c, next) => {
   // 幂等列迁移:memoized,每个 isolate 只查一次;失败静默(表未初始化时由 /api/init 建表)
