@@ -68,11 +68,12 @@ export interface UseFileManager {
   submitFolderDelete: () => Promise<number | null>
   submitFolderMove: (parentId: number | null) => Promise<void>
   /**
-   * 把一批文件移进某个文件夹(P13.3 拖拽落地)。放在这个 hook 里而不是 FileManager 里,
-   * 是因为拖起来的是右侧列表的行、落下的是侧栏的目录节点,两个组件只共享这个 hook。
-   * 成功后 bump tick,右侧列表据此重拉。
+   * 把一批文件移进某个文件夹(P13.3 拖拽落地)。返回**是否真的移了**——
+   * needs_force 走确认框那条路时返回 false,调用方不该把行拿掉(P17.4)。
    */
-  moveFilesToFolder: (folderId: number | null, ids: number[]) => Promise<void>
+  moveFilesToFolder: (folderId: number | null, ids: number[]) => Promise<boolean>
+  /** 正在移动中的文件 id:调用方据此把这几行置灰,给拖拽一个即时反馈(P17.4) */
+  movingIds: Set<number>
   /**
    * 「移进私密文件夹会让这些公开文章的图失效」确认框(P14.2)。
    * 状态放在 hook 里而不是某个组件里,是因为触发它的三条路径分属两棵组件树:
@@ -102,6 +103,7 @@ export function useFileManager(token: string): UseFileManager {
   const [folderDelete, setFolderDelete] = useState<FolderRow | null>(null)
   const [folderMove, setFolderMove] = useState<FolderNode | null>(null)
   const [draggingFiles, setDraggingFiles] = useState(false)
+  const [movingIds, setMovingIds] = useState<Set<number>>(new Set())
   const [pubWarn, setPubWarn] = useState<{ files: PubRefWarn[]; onConfirm: () => void } | null>(null)
 
   const api = useCallback(
@@ -125,8 +127,8 @@ export function useFileManager(token: string): UseFileManager {
     setTimeout(() => setNotice(''), 3000)
   }, [])
 
-  const moveFilesToFolder = useCallback(async (folderId: number | null, ids: number[]) => {
-    if (ids.length === 0) return
+  const moveFilesToFolder = useCallback(async (folderId: number | null, ids: number[]): Promise<boolean> => {
+    if (ids.length === 0) return false
     const post = (force: boolean) => api('/api/fm/files/batch', {
       method: 'POST',
       body: JSON.stringify({ op: 'move', ids, folder_id: folderId, force }),
@@ -137,22 +139,38 @@ export function useFileManager(token: string): UseFileManager {
       await reloadOverview()
     }
 
-    const j = await post(false)
-    if (!j?.ok) return flash(j?.error || '移动失败')
-    // 落点是私密文件夹、而拖的文件正被公开文章引用:先确认再移(P14.2)
-    if (j.data?.needs_force) {
-      setPubWarn({
-        files: j.data.public_refs,
-        onConfirm: async () => {
-          setPubWarn(null)
-          const again = await post(true)
-          if (!again?.ok) return flash(again?.error || '移动失败')
-          await done(again.data || {})
-        },
-      })
-      return
+    // 标记「正在移动」:调用方据此把这几行立刻置灰(P17.4)。
+    // 在此之前,拖完到列表刷新之间没有任何反馈,网络一慢就像没点动
+    setMovingIds(new Set(ids))
+    try {
+      const j = await post(false)
+      if (!j?.ok) { flash(j?.error || '移动失败'); return false }
+      // 落点是私密文件夹、而拖的文件正被公开文章引用:先确认再移(P14.2)。
+      // 这条路上**还没有移动**,所以要把置灰撤掉——否则确认框弹着,
+      // 底下几行灰着,看着像已经移走了
+      if (j.data?.needs_force) {
+        setMovingIds(new Set())
+        setPubWarn({
+          files: j.data.public_refs,
+          onConfirm: async () => {
+            setPubWarn(null)
+            setMovingIds(new Set(ids))
+            try {
+              const again = await post(true)
+              if (!again?.ok) { flash(again?.error || '移动失败'); return }
+              await done(again.data || {})
+            } finally {
+              setMovingIds(new Set())
+            }
+          },
+        })
+        return false
+      }
+      await done(j.data || {})
+      return true
+    } finally {
+      setMovingIds(new Set())
     }
-    await done(j.data || {})
   }, [api, flash, reloadOverview])
 
   const submitFolderCreate = useCallback(async () => {
@@ -223,7 +241,7 @@ export function useFileManager(token: string): UseFileManager {
     folderRename, setFolderRename, folderRenameVal, setFolderRenameVal,
     folderDelete, setFolderDelete, folderMove, setFolderMove,
     submitFolderCreate, submitFolderRename, submitFolderDelete, submitFolderMove,
-    moveFilesToFolder,
+    moveFilesToFolder, movingIds,
     pubWarn, setPubWarn,
     draggingFiles, setDraggingFiles,
   }

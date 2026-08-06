@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, lazy, Suspense, type ReactNode } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import {
-  buildFolderTree, collectPrivateIds, childFolders, folderPath, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS,
+  buildFolderTree, collectPrivateIds, childFolders, folderPath, movedOutOfView, fmtSize, fmtRemaining, previewKind, EXPIRY_PRESETS,
   nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, FM_CHECKBOX_KEY, menuPosition,
   type FolderNode, type FolderRow,
 } from '../lib/fmUtils'
@@ -159,9 +159,11 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
     setFiles(j?.ok ? j.data.files : [])
   }, [api, view, category, qDebounced])
 
-  // overview 由 Layout 在进入文件管理时统一加载(侧栏二级菜单与这里共用同一份)
-  // fm.tick:侧栏做完文件夹移动等结构性改动后自增,这里据此重拉文件
-  useEffect(() => { setFiles(null); loadFiles() }, [loadFiles, fm.tick])
+  // 换视图要清空再拉(那是另一份列表,留着上一屏会串)。
+  // 但 fm.tick 只是「结构变了,对个账」——**不能清空**:清了整个列表会闪成一个
+  // 加载圈,而拖拽移动每次都会 bump tick,于是每拖一次全表白一下(P17.4 修)
+  useEffect(() => { setFiles(null); loadFiles() }, [loadFiles])
+  useEffect(() => { if (fm.tick > 0) loadFiles() }, [fm.tick])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const t = setTimeout(() => setQDebounced(q.trim()), 300)
     return () => clearTimeout(t)
@@ -543,7 +545,18 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
       e.preventDefault()
       setDropOn(null)
       const ids = dragIdsFrom(e)
-      if (ids.length > 0) fm.moveFilesToFolder(folderId, ids)
+      if (ids.length === 0) return
+      // 落点就是当前这一层:什么都不用做。不挡的话会白发一次请求,
+      // 而且那几行会闪一下灰再变回来,像出了错
+      if (view.kind === 'folder' && folderId === (view.id ?? null)) return
+      void fm.moveFilesToFolder(folderId, ids).then((moved) => {
+        // 立刻把离开本视图的那几行拿掉,不等重拉(P17.4)。
+        // 服务端那趟仍在跑,tick 回来时 loadFiles 会对账
+        if (moved && movedOutOfView(view, folderId)) {
+          setFiles((cur) => (cur ? cur.filter((f) => !ids.includes(f.id)) : cur))
+          setSel((cur) => { const n = new Set(cur); ids.forEach((i) => n.delete(i)); return n })
+        }
+      })
     },
   })
 
@@ -859,17 +872,22 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                       </div>
                     </div>
                   ))}
-                  {files.map((f) => (
+                  {files.map((f) => {
+                    // 正在移动中(P17.4):置灰 + 不再响应点击/拖拽。
+                    // 拖完到列表对上账之间此前完全没有反馈,网络一慢就像没点动
+                    const moving = fm.movingIds.has(f.id)
+                    return (
                     <div
                       key={f.id}
-                      draggable
+                      draggable={!moving}
                       onDragStart={(e) => onRowDragStart(f, e)}
                       onDragEnd={onRowDragEnd}
-                      onClick={(e) => clickRow(f, e)}
-                      onDoubleClick={() => openPreview(f)}
-                      onContextMenu={(e) => onRowContextMenu(f, e)}
-                      className={`px-3 lg:px-4 py-2 flex items-center gap-3 group select-none cursor-default ${
-                        sel.has(f.id) ? 'bg-emerald-100/70' : 'hover:bg-gray-50/70'
+                      onClick={(e) => { if (!moving) clickRow(f, e) }}
+                      onDoubleClick={() => { if (!moving) openPreview(f) }}
+                      onContextMenu={(e) => { if (moving) { e.preventDefault(); return } onRowContextMenu(f, e) }}
+                      className={`px-3 lg:px-4 py-2 flex items-center gap-3 group select-none cursor-default transition-opacity ${
+                        moving ? 'opacity-40 pointer-events-none'
+                        : sel.has(f.id) ? 'bg-emerald-100/70' : 'hover:bg-gray-50/70'
                       }`}
                     >
                       {withCheckbox && (
@@ -973,7 +991,8 @@ export default function FileManager({ token, onClose, view, onChangeView, fm, on
                         </button>
                       </div>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>

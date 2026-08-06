@@ -89,6 +89,32 @@ export function folderPath(rows: FolderRow[], id: number | null): FolderRow[] {
   return out
 }
 
+/**
+ * 把文件移进 target 目录之后,它还留在当前视图里吗(P17.4)。
+ *
+ * 拖拽移动要立刻把行拿掉才不显得卡,但**不是每个视图移完都会少一行**:
+ * 在「全部文件」里换个目录,它还在;在「笔记附件」里换目录也不影响引用关系。
+ * 判错的两种后果都难看——该消失的没消失(还是要等网络),不该消失的消失了
+ * (行凭空少一个,几秒后又自己回来)。
+ */
+export type FmViewLike =
+  | { kind: 'all' }
+  | { kind: 'unref' }
+  | { kind: 'notebook'; id: number | null }
+  | { kind: 'folder'; id: number | null }
+
+export function movedOutOfView(view: FmViewLike, target: number | null): boolean {
+  switch (view.kind) {
+    // 目录视图:落点不是当前这一层就会离开
+    case 'folder': return target !== (view.id ?? null)
+    // 未引用 = folder_id IS NULL 且无人引用;归进任何目录就不再满足
+    case 'unref': return target !== null
+    // 这两个与 folder_id 无关:移动改不了「存在」与「被谁引用」
+    case 'all':
+    case 'notebook': return false
+  }
+}
+
 /** 分享有效期档位(seconds 为 null 表示永久) */
 export const EXPIRY_PRESETS: { label: string; seconds: number | null }[] = [
   { label: '1 小时', seconds: 3600 },

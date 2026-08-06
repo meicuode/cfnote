@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildFolderTree, collectPrivateIds, childFolders, folderPath, fmtSize, fmtRemaining, previewKind, copyName,
+  buildFolderTree, collectPrivateIds, childFolders, folderPath, movedOutOfView, fmtSize, fmtRemaining, previewKind, copyName,
   nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, menuPosition,
 } from '../src/lib/fmUtils'
 
@@ -130,6 +130,35 @@ describe('folderPath(P17.3 面包屑)', () => {
   it('成环时不死循环', () => {
     const rows = [{ id: 1, name: '甲', parent_id: 2 }, { id: 2, name: '乙', parent_id: 1 }]
     expect(folderPath(rows, 1).map((f) => f.name)).toEqual(['乙', '甲'])
+  })
+})
+
+describe('movedOutOfView(P17.4 拖拽后要不要立刻把行拿掉)', () => {
+  // 判错的两种后果都难看:该消失的没消失(还是要等网络,等于没优化),
+  // 不该消失的消失了(行凭空少一个,几秒后自己又回来)
+  it('目录视图:落点不是当前这一层就会离开', () => {
+    expect(movedOutOfView({ kind: 'folder', id: 3 }, 5)).toBe(true)
+    expect(movedOutOfView({ kind: 'folder', id: 3 }, null)).toBe(true)
+    expect(movedOutOfView({ kind: 'folder', id: null }, 5)).toBe(true)
+  })
+
+  it('目录视图:落点就是当前这一层则留下', () => {
+    expect(movedOutOfView({ kind: 'folder', id: 3 }, 3)).toBe(false)
+    // 根层:id 与 target 都是 null
+    expect(movedOutOfView({ kind: 'folder', id: null }, null)).toBe(false)
+  })
+
+  it('未引用:归进任何目录就不再满足 folder_id IS NULL', () => {
+    expect(movedOutOfView({ kind: 'unref' }, 5)).toBe(true)
+    expect(movedOutOfView({ kind: 'unref' }, null)).toBe(false)
+  })
+
+  it('全部文件 / 笔记附件:换目录不影响「存在」与「被谁引用」,一律留下', () => {
+    // 这两个视图里乐观删行是错的——文件还在,几秒后会自己长回来
+    expect(movedOutOfView({ kind: 'all' }, 5)).toBe(false)
+    expect(movedOutOfView({ kind: 'all' }, null)).toBe(false)
+    expect(movedOutOfView({ kind: 'notebook', id: 7 }, 5)).toBe(false)
+    expect(movedOutOfView({ kind: 'notebook', id: null }, null)).toBe(false)
   })
 })
 
