@@ -17,12 +17,16 @@ export type RouteView =
 
 export type RoutePanel = 'files' | 'settings' | 'stats' | 'logs' | 'blog' | 'comments' | 'layout' | null
 
-/** 文件管理子视图(P11.6):侧栏二级菜单选中项;名字不入 URL,渲染时从 overview 现取 */
+/**
+ * 文件管理子视图(P11.6):侧栏二级菜单选中项;名字不入 URL,渲染时从 overview 现取。
+ * P17.3 起 folder / notebook 的 id 可为 null(根层 / 不按笔记本筛),
+ * 分别写成 ?fm=folder 与 ?fm=nb。
+ */
 export type FmSub =
   | { kind: 'all' }
   | { kind: 'unref' }
-  | { kind: 'notebook'; id: number }
-  | { kind: 'folder'; id: number }
+  | { kind: 'notebook'; id: number | null }
+  | { kind: 'folder'; id: number | null }
 
 export interface MainRoute {
   view: RouteView
@@ -51,10 +55,15 @@ function decode(seg: string): string {
   }
 }
 
-/** 解析 ?fm= :unref / nb:<id> / folder:<id>;其余(含 all 与非法值)→ null */
+/**
+ * 解析 ?fm= :unref / nb / nb:<id> / folder / folder:<id>;其余(含 all 与非法值)→ null。
+ * 不带 :<id> 的 nb / folder 是 P17.3 加的根层形态(「笔记附件」不筛 / 「我的文件夹」根)。
+ */
 function parseFm(raw: string | null, panel: RoutePanel): FmSub | null {
   if (panel !== 'files' || !raw) return null
   if (raw === 'unref') return { kind: 'unref' }
+  if (raw === 'nb') return { kind: 'notebook', id: null }
+  if (raw === 'folder') return { kind: 'folder', id: null }
   const m = /^(nb|folder):(\d+)$/.exec(raw)
   if (!m) return null
   const id = posInt(m[2])
@@ -117,9 +126,15 @@ export function buildLocation(r: { view: RouteView; articleId: number | null; pa
   // 文章 id 仅在 >0 且有基础视图时追加(none 视图不挂文章)
   if (r.view.kind !== 'none' && r.articleId && r.articleId > 0) base += `/${r.articleId}`
   let search = r.panel ? `?panel=${r.panel}` : ''
-  // 文件管理子视图:仅非默认(all)时才写,保持 URL 干净
+  // 文件管理子视图:仅非默认(all)时才写,保持 URL 干净。
+  // id 为 null 的根层写成不带冒号的 nb / folder(P17.3)
   if (search && r.panel === 'files' && r.fm && r.fm.kind !== 'all') {
-    search += `&fm=${r.fm.kind === 'unref' ? 'unref' : r.fm.kind === 'notebook' ? `nb:${r.fm.id}` : `folder:${r.fm.id}`}`
+    const f = r.fm
+    const seg =
+      f.kind === 'unref' ? 'unref'
+      : f.kind === 'notebook' ? (f.id == null ? 'nb' : `nb:${f.id}`)
+      : (f.id == null ? 'folder' : `folder:${f.id}`)
+    search += `&fm=${seg}`
   }
   return base + search
 }

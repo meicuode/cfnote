@@ -15,12 +15,21 @@ export interface FmOverview {
   folders: (FolderRow & { created_at: string })[]
 }
 
-/** 文件管理子视图;name 不入 view(改名后从 overview 现取,避免标题过期) */
+/**
+ * 文件管理子视图;name 不入 view(改名后从 overview 现取,避免标题过期)。
+ *
+ * P17.3 改动:
+ *  - `folder` 的 id 可为 null = 「我的文件夹」根层。此前根层没有对应视图——
+ *    文件夹树整棵挂在侧栏里,没有「站在根上」这个状态。
+ *  - `notebook` 从「侧栏里的一棵按笔记本分的树」变成「笔记附件视图 + 一个筛选值」,
+ *    id 为 null 表示不筛(看全部被引用的附件)。见 DESIGN §10 P17.3 里
+ *    「投影而不是容器」那段论证。
+ */
 export type FmView =
   | { kind: 'all' }
   | { kind: 'unref' }
-  | { kind: 'notebook'; id: number }
-  | { kind: 'folder'; id: number }
+  | { kind: 'notebook'; id: number | null }
+  | { kind: 'folder'; id: number | null }
 
 /**
  * 移进私密文件夹会失效的公开引用(P14.2)。私密文件对访客一票否决,

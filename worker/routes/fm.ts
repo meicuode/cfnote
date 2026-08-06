@@ -184,14 +184,30 @@ fm.get('/files', async (c) => {
     const binds: unknown[] = [user.id]
 
     if (view === 'folder') {
-      sql += ' AND f.folder_id = ?'
-      binds.push(Number(c.req.query('folder')) || 0)
+      // P17.3:不带 folder 参数 = 「我的文件夹」根层(folder_id IS NULL)。
+      // 此前根层没有对应视图,文件夹树整棵挂在侧栏里,不存在「站在根上」这个状态
+      const fid = Number(c.req.query('folder'))
+      if (Number.isInteger(fid) && fid > 0) {
+        sql += ' AND f.folder_id = ?'
+        binds.push(fid)
+      } else {
+        sql += ' AND f.folder_id IS NULL'
+      }
     } else if (view === 'unref') {
       sql += ' AND f.folder_id IS NULL AND NOT EXISTS (SELECT 1 FROM article_files af3 WHERE af3.file_key = f.key)'
     } else if (view === 'notebook') {
-      sql += ` AND EXISTS (SELECT 1 FROM article_files af4 JOIN articles a4 ON a4.id = af4.article_id
-               WHERE af4.file_key = f.key AND a4.notebook_id = ? AND a4.deleted_at IS NULL)`
-      binds.push(Number(c.req.query('notebook')) || 0)
+      // P17.3:不带 notebook 参数 = 所有被笔记引用的附件(不按笔记本筛)。
+      // 「笔记附件」不再是一棵按笔记本分的树而是一个视图 + 可选筛选值——
+      // 同一个文件可能被两个笔记本里的文章引用,树会让人以为附件各属一本(见 DESIGN §10 P17.3)
+      const nb = Number(c.req.query('notebook'))
+      if (Number.isInteger(nb) && nb > 0) {
+        sql += ` AND EXISTS (SELECT 1 FROM article_files af4 JOIN articles a4 ON a4.id = af4.article_id
+                 WHERE af4.file_key = f.key AND a4.notebook_id = ? AND a4.deleted_at IS NULL)`
+        binds.push(nb)
+      } else {
+        sql += ` AND EXISTS (SELECT 1 FROM article_files af4 JOIN articles a4 ON a4.id = af4.article_id
+                 WHERE af4.file_key = f.key AND a4.deleted_at IS NULL)`
+      }
     }
     if (category === 'image' || category === 'doc' || category === 'other') {
       sql += ' AND f.category = ?'

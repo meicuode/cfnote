@@ -407,8 +407,11 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
         <div className="px-3 mb-2">{newNameInput}</div>
       )}
 
-      {/* 笔记本树(P16.1):层级由 parent_id 决定,展开态记在 localStorage */}
-      <div className="flex-1 overflow-y-auto px-1.5">
+      {/* 笔记本树 + 标签区:**只有这一段滚**(P17.3)。
+          此前这个滚动区一直包到最底下的「网页剪藏」,于是笔记本一多,
+          下面那几个固定入口就被顶到看不见——要点「文件管理」得先滚过几十本笔记本。
+          笔记本树是内容,内容才该滚;下面那几个是导航骨架,位置恒定才形成肌肉记忆 */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-1.5">
         {tree.map(renderNode)}
 
         {notebooks.length === 0 && !showNew && (
@@ -417,7 +420,8 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
           </p>
         )}
 
-        {/* P9/P10.4 标签区:折叠 + 常用前 N 个紧凑 chips(按频次排序)+「全部标签」搜索浏览器 */}
+        {/* P9/P10.4 标签区:折叠 + 常用前 N 个紧凑 chips(按频次排序)+「全部标签」搜索浏览器。
+            跟着笔记本树一起滚:它同样随数据增长(展开时最多 10 个 chips + 一个「全部」入口) */}
         {tags.length > 0 && (
           <div className="border-t border-gray-100 mt-2 pt-2">
             <button
@@ -470,9 +474,15 @@ export default function Sidebar({ notebooks, activeNotebook, tags, onSelect, onC
             )}
           </div>
         )}
+      </div>
 
-        {/* 固定入口:我的私有(虚拟笔记本,筛选所有私有笔记,不可删除) */}
-        <div className="border-t border-gray-100 mt-2 pt-2">
+      {/* 固定入口区:钉在底部,不随笔记本增多被顶走(P17.3)。
+          自身也 overflow-y-auto + max-h:进文件管理时下面会多出四个二级菜单项,
+          而窄屏(或把窗口拖得很矮)时这一段本身也可能装不下——那时候它自己滚,
+          仍然不去挤上面的笔记本树 */}
+      <div className="shrink-0 max-h-[55%] overflow-y-auto px-1.5 border-t border-gray-100 mt-2 pt-2">
+        {/* 我的私有(虚拟笔记本,筛选所有私有笔记,不可删除) */}
+        <div>
           <button
             onClick={() => onSelect(PRIVATE_NOTEBOOK)}
             className={`w-full text-left flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-colors ${

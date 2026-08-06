@@ -59,6 +59,36 @@ export function collectPrivateIds(rows: FolderRow[]): Set<number> {
   return out
 }
 
+/**
+ * 某个目录的直接子目录(P17.3:文件夹树从侧栏搬进主窗口后,一屏只渲染一层)。
+ * id 为 null 表示根层。排序沿用 buildFolderTree:私密置顶,其余按名称。
+ */
+export function childFolders(rows: FolderRow[], id: number | null): FolderRow[] {
+  return rows
+    .filter((r) => (r.parent_id ?? null) === id && r.id !== id)
+    .sort((a, b) =>
+      (Number(b.is_private || 0) - Number(a.is_private || 0)) || a.name.localeCompare(b.name, 'zh'))
+}
+
+/**
+ * 从根到 id 的祖先链(含自身),供主窗口面包屑逐级跳回。
+ * 断链(父不存在)就在断点处停下——buildFolderTree 把孤儿提升为根,这里保持一致。
+ * 防环:走过的 id 不再走(接口层已校验,这里只是不让 UI 挂死)。
+ */
+export function folderPath(rows: FolderRow[], id: number | null): FolderRow[] {
+  if (id == null) return []
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const out: FolderRow[] = []
+  const seen = new Set<number>()
+  let cur = byId.get(id)
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    out.unshift(cur)
+    cur = cur.parent_id != null ? byId.get(cur.parent_id) : undefined
+  }
+  return out
+}
+
 /** 分享有效期档位(seconds 为 null 表示永久) */
 export const EXPIRY_PRESETS: { label: string; seconds: number | null }[] = [
   { label: '1 小时', seconds: 3600 },

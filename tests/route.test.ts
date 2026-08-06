@@ -94,6 +94,23 @@ describe('parseLocation', () => {
     expect(buildLocation({ view, articleId: null, panel: 'blog', fm: { kind: 'folder', id: 3 } })).toBe('/nb/5?panel=blog')
   })
 
+  // P17.3:文件夹树搬进主窗口后多了「站在根上」这个状态,写成不带冒号的 nb / folder
+  it('?fm=nb / ?fm=folder 是根层(id 为 null)', () => {
+    expect(parseLocation('/nb/5', '?panel=files&fm=folder').fm).toEqual({ kind: 'folder', id: null })
+    expect(parseLocation('/nb/5', '?panel=files&fm=nb').fm).toEqual({ kind: 'notebook', id: null })
+  })
+
+  it('根层 fm 生成不带冒号,且能往返', () => {
+    const view: RouteView = { kind: 'notebook', id: 5 }
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: { kind: 'folder', id: null } })).toBe('/nb/5?panel=files&fm=folder')
+    expect(buildLocation({ view, articleId: null, panel: 'files', fm: { kind: 'notebook', id: null } })).toBe('/nb/5?panel=files&fm=nb')
+    for (const fm of [{ kind: 'folder', id: null }, { kind: 'notebook', id: null }] as const) {
+      const url = buildLocation({ view, articleId: null, panel: 'files', fm })
+      const [path, search] = url.split('?')
+      expect(parseLocation(path, '?' + search).fm).toEqual(fm)
+    }
+  })
+
   it('fm 往返一致', () => {
     const subs = [{ kind: 'unref' }, { kind: 'notebook', id: 7 }, { kind: 'folder', id: 3 }] as const
     for (const fm of subs) {

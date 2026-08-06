@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildFolderTree, collectPrivateIds, fmtSize, fmtRemaining, previewKind, copyName,
+  buildFolderTree, collectPrivateIds, childFolders, folderPath, fmtSize, fmtRemaining, previewKind, copyName,
   nextSelection, selectionSummary, showCheckbox, parseCheckboxMode, menuPosition,
 } from '../src/lib/fmUtils'
 
@@ -65,6 +65,71 @@ describe('collectPrivateIds', () => {
   it('自指行不死循环(防御)', () => {
     const ids = collectPrivateIds([{ id: 9, name: '自指私密', parent_id: 9, is_private: 1 }])
     expect([...ids]).toEqual([9])
+  })
+})
+
+// P17.3:文件夹树从侧栏搬进主窗口,一屏只渲染一层 + 面包屑逐级跳回。
+// 这两个函数决定「这一层显示哪几个目录」与「我在哪」,错了的表现是
+// 目录凭空消失或者面包屑点不回去——都不抛异常,只能靠单测钉住。
+const FOLDERS = [
+  { id: 1, name: '我的私密文件夹', parent_id: null, is_private: 1 },
+  { id: 2, name: '截图', parent_id: null },
+  { id: 3, name: '文档', parent_id: null },
+  { id: 4, name: '2026', parent_id: 2 },
+  { id: 5, name: '2025', parent_id: 2 },
+  { id: 6, name: '证件', parent_id: 1 },
+]
+
+describe('childFolders(P17.3 一屏只渲染一层)', () => {
+  it('根层只给 parent_id 为 null 的,私密置顶、其余按名称', () => {
+    expect(childFolders(FOLDERS, null).map((f) => f.name)).toEqual(['我的私密文件夹', '截图', '文档'])
+  })
+
+  it('进某一层只给它的直接子目录,不含孙子', () => {
+    // 给出孙子的话这一层就又变成整棵树了,正是搬走它的原因
+    expect(childFolders(FOLDERS, 2).map((f) => f.name)).toEqual(['2025', '2026'])
+  })
+
+  it('叶子目录没有子目录', () => {
+    expect(childFolders(FOLDERS, 4)).toEqual([])
+  })
+
+  it('parent_id 的 undefined 与 null 都算根层', () => {
+    const rows = [{ id: 1, name: '甲', parent_id: null }, { id: 2, name: '乙', parent_id: undefined as any }]
+    expect(childFolders(rows, null).map((f) => f.name)).toEqual(['甲', '乙'])
+  })
+
+  it('自指行不会把自己列为自己的子目录', () => {
+    expect(childFolders([{ id: 7, name: '自指', parent_id: 7 }], 7)).toEqual([])
+  })
+})
+
+describe('folderPath(P17.3 面包屑)', () => {
+  it('从根到自身的完整链', () => {
+    expect(folderPath(FOLDERS, 4).map((f) => f.name)).toEqual(['截图', '2026'])
+  })
+
+  it('根层目录只有它自己', () => {
+    expect(folderPath(FOLDERS, 2).map((f) => f.name)).toEqual(['截图'])
+  })
+
+  it('id 为 null 表示站在根上,链为空', () => {
+    expect(folderPath(FOLDERS, null)).toEqual([])
+  })
+
+  it('id 不存在时给空链而不是抛', () => {
+    expect(folderPath(FOLDERS, 999)).toEqual([])
+  })
+
+  it('父不存在(孤儿)就在断点处停下', () => {
+    // 与 buildFolderTree 把孤儿提升为根保持一致:面包屑显示它自己,不去编造上级
+    const rows = [{ id: 5, name: '孤儿', parent_id: 404 }]
+    expect(folderPath(rows, 5).map((f) => f.name)).toEqual(['孤儿'])
+  })
+
+  it('成环时不死循环', () => {
+    const rows = [{ id: 1, name: '甲', parent_id: 2 }, { id: 2, name: '乙', parent_id: 1 }]
+    expect(folderPath(rows, 1).map((f) => f.name)).toEqual(['乙', '甲'])
   })
 })
 
