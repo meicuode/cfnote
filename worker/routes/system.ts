@@ -187,6 +187,33 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status, created_at);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  priority INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending',
+  due_at TEXT,
+  remind_at TEXT,
+  reminded_at TEXT,
+  overdue_reminds INTEGER DEFAULT 0,
+  lead_n INTEGER DEFAULT 0,
+  lead_unit TEXT,
+  repeat_n INTEGER DEFAULT 0,
+  repeat_unit TEXT,
+  tz_offset INTEGER DEFAULT 0,
+  article_id INTEGER,
+  completed_at TEXT,
+  deleted_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(status, deleted_at, due_at, remind_at);
+CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, deleted_at, status, due_at);
 `
 
 // GET /api/status - Check if system is initialized

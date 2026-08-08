@@ -1,0 +1,266 @@
+import { describe, it, expect } from 'vitest'
+import {
+  parseUtc, toIso, addMonths, addWorkdays, shiftLocal, computeRemindAt, nextDueAt,
+  todoBucket, dueAction, fmtDue, OVERDUE_MAX_REMINDS,
+} from '../src/lib/todoRules'
+
+const TZ = 480      // UTC+8
+const HOUR = 3_600_000
+const DAY = 86_400_000
+
+describe('parseUtc', () => {
+  it('ISO 与 D1 空格格式都按 UTC 解析', () => {
+    expect(parseUtc('2026-08-10T09:00:00Z')).toBe(Date.parse('2026-08-10T09:00:00Z'))
+    // D1 的 datetime('now') 没有时区后缀,但语义是 UTC;当成本地时间读会整体偏移一个时区
+    expect(parseUtc('2026-08-10 09:00:00')).toBe(Date.parse('2026-08-10T09:00:00Z'))
+  })
+
+  it('带显式偏移的原样尊重,不再补 Z', () => {
+    expect(parseUtc('2026-08-10T17:00:00+08:00')).toBe(Date.parse('2026-08-10T09:00:00Z'))
+  })
+
+  it('空值与坏值给 null 而不是 NaN', () => {
+    expect(parseUtc(null)).toBeNull()
+    expect(parseUtc(undefined)).toBeNull()
+    expect(parseUtc('')).toBeNull()
+    expect(parseUtc('   ')).toBeNull()
+    expect(parseUtc('明天')).toBeNull()
+  })
+})
+
+describe('toIso', () => {
+  it('输出秒级,不带毫秒', () => {
+    expect(toIso(Date.parse('2026-08-10T09:00:00.456Z'))).toBe('2026-08-10T09:00:00Z')
+  })
+})
+
+describe('addMonths(溢出夹到月末)', () => {
+  it('1 月 31 日 + 1 个月 = 2 月末,不是 3 月初', () => {
+    // 滚到 3 月 3 日的话,「每月最后一天」这种周期会越滚越靠后,几个月后跑到月中
+    expect(toIso(addMonths(Date.parse('2026-01-31T09:00:00Z'), 1))).toBe('2026-02-28T09:00:00Z')
+  })
+
+  it('闰年的 2 月末取 29 日', () => {
+    expect(toIso(addMonths(Date.parse('2028-01-31T09:00:00Z'), 1))).toBe('2028-02-29T09:00:00Z')
+  })
+
+  it('跨年往后与往前都对', () => {
+    expect(toIso(addMonths(Date.parse('2026-12-15T09:00:00Z'), 1))).toBe('2027-01-15T09:00:00Z')
+    expect(toIso(addMonths(Date.parse('2026-01-15T09:00:00Z'), -1))).toBe('2025-12-15T09:00:00Z')
+  })
+
+  it('月末往前也夹住(3 月 31 日 - 1 个月)', () => {
+    expect(toIso(addMonths(Date.parse('2026-03-31T09:00:00Z'), -1))).toBe('2026-02-28T09:00:00Z')
+  })
+
+  it('时刻保持不变', () => {
+    expect(toIso(addMonths(Date.parse('2026-03-10T23:45:00Z'), 2))).toBe('2026-05-10T23:45:00Z')
+  })
+})
+
+describe('addWorkdays(跳过周末)', () => {
+  // 2026-08-10 是周一
+  const mon = Date.parse('2026-08-10T09:00:00Z')
+
+  it('周一 + 5 个工作日 = 下周一', () => {
+    expect(toIso(addWorkdays(mon, 5))).toBe('2026-08-17T09:00:00Z')
+  })
+
+  it('周五 + 1 = 下周一(跳过周末)', () => {
+    const fri = Date.parse('2026-08-14T09:00:00Z')
+    expect(toIso(addWorkdays(fri, 1))).toBe('2026-08-17T09:00:00Z')
+  })
+
+  it('往前数也跳周末:周一 - 1 = 上周五', () => {
+    expect(toIso(addWorkdays(mon, -1))).toBe('2026-08-07T09:00:00Z')
+  })
+
+  it('周一 - 3 = 上周三', () => {
+    expect(toIso(addWorkdays(mon, -3))).toBe('2026-08-05T09:00:00Z')
+  })
+
+  it('n=0 原样返回', () => {
+    expect(addWorkdays(mon, 0)).toBe(mon)
+  })
+
+  it('从周六出发往后数,第一个工作日是周一', () => {
+    const sat = Date.parse('2026-08-15T09:00:00Z')
+    expect(toIso(addWorkdays(sat, 1))).toBe('2026-08-17T09:00:00Z')
+  })
+})
+
+describe('shiftLocal', () => {
+  const base = Date.parse('2026-08-10T09:00:00Z')
+
+  it('各单位往后平移', () => {
+    expect(toIso(shiftLocal(base, { n: 3, unit: 'hour' }, 1))).toBe('2026-08-10T12:00:00Z')
+    expect(toIso(shiftLocal(base, { n: 2, unit: 'day' }, 1))).toBe('2026-08-12T09:00:00Z')
+    expect(toIso(shiftLocal(base, { n: 1, unit: 'week' }, 1))).toBe('2026-08-17T09:00:00Z')
+    expect(toIso(shiftLocal(base, { n: 1, unit: 'month' }, 1))).toBe('2026-09-10T09:00:00Z')
+  })
+
+  it('dir=-1 是提前量', () => {
+    expect(toIso(shiftLocal(base, { n: 2, unit: 'day' }, -1))).toBe('2026-08-08T09:00:00Z')
+  })
+
+  it('n 为 0 / 负 / 坏值一律不平移', () => {
+    expect(shiftLocal(base, { n: 0, unit: 'day' }, 1)).toBe(base)
+    expect(shiftLocal(base, { n: -5, unit: 'day' }, 1)).toBe(base)
+    expect(shiftLocal(base, { n: NaN, unit: 'day' }, 1)).toBe(base)
+  })
+})
+
+describe('computeRemindAt(截止 + 提前量)', () => {
+  it('提前 2 小时', () => {
+    expect(computeRemindAt('2026-08-10T09:00:00Z', { n: 2, unit: 'hour' }, TZ)).toBe('2026-08-10T07:00:00Z')
+  })
+
+  it('提前量为空则提醒时间等于截止时间', () => {
+    expect(computeRemindAt('2026-08-10T09:00:00Z', null, TZ)).toBe('2026-08-10T09:00:00Z')
+  })
+
+  it('没有截止时间就没有提醒时间', () => {
+    expect(computeRemindAt(null, { n: 1, unit: 'day' }, TZ)).toBeNull()
+    expect(computeRemindAt('乱填', { n: 1, unit: 'day' }, TZ)).toBeNull()
+  })
+
+  it('工作日按本地历法数,不按 UTC —— 这是时区最容易差一天的地方', () => {
+    // 本地(UTC+8)周一 06:00 = UTC 周日 22:00。
+    // 按 UTC 数的话出发点落在周日,会把周日当成"要跳过的那天",结果差一整天。
+    // 本地周一 06:00 提前 1 个工作日 → 本地上周五 06:00 = UTC 上周四 22:00
+    expect(computeRemindAt('2026-08-09T22:00:00Z', { n: 1, unit: 'workday' }, TZ))
+      .toBe('2026-08-06T22:00:00Z')
+  })
+
+  it('tz=0 时本地即 UTC', () => {
+    expect(computeRemindAt('2026-08-10T09:00:00Z', { n: 1, unit: 'workday' }, 0)).toBe('2026-08-07T09:00:00Z')
+  })
+})
+
+describe('nextDueAt(周期任务)', () => {
+  it('按周期往后推一次', () => {
+    expect(nextDueAt('2026-08-10T09:00:00Z', { n: 1, unit: 'week' }, TZ)).toBe('2026-08-17T09:00:00Z')
+    expect(nextDueAt('2026-01-31T09:00:00Z', { n: 1, unit: 'month' }, TZ)).toBe('2026-02-28T09:00:00Z')
+  })
+
+  it('没有周期规则就没有下一次', () => {
+    expect(nextDueAt('2026-08-10T09:00:00Z', null, TZ)).toBeNull()
+    expect(nextDueAt('2026-08-10T09:00:00Z', { n: 0, unit: 'week' }, TZ)).toBeNull()
+  })
+
+  it('没有截止时间也就无从推算', () => {
+    expect(nextDueAt(null, { n: 1, unit: 'week' }, TZ)).toBeNull()
+  })
+})
+
+describe('todoBucket', () => {
+  const now = Date.parse('2026-08-10T12:00:00Z')
+
+  it('已完成优先:做完了就不算逾期', () => {
+    // 反过来的话,逾期之后再点完成,它仍然挂在「已逾期」里,看着像没生效
+    expect(todoBucket({ status: 'done', due_at: '2026-08-01T00:00:00Z' }, now)).toBe('done')
+  })
+
+  it('过了截止是逾期,没过是待办', () => {
+    expect(todoBucket({ status: 'pending', due_at: '2026-08-10T11:59:00Z' }, now)).toBe('overdue')
+    expect(todoBucket({ status: 'pending', due_at: '2026-08-10T12:01:00Z' }, now)).toBe('pending')
+  })
+
+  it('无截止时间永远是待办,不会自己变逾期', () => {
+    expect(todoBucket({ status: 'pending', due_at: null }, now)).toBe('pending')
+  })
+})
+
+describe('dueAction(cron 的全部判断)', () => {
+  const now = Date.parse('2026-08-10T12:00:00Z')
+
+  it('已完成永不提醒', () => {
+    expect(dueAction({ status: 'done', due_at: '2026-08-01T00:00:00Z', overdue_reminds: 0 }, now).kind).toBe('none')
+  })
+
+  it('到了提醒时间且没推过 → 推一次提前提醒', () => {
+    expect(dueAction({ status: 'pending', due_at: '2026-08-11T09:00:00Z', remind_at: '2026-08-10T09:00:00Z' }, now))
+      .toEqual({ kind: 'remind', reason: 'upcoming' })
+  })
+
+  it('提醒时间还没到 → 不推', () => {
+    expect(dueAction({ status: 'pending', due_at: '2026-08-12T09:00:00Z', remind_at: '2026-08-11T09:00:00Z' }, now).kind).toBe('none')
+  })
+
+  it('提前提醒已经推过 → 不重复推', () => {
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-11T09:00:00Z',
+      remind_at: '2026-08-10T09:00:00Z', reminded_at: '2026-08-10T09:05:00Z',
+    }, now).kind).toBe('none')
+  })
+
+  it('逾期第一次:即使提前提醒已经推过也要推 —— 最容易写错的一处', () => {
+    // 若沿用「reminded_at IS NULL 才推」那条件,逾期提醒永远不会发生:
+    // 提前提醒推完 reminded_at 就有值了。而这个错误完全静默——到点之后再没有任何消息
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-10T11:00:00Z',
+      remind_at: '2026-08-10T09:00:00Z', reminded_at: '2026-08-10T09:05:00Z',
+      overdue_reminds: 0,
+    }, now)).toEqual({ kind: 'remind', reason: 'overdue', nth: 1 })
+  })
+
+  it('逾期第一次不等 24 小时', () => {
+    // 等的话「到点了」这条消息要隔一天才来,那时人已经错过了
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-10T11:59:00Z',
+      reminded_at: '2026-08-10T11:00:00Z', overdue_reminds: 0,
+    }, now)).toEqual({ kind: 'remind', reason: 'overdue', nth: 1 })
+  })
+
+  it('逾期第二次要隔满一天', () => {
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-09T00:00:00Z',
+      reminded_at: '2026-08-10T06:00:00Z', overdue_reminds: 1,
+    }, now).kind).toBe('none')
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-09T00:00:00Z',
+      reminded_at: '2026-08-09T06:00:00Z', overdue_reminds: 1,
+    }, now)).toEqual({ kind: 'remind', reason: 'overdue', nth: 2 })
+  })
+
+  it('推满两次就永久停下', () => {
+    expect(dueAction({
+      status: 'pending', due_at: '2026-08-01T00:00:00Z',
+      reminded_at: '2026-08-05T06:00:00Z', overdue_reminds: OVERDUE_MAX_REMINDS,
+    }, now).kind).toBe('none')
+    // 拖再久也不再响:通知疲劳会把**其他**待办的提醒一起废掉
+    expect(dueAction({
+      status: 'pending', due_at: '2026-01-01T00:00:00Z',
+      reminded_at: '2026-01-03T06:00:00Z', overdue_reminds: 9,
+    }, now).kind).toBe('none')
+  })
+
+  it('无截止无提醒 → 永不推(纯记事用法)', () => {
+    expect(dueAction({ status: 'pending', due_at: null, remind_at: null }, now).kind).toBe('none')
+  })
+
+  it('有截止但没设提醒时间,到点后仍会走逾期提醒', () => {
+    expect(dueAction({ status: 'pending', due_at: '2026-08-10T11:00:00Z', remind_at: null, overdue_reminds: 0 }, now))
+      .toEqual({ kind: 'remind', reason: 'overdue', nth: 1 })
+  })
+})
+
+describe('fmtDue', () => {
+  const now = Date.parse('2026-08-10T12:00:00Z')
+
+  it('未到与已过分别说人话', () => {
+    expect(fmtDue('2026-08-13T12:00:00Z', now)).toBe('还有 3 天')
+    expect(fmtDue('2026-08-10T15:00:00Z', now)).toBe('还有 3 小时')
+    expect(fmtDue('2026-08-10T12:20:00Z', now)).toBe('还有 20 分钟')
+    expect(fmtDue('2026-08-08T12:00:00Z', now)).toBe('已逾期 2 天')
+    expect(fmtDue('2026-08-10T10:00:00Z', now)).toBe('已逾期 2 小时')
+  })
+
+  it('不足一分钟也显示 1 分钟,不显示 0', () => {
+    expect(fmtDue('2026-08-10T12:00:30Z', now)).toBe('还有 1 分钟')
+  })
+
+  it('无截止时间', () => {
+    expect(fmtDue(null, now)).toBe('无截止')
+  })
+})

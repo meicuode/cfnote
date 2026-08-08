@@ -138,6 +138,40 @@ const USER_COLUMNS: Record<string, string> = {
   recovery_code: 'ALTER TABLE users ADD COLUMN recovery_code TEXT',
 }
 
+// P18 待办模块。表建在这里(而不是只放 system.ts 的 SCHEMA)是因为老库不会再跑
+// /api/init——P16.9.1 就是漏了这一处:列只加进 SCHEMA,已部署的库永远补不出来。
+//
+// 时间列一律 UTC ISO;tz_offset 存该条创建时的本地偏移分钟(UTC+8 = 480),
+// 因为「工作日/自然周/自然月」是本地历法概念,按 UTC 数会差一天(见 src/lib/todoRules.ts)。
+//
+// overdue_reminds 与 reminded_at **必须是两个独立字段**:提前提醒推过之后
+// reminded_at 就有值了,若拿它当「推过没有」的唯一依据,逾期提醒永远不会触发,
+// 而且完全静默——到点之后再没有任何消息。
+const TODO_TABLE = `CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  priority INTEGER DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending',
+  due_at TEXT,
+  remind_at TEXT,
+  reminded_at TEXT,
+  overdue_reminds INTEGER DEFAULT 0,
+  lead_n INTEGER DEFAULT 0,
+  lead_unit TEXT,
+  repeat_n INTEGER DEFAULT 0,
+  repeat_unit TEXT,
+  tz_offset INTEGER DEFAULT 0,
+  article_id INTEGER,
+  completed_at TEXT,
+  deleted_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)`
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -201,4 +235,14 @@ async function doEnsure(env: Env): Promise<void> {
       if (!userHave.has(col)) await env.DB.prepare(sql).run()
     }
   }
+  // P18 待办表 + 两个索引(幂等)。
+  // idx_todos_due 是 cron 每 5 分钟那次扫描走的索引:没有它就是全表扫,
+  // 而待办会一直堆积(已完成的也留着),几个月后每 5 分钟扫一遍全表。
+  await env.DB.prepare(TODO_TABLE).run()
+  await env.DB.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(status, deleted_at, due_at, remind_at)'
+  ).run()
+  await env.DB.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, deleted_at, status, due_at)'
+  ).run()
 }

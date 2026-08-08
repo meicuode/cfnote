@@ -22,6 +22,8 @@ import { useFileManager, type FmView } from '../hooks/useFileManager'
 
 // 文件管理页(P8.2,懒加载独立 chunk)
 const FileManager = lazy(() => import('./FileManager'))
+// P18 待办:与 FileManager 同样按需加载(带 Markdown 预览与编辑对话框,不该进首屏包)
+const TodosPanel = lazy(() => import('./TodosPanel'))
 // 文件管理二级菜单(P11.6,懒加载):渲染进侧栏「文件管理」之下
 const FileManagerNav = lazy(() => import('./FileManagerNav'))
 // 博客管理页(P11.1,懒加载):管理已公开文章(+ 后续评论审核)
@@ -50,6 +52,7 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
   // 设置面板打开后直接落在某一分类(P17:左侧导航,不再是滚到某一节)
   const [settingsFocus, setSettingsFocus] = useState<SettingsCategory | null>(null)
   const [showLogs, setShowLogs] = useState(false)
+  const [showTodos, setShowTodos] = useState(false)
   const [showFiles, setShowFiles] = useState(false)
   // 文件管理子视图(P11.6):与 URL 的 ?fm= 同步,侧栏二级菜单与右侧列表共用
   const [fmView, setFmView] = useState<FmView>({ kind: 'all' })
@@ -789,6 +792,17 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
               </span>
             )}
           </button>
+          {/* P18 待办。放在铃铛旁边:它和「提醒」是同一类东西(会主动找你的),
+              而不是和统计/设置一类(你主动去找它的) */}
+          <button
+            onClick={() => setShowTodos((v) => !v)}
+            className={`p-1.5 rounded-lg hover:bg-gray-100 transition-colors ${showTodos ? 'text-emerald-600 bg-emerald-50' : 'text-gray-400 hover:text-emerald-600'}`}
+            title="待办事项"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+            </svg>
+          </button>
           <button
             onClick={() => setShowStats(!showStats)}
             className="max-lg:hidden p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-emerald-600 transition-colors"
@@ -847,6 +861,7 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
             <div className="lg:hidden absolute right-2 top-12 w-44 bg-white rounded-xl shadow-lg border border-gray-200 py-1 z-10">
               {([
                 ['主题', dark ? '切换到浅色' : '切换到深色', () => toggleTheme()],
+                ['待办', '待办事项', () => setShowTodos(true)],
                 ['统计', '使用统计', () => setShowStats(true)],
                 ['设置', '', () => { setSettingsFocus(null); setShowSettings(true) }],
                 ['日志', '系统日志', () => setShowLogs(true)],
@@ -1022,6 +1037,17 @@ export default function Layout({ token, username, onLogout, onTokenChange }: Pro
           onOpenArticle={openArticleWithSnippet}
           onChanged={loadReminders}
         />
+      )}
+
+      {showTodos && (
+        <Suspense fallback={null}>
+          <TodosPanel
+            token={token}
+            onClose={() => setShowTodos(false)}
+            onOpenArticle={(id) => { openArticleWithSnippet(id); setShowTodos(false) }}
+            onOpenSettings={() => { setShowTodos(false); setSettingsFocus('notify'); setShowSettings(true) }}
+          />
+        </Suspense>
       )}
 
       {showStats && (

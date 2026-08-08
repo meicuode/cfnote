@@ -13,10 +13,11 @@ import { files, afile, share } from './routes/files'
 import { fm } from './routes/fm'
 import { stats } from './routes/stats'
 import { blog } from './routes/blog'
-import { notify, sendDueReminders } from './routes/notify'
+import { notify, sendDueReminders, sendDueTodos } from './routes/notify'
 import { comments } from './routes/comments'
 import { pages } from './routes/pages'
 import { backups } from './routes/backups'
+import { todos } from './routes/todos'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -64,6 +65,7 @@ app.route('/api/blog', blog)
 app.route('/api/notify', notify)
 app.route('/api/comments', comments)
 app.route('/api/backups', backups)
+app.route('/api/todos', todos)
 
 // 页面级路由(P12.6):/blog/:id 预渲染、/blog/feed.xml、/sitemap.xml、/robots.txt。
 // 免鉴权(上面的中间件只管 /api/*),放在 API 之后注册,互不重叠。
@@ -89,6 +91,7 @@ export default {
     // 每月那条跑用量归档 + 回收站清理
     if (event.cron === '*/5 * * * *') {
       ctx.waitUntil(sendDueReminders(env))
+      ctx.waitUntil(sendDueTodos(env))
       ctx.waitUntil(runAutoBackup(env))
       return
     }
