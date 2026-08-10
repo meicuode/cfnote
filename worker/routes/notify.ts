@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { ok, err, logSystem } from '../utils'
 import { buildRequest, mergeMaskedChannels, type NotifyChannel, type NotifyMessage } from '../../src/lib/notifyChannels'
 import { postPath } from '../../src/lib/blogSlug'
-import { dueAction, fmtDue, toIso, PRIORITY_MARK, OVERDUE_MAX_REMINDS } from '../../src/lib/todoRules'
+import { dueAction, fmtDue, toIso, parseChannels, resolveChannels, PRIORITY_MARK, OVERDUE_MAX_REMINDS } from '../../src/lib/todoRules'
 import type { AppEnv } from '../types'
 import type { Env } from '../../src/types'
 
@@ -55,8 +55,10 @@ notify.get('/channels', async (c) => {
   let channels: NotifyChannel[] = []
   try { channels = row?.value ? JSON.parse(row.value) : [] } catch { channels = [] }
   const list = Array.isArray(channels) ? channels : []
-  // 只带 type 与 enabled:type 是为了将来能在提示里说「你配了飞书但没启用」
-  return ok({ channels: list.map((ch) => ({ type: ch?.type, enabled: !!ch?.enabled })) })
+  // id + type + enabled,**不含 config**。待办面板要按 id 记住「这条发给谁」,
+  // 展示名由前端拿 type 去 CHANNEL_META 查——那张表本来就在前端,不必从这里下发。
+  // id 不是凭据(拿到它发不了任何消息),config 才是,所以这里仍然一个字段都不给
+  return ok({ channels: list.map((ch) => ({ id: ch?.id, type: ch?.type, enabled: !!ch?.enabled })) })
 })
 
 // POST /api/notify/test - 用面板里填的渠道配置发一条测试消息。
@@ -140,7 +142,7 @@ export async function sendDueTodos(env: Env): Promise<void> {
 
   const now = Date.now()
   const { results } = await env.DB.prepare(
-    `SELECT id, title, summary, priority, status, due_at, remind_at, reminded_at, overdue_reminds
+    `SELECT id, title, summary, priority, status, due_at, remind_at, reminded_at, overdue_reminds, channels
        FROM todos
       WHERE deleted_at IS NULL AND status = 'pending'
         AND (due_at IS NOT NULL OR remind_at IS NOT NULL)
@@ -167,10 +169,20 @@ export async function sendDueTodos(env: Env): Promise<void> {
       url: site ? `${site}/?todo=${t.id}` : undefined,
     }
 
+    // 这一条要发给谁(P18.3)。选中的渠道后来被停用/删除时得到空数组——
+    // 此时**不回落到其他渠道**:那是拿一个人没选的渠道去发他的私事,而他恰恰
+    // 亲手指定过渠道,说明他在意发到哪里。但也不能就这么静默,所以写一条系统日志,
+    // 面板上那一行同样会标出来
+    const targets = resolveChannels(parseChannels(t.channels), enabled)
+    if (targets.length === 0) {
+      logSystem(env, 'warn', 'notify', `待办「${t.title}」指定的推送渠道都已停用,本次未发送`, `todo=${t.id}`)
+      continue
+    }
+
     // 一个渠道失败不该拖累其他渠道,也不该让这一条卡在「永远重推」的状态:
     // 全部失败才不标记(下一轮再试),有一个成功就算送达
     let anyOk = false
-    for (const ch of enabled) {
+    for (const ch of targets) {
       const r = await sendToChannel(ch, msg)
       if (r.ok) anyOk = true
       else logSystem(env, 'warn', 'notify', `渠道 ${ch.type} 待办推送失败`, r.error)

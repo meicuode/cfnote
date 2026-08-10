@@ -1,16 +1,32 @@
 import { Hono } from 'hono'
 import { ok, err } from '../utils'
 import {
-  computeRemindAt, nextDueAt, parseUtc, toIso, TIME_UNITS,
+  computeRemindAt, nextDueAt, parseUtc, toIso, serializeChannels, TIME_UNITS,
   type Offset, type TimeUnit,
 } from '../../src/lib/todoRules'
+import type { NotifyChannel } from '../../src/lib/notifyChannels'
 import type { AppEnv } from '../types'
 
 export const todos = new Hono<AppEnv>()
 
 const FIELDS = `id, title, summary, notes, priority, status, due_at, remind_at, reminded_at,
-                overdue_reminds, lead_n, lead_unit, repeat_n, repeat_unit, tz_offset,
+                overdue_reminds, lead_n, lead_unit, repeat_n, repeat_unit, tz_offset, channels,
                 article_id, completed_at, created_at, updated_at`
+
+/** 当前已启用渠道的 id 列表(用于把「全选」归一成 null) */
+async function enabledIds(env: AppEnv['Bindings']): Promise<string[]> {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'notify_channels'").first<{ value: string }>()
+  let list: NotifyChannel[] = []
+  try { list = row?.value ? JSON.parse(row.value) : [] } catch { list = [] }
+  return (Array.isArray(list) ? list : []).filter((c) => c?.enabled).map((c) => c.id)
+}
+
+/** 前端传来的渠道选择:必须是字符串数组,其余一律当「跟随全部」 */
+function readChannels(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null
+  const ids = v.filter((x) => typeof x === 'string' && x)
+  return ids.length > 0 ? ids : null
+}
 
 /** 前端传来的偏移量:单位必须在白名单里,n 必须是正整数,否则当「没设」 */
 function readOffset(n: unknown, unit: unknown): Offset | null {
@@ -99,15 +115,16 @@ todos.post('/', async (c) => {
     // 让前端传的话,两处算法迟早对不上,而对不上的表现是提醒在错误的时间到达——
     // 不报错、不留痕,只有等人错过了才发现
     const remind = computeRemindAt(due, lead, tz)
+    const chans = serializeChannels(readChannels(b?.channels), await enabledIds(c.env))
 
     const r = await c.env.DB.prepare(
       `INSERT INTO todos (user_id, title, summary, notes, priority, due_at, remind_at,
-                          lead_n, lead_unit, repeat_n, repeat_unit, tz_offset, article_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                          lead_n, lead_unit, repeat_n, repeat_unit, tz_offset, channels, article_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       user.id, title, str(b?.summary, 500), str(b?.notes, 20000), clampPriority(b?.priority),
       due, remind,
-      lead?.n ?? 0, lead?.unit ?? null, repeat?.n ?? 0, repeat?.unit ?? null, tz,
+      lead?.n ?? 0, lead?.unit ?? null, repeat?.n ?? 0, repeat?.unit ?? null, tz, chans,
       Number.isInteger(b?.article_id) && b.article_id > 0 ? b.article_id : null,
     ).run()
 
@@ -169,6 +186,10 @@ todos.put('/:id', async (c) => {
       put('repeat_unit', rep?.unit ?? null)
     }
 
+    if ('channels' in (b || {})) {
+      put('channels', serializeChannels(readChannels(b.channels), await enabledIds(c.env)))
+    }
+
     if (b?.status === 'done' || b?.status === 'pending') {
       put('status', b.status)
       put('completed_at', b.status === 'done' ? toIso(Date.now()) : null)
@@ -216,14 +237,16 @@ todos.post('/:id/done', async (c) => {
       const tz = cur.tz_offset ?? 0
       const nextDue = nextDueAt(cur.due_at, rep, tz)
       const lead = readOffset(cur.lead_n, cur.lead_unit)
+      // 渠道选择要跟着滚:上一条指定了发飞书,下一条不该悄悄变回发全部
       const r = await c.env.DB.prepare(
         `INSERT INTO todos (user_id, title, summary, notes, priority, due_at, remind_at,
-                            lead_n, lead_unit, repeat_n, repeat_unit, tz_offset, article_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                            lead_n, lead_unit, repeat_n, repeat_unit, tz_offset, channels, article_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         user.id, cur.title, cur.summary || '', cur.notes || '', cur.priority ?? 1,
         nextDue, computeRemindAt(nextDue, lead, tz),
-        lead?.n ?? 0, lead?.unit ?? null, rep.n, rep.unit, tz, cur.article_id ?? null,
+        lead?.n ?? 0, lead?.unit ?? null, rep.n, rep.unit, tz, cur.channels ?? null,
+        cur.article_id ?? null,
       ).run()
       next = await c.env.DB.prepare(`SELECT ${FIELDS} FROM todos WHERE id = ?`)
         .bind(r.meta.last_row_id).first()

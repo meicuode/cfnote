@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   parseUtc, toIso, addMonths, addWorkdays, shiftLocal, computeRemindAt, nextDueAt,
   todoBucket, dueAction, fmtDue, fmtSpan, describeGap, countWorkdays,
-  OVERDUE_MAX_REMINDS, TIME_UNITS, UNIT_LABEL,
+  resolveChannels, parseChannels, serializeChannels,
+  OVERDUE_MAX_REMINDS, TIME_UNITS, UNIT_LABEL, DEFAULT_LEAD,
 } from '../src/lib/todoRules'
 
 const TZ = 480      // UTC+8
@@ -321,6 +322,71 @@ describe('分钟维度（P18.2）', () => {
   it('minute 在单位白名单里,且排在最前(最细的粒度)', () => {
     expect(TIME_UNITS[0]).toBe('minute')
     expect(UNIT_LABEL.minute).toBe('分钟')
+  })
+
+  it('默认提前量是 30 分钟', () => {
+    // 默认 0（到点才提醒）意味着「提醒」与「已经晚了」同时发生，那时来不及做任何事
+    expect(DEFAULT_LEAD).toEqual({ n: 30, unit: 'minute' })
+    expect(computeRemindAt('2026-08-10T09:00:00Z', DEFAULT_LEAD, TZ)).toBe('2026-08-10T08:30:00Z')
+  })
+})
+
+describe('推送渠道的选择（P18.3）', () => {
+  const CH = [
+    { id: 'a', enabled: true },
+    { id: 'b', enabled: true },
+    { id: 'c', enabled: false },   // 配了但没启用
+  ]
+
+  it('null = 跟随全部已启用（不是当时那几个的快照）', () => {
+    // 存快照的话，以后新加的渠道不会自动纳入，而人不会回头去逐条勾
+    expect(resolveChannels(null, CH).map((c) => c.id)).toEqual(['a', 'b'])
+    expect(resolveChannels(undefined, CH).map((c) => c.id)).toEqual(['a', 'b'])
+    expect(resolveChannels([], CH).map((c) => c.id)).toEqual(['a', 'b'])
+  })
+
+  it('指定了就只发那几个，且仍要过「已启用」这一关', () => {
+    expect(resolveChannels(['a'], CH).map((c) => c.id)).toEqual(['a'])
+    // c 被停用了，选中也不发
+    expect(resolveChannels(['a', 'c'], CH).map((c) => c.id)).toEqual(['a'])
+  })
+
+  it('选中的渠道全被停用 → 空数组，而不是回落到其他渠道', () => {
+    // 回落看着更"安全"，实际是拿一个人没选的渠道去发他的私事，
+    // 而这条待办恰恰是他亲手指定过渠道的，说明他在意发到哪里。
+    // 静默不发同样不可接受，所以推送侧要据此写日志 + 界面上标红
+    expect(resolveChannels(['c'], CH)).toEqual([])
+    expect(resolveChannels(['不存在的id'], CH)).toEqual([])
+  })
+
+  it('一个渠道都没配时给空数组', () => {
+    expect(resolveChannels(null, [])).toEqual([])
+    expect(resolveChannels(['a'], [])).toEqual([])
+  })
+
+  it('parseChannels 认得 JSON 数组，坏值一律当「跟随全部」', () => {
+    expect(parseChannels('["a","b"]')).toEqual(['a', 'b'])
+    // 坏值不该导致「不提醒」——宁可发给全部，也不要因为一个坏字段就静默
+    expect(parseChannels(null)).toBeNull()
+    expect(parseChannels('')).toBeNull()
+    expect(parseChannels('不是 JSON')).toBeNull()
+    expect(parseChannels('{"a":1}')).toBeNull()
+    expect(parseChannels('[]')).toBeNull()
+    expect(parseChannels('[1,2,null]')).toBeNull()
+  })
+
+  it('serializeChannels 把「全选」收敛成 null', () => {
+    // 全选存成 ["a","b"] 的话，以后新加渠道 d，这条待办不会发给 d——
+    // 而人当初勾的是"全部"，不是"a 和 b"
+    expect(serializeChannels(['a', 'b'], ['a', 'b'])).toBeNull()
+    expect(serializeChannels(null, ['a', 'b'])).toBeNull()
+    expect(serializeChannels([], ['a', 'b'])).toBeNull()
+  })
+
+  it('serializeChannels 只存仍然启用的那几个', () => {
+    expect(serializeChannels(['a'], ['a', 'b'])).toBe('["a"]')
+    // 选了个已经不存在的，过滤后为空 → 当作「跟随全部」而不是存一个死 id
+    expect(serializeChannels(['已删除'], ['a', 'b'])).toBeNull()
   })
 })
 

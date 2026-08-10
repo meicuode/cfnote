@@ -164,6 +164,7 @@ const TODO_TABLE = `CREATE TABLE IF NOT EXISTS todos (
   repeat_n INTEGER DEFAULT 0,
   repeat_unit TEXT,
   tz_offset INTEGER DEFAULT 0,
+  channels TEXT,
   article_id INTEGER,
   completed_at TEXT,
   deleted_at TEXT,
@@ -239,6 +240,14 @@ async function doEnsure(env: Env): Promise<void> {
   // idx_todos_due 是 cron 每 5 分钟那次扫描走的索引:没有它就是全表扫,
   // 而待办会一直堆积(已完成的也留着),几个月后每 5 分钟扫一遍全表。
   await env.DB.prepare(TODO_TABLE).run()
+  // P18.3 按待办选推送渠道。todos 表在 P18 那批就建出来了,而 CREATE TABLE IF NOT EXISTS
+  // 对已存在的表是空操作——新列只能走 ALTER。少了这段的话,「P18 之后新建的库」有这一列、
+  // 「P18 那批就建好的库」永远没有,而后者正是我们自己的生产库
+  const { results: todoCols } = await env.DB.prepare('PRAGMA table_info(todos)').all<{ name: string }>()
+  if (todoCols && todoCols.length > 0) {
+    const have = new Set(todoCols.map((r) => r.name))
+    if (!have.has('channels')) await env.DB.prepare('ALTER TABLE todos ADD COLUMN channels TEXT').run()
+  }
   await env.DB.prepare(
     'CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(status, deleted_at, due_at, remind_at)'
   ).run()

@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS todos (
   repeat_n INTEGER DEFAULT 0,
   repeat_unit TEXT,
   tz_offset INTEGER DEFAULT 0,
+  channels TEXT,
   article_id INTEGER,
   completed_at TEXT,
   deleted_at TEXT,

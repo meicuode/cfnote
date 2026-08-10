@@ -3,10 +3,12 @@ import { useApi } from '../hooks/useApi'
 import { marked } from '../lib/markdown'
 import ConfirmDialog from './ConfirmDialog'
 import {
-  fmtDue, describeRule, describeGap, TIME_UNITS, UNIT_LABEL, PRIORITY_LABEL, PRIORITY_MARK,
-  OVERDUE_MAX_REMINDS, SCAN_INTERVAL_MIN, DEFAULT_DUE_DAYS, type TimeUnit,
+  fmtDue, describeRule, describeGap, parseChannels, resolveChannels,
+  TIME_UNITS, UNIT_LABEL, PRIORITY_LABEL, PRIORITY_MARK,
+  OVERDUE_MAX_REMINDS, SCAN_INTERVAL_MIN, DEFAULT_DUE_DAYS, DEFAULT_LEAD, type TimeUnit,
 } from '../lib/todoRules'
-import type { Todo, TodoBucket, TodoListResponse, TodoCounts } from '../lib/todoTypes'
+import { CHANNEL_META, type ChannelType } from '../lib/notifyChannels'
+import type { Todo, TodoBucket, TodoListResponse, TodoCounts, ChannelBrief } from '../lib/todoTypes'
 
 // 待办面板(P18)。这个模块的重点是通知,所以界面上处处把「提醒会不会到」摆在明面:
 // 没有渠道时顶部常驻警告,每一行显示这条的提醒规则与推送状态。
@@ -36,6 +38,8 @@ type Draft = {
   lead_unit: TimeUnit
   repeat_n: number
   repeat_unit: TimeUnit
+  /** 选中的渠道 id;null = 跟随全部已启用 */
+  channels: string[] | null
 }
 
 /** UTC ISO → datetime-local 需要的本地时间字符串(YYYY-MM-DDTHH:mm) */
@@ -62,7 +66,8 @@ const emptyDraft = (): Draft => {
   return {
     title: '', summary: '', notes: '', priority: 1,
     due_at: toLocalField(d.getTime()),
-    lead_n: 0, lead_unit: 'day', repeat_n: 0, repeat_unit: 'week',
+    lead_n: DEFAULT_LEAD.n, lead_unit: DEFAULT_LEAD.unit, repeat_n: 0, repeat_unit: 'week',
+    channels: null,
   }
 }
 
@@ -77,6 +82,7 @@ const toDraft = (t: Todo): Draft => ({
   lead_unit: (t.lead_unit || 'day') as TimeUnit,
   repeat_n: t.repeat_n || 0,
   repeat_unit: (t.repeat_unit || 'week') as TimeUnit,
+  channels: parseChannels(t.channels),
 })
 
 export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettings }: Props) {
@@ -90,7 +96,7 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
   const [deleting, setDeleting] = useState<Todo | null>(null)
   const [expanded, setExpanded] = useState<number | null>(null)
   const [busy, setBusy] = useState<number | null>(null)
-  const [hasChannel, setHasChannel] = useState<boolean | null>(null)
+  const [chans, setChans] = useState<ChannelBrief[] | null>(null)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -114,13 +120,15 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
 
   useEffect(() => { load(bucket) }, [load, bucket])
 
-  // 渠道自检。这是这个模块最要紧的一条前置条件,所以单独查一次而不是等推送失败——
-  // 推送失败是在服务端日志里,而人是在这个面板里
+  // 渠道自检 + 勾选框的选项来源。这是这个模块最要紧的一条前置条件,所以单独查一次
+  // 而不是等推送失败——推送失败是在服务端日志里,而人是在这个面板里
   useEffect(() => {
-    api.get<{ channels: { enabled?: boolean }[] }>('/notify/channels').then((r) => {
-      setHasChannel(r.ok && Array.isArray(r.data?.channels) && r.data!.channels.some((c) => c?.enabled))
+    api.get<{ channels: ChannelBrief[] }>('/notify/channels').then((r) => {
+      setChans(r.ok && Array.isArray(r.data?.channels) ? r.data!.channels : [])
     })
   }, [api])
+
+  const liveChans = (chans || []).filter((c) => c.enabled)
 
   const flash = (msg: string) => { setNote(msg); setTimeout(() => setNote(''), 4000) }
 
@@ -131,6 +139,7 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
     setBusy(-1)
     const body = {
       title,
+      channels: draft.channels,
       summary: draft.summary,
       notes: draft.notes,
       priority: draft.priority,
@@ -198,7 +207,7 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
           </div>
         </div>
 
-        <NoChannelBanner has={hasChannel} onOpenSettings={onOpenSettings} />
+        <NoChannelBanner has={chans === null ? null : liveChans.length > 0} onOpenSettings={onOpenSettings} />
 
         <div className="px-4 pt-3 flex gap-1 shrink-0 border-b border-gray-100 dark:border-gray-700">
           {BUCKETS.map((b) => (
@@ -231,6 +240,7 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
                 key={t.id}
                 t={t}
                 now={now}
+                liveChans={liveChans}
                 busy={busy === t.id}
                 expanded={expanded === t.id}
                 onToggle={() => setExpanded(expanded === t.id ? null : t.id)}
@@ -249,6 +259,7 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
         <DraftDialog
           draft={draft}
           busy={busy === -1}
+          chans={liveChans}
           onChange={setDraft}
           onSave={save}
           onCancel={() => { setDraft(null); setError('') }}
@@ -292,6 +303,7 @@ function NoChannelBanner({ has, onOpenSettings }: { has: boolean | null; onOpenS
 interface RowProps {
   t: Todo
   now: number
+  liveChans: ChannelBrief[]
   busy: boolean
   expanded: boolean
   onToggle: () => void
@@ -302,7 +314,7 @@ interface RowProps {
   onOpenArticle?: (id: number) => void
 }
 
-function TodoRow({ t, now, busy, expanded, onToggle, onDone, onReopen, onEdit, onDelete, onOpenArticle }: RowProps) {
+function TodoRow({ t, now, liveChans, busy, expanded, onToggle, onDone, onReopen, onEdit, onDelete, onOpenArticle }: RowProps) {
   const done = t.status === 'done'
   const dueTs = t.due_at ? Date.parse(t.due_at.includes('T') ? t.due_at : t.due_at.replace(' ', 'T') + 'Z') : NaN
   const overdue = !done && Number.isFinite(dueTs) && dueTs <= now
@@ -341,6 +353,7 @@ function TodoRow({ t, now, busy, expanded, onToggle, onDone, onReopen, onEdit, o
               </span>
             )}
             <RemindBadge t={t} overdue={overdue} done={done} />
+            <TargetLabel t={t} allIds={liveChans.map((c) => c.id)} />
           </div>
         </button>
 
@@ -357,7 +370,7 @@ function TodoRow({ t, now, busy, expanded, onToggle, onDone, onReopen, onEdit, o
           <div className="text-[11px] text-gray-500">{describeRule(t)}</div>
           {t.notes && (
             <div
-              className="prose prose-sm dark:prose-invert max-w-none text-xs"
+              className="cfnote-md-narrow prose prose-sm dark:prose-invert max-w-none text-xs"
               dangerouslySetInnerHTML={{ __html: marked(t.notes) as string }}
             />
           )}
@@ -393,15 +406,32 @@ function RemindBadge({ t, overdue, done }: { t: Todo; overdue: boolean; done: bo
   if (t.reminded_at) return <span className="text-emerald-600">已提醒</span>
   return <span className="text-gray-400">待提醒</span>
 }
+// 这一条会发到哪里(P18.3)。此前完全看不出来,而这个模块的重点就是通知。
+// 「跟随全部」时不显示——那是默认,每行都挂一句「发给全部渠道」是噪音;
+// 只在**指定过**渠道时才说,因为那时人需要确认自己指定的还在不在
+function TargetLabel({ t, allIds }: { t: Todo; allIds: string[] }) {
+  if (t.status === 'done') return null
+  const picked = parseChannels(t.channels)
+  if (!picked) return null
+  const live = picked.filter((id) => allIds.includes(id))
+  if (live.length === 0) {
+    // 指定的渠道后来被停用/删除了。推送侧此时不回落到其他渠道(那是拿人没选的
+    // 渠道去发他的私事),所以这条实际发不出去——必须在界面上看得见
+    return <span className="text-red-500 font-medium" title="指定的渠道已停用,这条不会推送">指定渠道已失效</span>
+  }
+  return <span className="text-gray-400">仅推 {live.length} 个渠道</span>
+}
+
 interface DraftProps {
   draft: Draft
   busy: boolean
+  chans: ChannelBrief[]
   onChange: (d: Draft) => void
   onSave: () => void
   onCancel: () => void
 }
 
-function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
+function DraftDialog({ draft, busy, chans, onChange, onSave, onCancel }: DraftProps) {
   const [preview, setPreview] = useState(false)
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => onChange({ ...draft, [k]: v })
   const tz = -new Date().getTimezoneOffset()
@@ -429,7 +459,7 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
           </h3>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+        <div className="flex-1 min-h-0 min-w-0 overflow-y-auto px-4 py-3 space-y-3">
           <div>
             <label className={label}>标题</label>
             <input autoFocus value={draft.title} onChange={(e) => set('title', e.target.value)} className={field} />
@@ -514,6 +544,48 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
             </div>
           </div>
 
+          {/* 推送渠道(P18.3)。此前完全看不出这条会发到哪里——而这个模块的重点就是通知。
+              勾选存的是渠道 id;全选与不选都存 null,表示「跟随全部已启用」而不是当时那几个的
+              快照:存快照的话以后新加的渠道不会自动纳入,而人不会回头逐条去勾 */}
+          <div>
+            <label className={label}>推送到哪些渠道</label>
+            {chans.length === 0 ? (
+              <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                还没有启用任何渠道，这条待办到时间不会有推送。
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  {chans.map((ch) => {
+                    const on = draft.channels === null || draft.channels.includes(ch.id)
+                    return (
+                      <label key={ch.id} className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-200 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={(e) => {
+                            // null 表示「全选」,第一次取消要先展开成显式列表再去掉那一个
+                            const cur = draft.channels === null ? chans.map((c) => c.id) : draft.channels
+                            const next = e.target.checked ? [...cur, ch.id] : cur.filter((id) => id !== ch.id)
+                            // 又变回全选就收敛成 null,免得存一份会过时的快照
+                            set('channels', next.length === chans.length ? null : next)
+                          }}
+                          className="w-3.5 h-3.5 rounded border-gray-300 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        {CHANNEL_META[ch.type as ChannelType]?.label || ch.type}
+                      </label>
+                    )
+                  })}
+                </div>
+                {draft.channels !== null && draft.channels.length === 0 && (
+                  <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-1">
+                    一个都没选 = 发给全部已启用的渠道。真想让它不推送，把截止时间清空。
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className={label + ' mb-0'}>备注（Markdown，可插图片链接）</label>
@@ -526,7 +598,7 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
             </div>
             {preview ? (
               <div
-                className="prose prose-sm dark:prose-invert max-w-none text-xs border border-gray-200 dark:border-gray-600 rounded-lg px-2.5 py-2 min-h-[6rem]"
+                className="cfnote-md-narrow prose prose-sm dark:prose-invert max-w-none text-xs border border-gray-200 dark:border-gray-600 rounded-lg px-2.5 py-2 min-h-[6rem]"
                 dangerouslySetInnerHTML={{ __html: marked(draft.notes || '_(空)_') as string }}
               />
             ) : (

@@ -35,6 +35,11 @@ export const SCAN_INTERVAL_MIN = 5
  *  而没有截止时间 = 永远不会提醒,这个模块就白做了 */
 export const DEFAULT_DUE_DAYS = 1
 
+/** 新建待办时默认的提前提醒量。
+ *  默认 0(到点才提醒)意味着「提醒」与「已经晚了」同时发生,那时已经来不及做任何事;
+ *  30 分钟是能起身处理一件事的最小窗口,又不至于早到让人忘记。 */
+export const DEFAULT_LEAD: Offset = { n: 30, unit: 'minute' }
+
 // 逾期后连续提醒的上限。到点了没做完,每天推一次,推满就停——
 // 不停的话它会一直响到你删掉它,而那时你已经不看这个渠道了(通知疲劳把**其他**待办
 // 的提醒一起废掉,这是不设上限最贵的代价)。
@@ -246,6 +251,48 @@ export function countWorkdays(fromLocal: number, toLocal: number): number {
     t += DAY
   }
   return n
+}
+
+/**
+ * 这条待办实际会推到哪几个渠道(P18.3)。
+ *
+ * `picked` 为 null = 「跟随全部已启用」,而不是「当时那几个的快照」。这个区别在
+ * 以后加渠道时才显现:存快照的话新渠道不会自动纳入,而人不会回头去逐条勾选。
+ *
+ * 选中的渠道后来被停用/删除时,返回的是**空数组**——调用方据此提示,而不是
+ * 悄悄回落到其他渠道。回落看着更"安全",实际是拿一个人没选的渠道去发他的私事;
+ * 而这条待办本来就是他亲手指定过渠道的,说明他在意发到哪里。
+ * 静默不发同样不可接受,所以两边都不选:让界面上看得见「这条发不出去」。
+ */
+export function resolveChannels<T extends { id: string; enabled?: boolean }>(
+  picked: string[] | null | undefined,
+  all: T[],
+): T[] {
+  const live = (Array.isArray(all) ? all : []).filter((c) => c?.enabled)
+  if (!picked || !Array.isArray(picked) || picked.length === 0) return live
+  const want = new Set(picked)
+  return live.filter((c) => want.has(c.id))
+}
+
+/** 库里存的是 JSON 文本;坏值一律当「跟随全部」,不要因为一个坏字段就不提醒了 */
+export function parseChannels(raw: unknown): string[] | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  try {
+    const v = JSON.parse(raw)
+    if (!Array.isArray(v)) return null
+    const ids = v.filter((x) => typeof x === 'string' && x)
+    return ids.length > 0 ? ids : null
+  } catch {
+    return null
+  }
+}
+
+/** 写库前归一:空数组与全选都存 null(= 跟随全部已启用) */
+export function serializeChannels(picked: string[] | null | undefined, allEnabledIds: string[]): string | null {
+  if (!picked || picked.length === 0) return null
+  const live = picked.filter((id) => allEnabledIds.includes(id))
+  if (live.length === 0 || live.length === allEnabledIds.length) return null
+  return JSON.stringify(live)
 }
 
 /** 剩余时间的人话形态(与 fmUtils.fmtRemaining 同构,但这里要区分「已逾期多久」) */

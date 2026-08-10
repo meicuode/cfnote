@@ -19,6 +19,8 @@ export interface Todo {
   repeat_n: number
   repeat_unit: TimeUnit | null
   tz_offset: number
+  /** 指定的推送渠道 id(JSON 文本);null = 跟随全部已启用 */
+  channels: string | null
   article_id: number | null
   completed_at: string | null
   created_at: string
@@ -37,3 +39,10 @@ export interface TodoListResponse {
 }
 
 export type TodoBucket = 'pending' | 'overdue' | 'done' | 'all'
+
+/** 渠道自检的回包(GET /api/notify/channels)。刻意不含 config */
+export interface ChannelBrief {
+  id: string
+  type: string
+  enabled: boolean
+}

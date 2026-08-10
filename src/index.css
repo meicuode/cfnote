@@ -371,6 +371,17 @@
   .cfnote-drawer { animation: none; }
 }
 
+/* 窄容器里的 Markdown 预览(P18.3):代码块与长串不许把容器撑开。
+   min-width:0 是关键——flex/grid 子项默认 min-width:auto,里面有个不换行的
+   <pre> 时子项会被撑到内容宽度而不是出现滚动条,整个对话框跟着横向溢出。
+   与 Sidebar 那处 min-h-0 是同一类问题(P17.3),只是换了个轴。 */
+.cfnote-md-narrow { min-width: 0; }
+.cfnote-md-narrow pre { overflow-x: auto; max-width: 100%; }
+.cfnote-md-narrow code { word-break: break-word; }
+.cfnote-md-narrow pre code { word-break: normal; }
+.cfnote-md-narrow img { max-width: 100%; height: auto; }
+.cfnote-md-narrow table { display: block; overflow-x: auto; max-width: 100%; }
+
 /* 引用高亮(深色下用半透明琥珀) */
 .dark .cfnote-highlight { animation-name: cfnote-flash-dark; }
 @keyframes cfnote-flash-dark {
