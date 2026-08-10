@@ -3,8 +3,8 @@ import { useApi } from '../hooks/useApi'
 import { marked } from '../lib/markdown'
 import ConfirmDialog from './ConfirmDialog'
 import {
-  fmtDue, describeRule, TIME_UNITS, UNIT_LABEL, PRIORITY_LABEL, PRIORITY_MARK,
-  OVERDUE_MAX_REMINDS, type TimeUnit,
+  fmtDue, describeRule, describeGap, TIME_UNITS, UNIT_LABEL, PRIORITY_LABEL, PRIORITY_MARK,
+  OVERDUE_MAX_REMINDS, SCAN_INTERVAL_MIN, DEFAULT_DUE_DAYS, type TimeUnit,
 } from '../lib/todoRules'
 import type { Todo, TodoBucket, TodoListResponse, TodoCounts } from '../lib/todoTypes'
 
@@ -47,10 +47,24 @@ function toLocalInput(iso: string | null): string {
   return d.toISOString().slice(0, 16)
 }
 
-const emptyDraft = (): Draft => ({
-  title: '', summary: '', notes: '', priority: 1, due_at: '',
-  lead_n: 0, lead_unit: 'day', repeat_n: 0, repeat_unit: 'week',
-})
+/** 本地时间戳 → datetime-local 需要的字符串(YYYY-MM-DDTHH:mm) */
+function toLocalField(ts: number): string {
+  const d = new Date(ts - new Date(ts).getTimezoneOffset() * 60000)
+  return d.toISOString().slice(0, 16)
+}
+
+// 新建时默认给一个截止时间(明天此刻,分钟归零)。空着不填的话绝大多数待办会没有
+// 截止时间,而**没有截止时间就永远不会提醒**——这个模块的重点恰恰是通知,
+// 默认落进「记了但不会响」是最坏的缺省
+const emptyDraft = (): Draft => {
+  const d = new Date(Date.now() + DEFAULT_DUE_DAYS * 86400000)
+  d.setMinutes(0, 0, 0)
+  return {
+    title: '', summary: '', notes: '', priority: 1,
+    due_at: toLocalField(d.getTime()),
+    lead_n: 0, lead_unit: 'day', repeat_n: 0, repeat_unit: 'week',
+  }
+}
 
 const toDraft = (t: Todo): Draft => ({
   id: t.id,
@@ -390,6 +404,8 @@ interface DraftProps {
 function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
   const [preview, setPreview] = useState(false)
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => onChange({ ...draft, [k]: v })
+  const tz = -new Date().getTimezoneOffset()
+  const gap = draft.due_at ? describeGap(new Date(draft.due_at).toISOString(), Date.now(), tz) : []
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }
@@ -440,6 +456,15 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
             </div>
           </div>
 
+          {/* 填完截止时间的即时反馈。给多个维度是因为选提前量时想的往往不是「几天」——
+              跨周末时「3 天」和「2 个工作日」差出一整天,不换算就得自己数日历 */}
+          {gap.length > 0 && (
+            <div className="text-[11px] text-gray-500 -mt-1">
+              距离截止还有 <b className="text-gray-700 dark:text-gray-300">{gap[0]}</b>
+              {gap.length > 1 && <span className="text-gray-400">（{gap.slice(1).join(' · ')}）</span>}
+            </div>
+          )}
+
           <div className="rounded-lg bg-gray-50 dark:bg-gray-700/40 p-3 space-y-3">
             <div>
               <label className={label}>提前多久提醒</label>
@@ -455,6 +480,11 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
               </div>
               <div className="text-[11px] text-gray-400 mt-1">
                 填 0 = 到截止时间才提醒。没有截止时间的话提醒不会触发。
+                {draft.lead_unit === 'minute' && (
+                  <b className="block text-amber-600 dark:text-amber-400">
+                    扫描每 {SCAN_INTERVAL_MIN} 分钟一次，所以分钟级的提前量实际有 ±{SCAN_INTERVAL_MIN} 分钟误差。
+                  </b>
+                )}
               </div>
             </div>
 

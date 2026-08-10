@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseUtc, toIso, addMonths, addWorkdays, shiftLocal, computeRemindAt, nextDueAt,
-  todoBucket, dueAction, fmtDue, OVERDUE_MAX_REMINDS,
+  todoBucket, dueAction, fmtDue, fmtSpan, describeGap, countWorkdays,
+  OVERDUE_MAX_REMINDS, TIME_UNITS, UNIT_LABEL,
 } from '../src/lib/todoRules'
 
 const TZ = 480      // UTC+8
@@ -242,6 +243,84 @@ describe('dueAction(cron 的全部判断)', () => {
   it('有截止但没设提醒时间,到点后仍会走逾期提醒', () => {
     expect(dueAction({ status: 'pending', due_at: '2026-08-10T11:00:00Z', remind_at: null, overdue_reminds: 0 }, now))
       .toEqual({ kind: 'remind', reason: 'overdue', nth: 1 })
+  })
+})
+
+describe('fmtSpan / describeGap / countWorkdays（P18.2 填表时的即时反馈）', () => {
+  const now = Date.parse('2026-08-10T12:00:00Z')   // 周一
+
+  it('fmtSpan 取最大量级 + 一位余数', () => {
+    expect(fmtSpan(3 * DAY)).toBe('3 天')
+    expect(fmtSpan(3 * DAY + 5 * HOUR)).toBe('3 天 5 小时')
+    expect(fmtSpan(5 * HOUR)).toBe('5 小时')
+    expect(fmtSpan(5 * HOUR + 20 * 60000)).toBe('5 小时 20 分钟')
+    expect(fmtSpan(20 * 60000)).toBe('20 分钟')
+  })
+
+  it('fmtSpan 不足一分钟也说 1 分钟,不说 0', () => {
+    expect(fmtSpan(30_000)).toBe('1 分钟')
+    expect(fmtSpan(0)).toBe('1 分钟')
+  })
+
+  it('countWorkdays 跳过周末,不含起点当天', () => {
+    // 周一 → 周五：二三四五 = 4 个
+    expect(countWorkdays(Date.parse('2026-08-10T00:00:00Z'), Date.parse('2026-08-14T23:59:00Z'))).toBe(4)
+    // 周五 → 下周一：只有下周一 = 1 个（周末跳过）
+    expect(countWorkdays(Date.parse('2026-08-14T00:00:00Z'), Date.parse('2026-08-17T23:59:00Z'))).toBe(1)
+  })
+
+  it('countWorkdays 终点早于起点给 0,不给负数', () => {
+    expect(countWorkdays(now, now - DAY)).toBe(0)
+    expect(countWorkdays(now, now)).toBe(0)
+  })
+
+  it('describeGap 给多个维度,第一个永远是自然时长', () => {
+    // 这正是加它的理由：跨周末时「3 天」与「2 个工作日」差出一整天
+    const g = describeGap('2026-08-13T12:00:00Z', now, 0)
+    expect(g[0]).toBe('3 天')
+    expect(g).toContain('3 个工作日')
+  })
+
+  it('describeGap 跨周末时工作日明显少于自然日', () => {
+    // 周一 → 下周一：7 天，但只有 5 个工作日
+    const g = describeGap('2026-08-17T12:00:00Z', now, 0)
+    expect(g[0]).toBe('7 天')
+    expect(g).toContain('5 个工作日')
+  })
+
+  it('describeGap 不足一天时不提工作日（「0 个工作日」是废话）', () => {
+    const g = describeGap('2026-08-10T18:00:00Z', now, 0)
+    expect(g).toEqual(['6 小时'])
+  })
+
+  it('describeGap 超过一周才给周数', () => {
+    expect(describeGap('2026-08-13T12:00:00Z', now, 0).some((s) => s.includes('周'))).toBe(false)
+    expect(describeGap('2026-09-10T12:00:00Z', now, 0).some((s) => s.includes('周'))).toBe(true)
+  })
+
+  it('describeGap 已过截止说「已过去」', () => {
+    expect(describeGap('2026-08-08T12:00:00Z', now, 0)).toEqual(['已过去 2 天'])
+  })
+
+  it('describeGap 没有截止时间给空数组', () => {
+    expect(describeGap(null, now, 0)).toEqual([])
+    expect(describeGap('乱填', now, 0)).toEqual([])
+  })
+})
+
+describe('分钟维度（P18.2）', () => {
+  it('minute 参与平移', () => {
+    const base = Date.parse('2026-08-10T09:00:00Z')
+    expect(toIso(shiftLocal(base, { n: 30, unit: 'minute' }, -1))).toBe('2026-08-10T08:30:00Z')
+  })
+
+  it('提前 30 分钟算得出提醒时间', () => {
+    expect(computeRemindAt('2026-08-10T09:00:00Z', { n: 30, unit: 'minute' }, TZ)).toBe('2026-08-10T08:30:00Z')
+  })
+
+  it('minute 在单位白名单里,且排在最前(最细的粒度)', () => {
+    expect(TIME_UNITS[0]).toBe('minute')
+    expect(UNIT_LABEL.minute).toBe('分钟')
   })
 })
 

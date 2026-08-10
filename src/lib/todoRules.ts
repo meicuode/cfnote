@@ -8,7 +8,7 @@
 // 所以每条待办存一个 tz_offset(前端取 -new Date().getTimezoneOffset(),UTC+8 是 480),
 // 所有历法运算先把时间戳移进「本地墙上时间」再做,算完移回 UTC。
 
-export type TimeUnit = 'hour' | 'day' | 'workday' | 'week' | 'month'
+export type TimeUnit = 'minute' | 'hour' | 'day' | 'workday' | 'week' | 'month'
 
 export interface Offset {
   n: number
@@ -16,6 +16,7 @@ export interface Offset {
 }
 
 export const UNIT_LABEL: Record<TimeUnit, string> = {
+  minute: '分钟',
   hour: '小时',
   day: '自然日',
   workday: '工作日',
@@ -23,7 +24,16 @@ export const UNIT_LABEL: Record<TimeUnit, string> = {
   month: '自然月',
 }
 
-export const TIME_UNITS: TimeUnit[] = ['hour', 'day', 'workday', 'week', 'month']
+export const TIME_UNITS: TimeUnit[] = ['minute', 'hour', 'day', 'workday', 'week', 'month']
+
+// 扫描周期。提醒的实际精度就是它:cron 每 5 分钟跑一次,所以「提前 1 分钟」与
+// 「提前 3 分钟」收到推送的时刻可能完全一样。分钟这个维度是为「提前 30 分钟」
+// 这类需求准备的,填个位数没有意义——界面上要如实说明,不要让人以为能精确到分
+export const SCAN_INTERVAL_MIN = 5
+
+/** 新建待办时截止时间的默认提前量(天)。空着不填的话绝大多数待办会没有截止时间,
+ *  而没有截止时间 = 永远不会提醒,这个模块就白做了 */
+export const DEFAULT_DUE_DAYS = 1
 
 // 逾期后连续提醒的上限。到点了没做完,每天推一次,推满就停——
 // 不停的话它会一直响到你删掉它,而那时你已经不看这个渠道了(通知疲劳把**其他**待办
@@ -99,6 +109,7 @@ export function shiftLocal(ts: number, off: Offset, dir: 1 | -1): number {
   const n = Math.max(0, Math.floor(Number(off?.n) || 0)) * dir
   if (n === 0) return ts
   switch (off.unit) {
+    case 'minute': return ts + n * MIN
     case 'hour': return ts + n * HOUR
     case 'day': return ts + n * DAY
     case 'week': return ts + n * 7 * DAY
@@ -182,6 +193,59 @@ export function dueAction(t: TodoLike, now: number): DueAction {
   if (remind === null || remind > now) return { kind: 'none' }
   if (lastPush !== null) return { kind: 'none' }
   return { kind: 'remind', reason: 'upcoming' }
+}
+
+/**
+ * 距离截止还有多久,按**多个维度**同时表述(填完截止时间后给人看的)。
+ *
+ * 与 fmtDue 的区别:那个是列表里的一行小字,只取最大的那个量级;这里是填表时的
+ * 即时反馈,人需要的恰恰是换算——「3 天」和「2 个工作日」是同一段时间的两种说法,
+ * 而选提前量时想的是后者。跨周末时两者能差出一整天,不换算就得自己数日历。
+ */
+export function describeGap(dueIso: string | null | undefined, now: number, tz = 0): string[] {
+  const due = parseUtc(dueIso)
+  if (due === null) return []
+  const diff = due - now
+  if (diff <= 0) return [`已过去 ${fmtSpan(-diff)}`]
+
+  const out = [fmtSpan(diff)]
+  // 工作日:按本地日历数,跨周末才有意义(diff 超过一天时才给,否则「0 个工作日」是废话)
+  if (diff >= DAY) {
+    const wd = countWorkdays(toLocalTs(now, tz), toLocalTs(due, tz))
+    if (wd > 0) out.push(`${wd} 个工作日`)
+  }
+  if (diff >= 7 * DAY) out.push(`约 ${Math.round(diff / (7 * DAY))} 周`)
+  return out
+}
+
+/** 一段时长的人话形态(天/小时/分钟,取最大量级 + 一位余数) */
+export function fmtSpan(ms: number): string {
+  const d = Math.floor(ms / DAY)
+  const h = Math.floor((ms % DAY) / HOUR)
+  const m = Math.floor((ms % HOUR) / MIN)
+  if (d > 0) return h > 0 ? `${d} 天 ${h} 小时` : `${d} 天`
+  if (h > 0) return m > 0 ? `${h} 小时 ${m} 分钟` : `${h} 小时`
+  return `${Math.max(1, m)} 分钟`
+}
+
+const toLocalTs = (utc: number, tz: number) => utc + tz * MIN
+
+/** 两个时刻之间有几个工作日(不含起点当天,含终点当天;入参是本地墙上时间戳) */
+export function countWorkdays(fromLocal: number, toLocal: number): number {
+  if (toLocal <= fromLocal) return 0
+  let n = 0
+  // 从起点的次日 00:00 开始逐日数,避免同一天被算成一个工作日
+  const cur = new Date(fromLocal)
+  cur.setUTCHours(0, 0, 0, 0)
+  let t = cur.getTime() + DAY
+  // 上限一年,防止有人把截止时间填到 2099 年时这里空转
+  const limit = Math.min(toLocal, t + 366 * DAY)
+  while (t <= limit) {
+    const dow = new Date(t).getUTCDay()
+    if (dow !== 0 && dow !== 6) n++
+    t += DAY
+  }
+  return n
 }
 
 /** 剩余时间的人话形态(与 fmUtils.fmtRemaining 同构,但这里要区分「已逾期多久」) */
