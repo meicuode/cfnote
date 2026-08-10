@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* dark: 工具类跟着 <html class="dark"> 走,而不是跟着操作系统的 prefers-color-scheme。
+   Tailwind v4 的默认行为是后者,而本应用的明暗开关加的是 .dark 类(Layout.tsx),
+   两者从来没接上——表现是「系统深色 + 应用切亮色」时,用 dark: 的那几个组件
+   (ArticleEditor / ClipPage / RemindersPanel / TagBrowserDialog /
+   VersionHistoryDialog / TodosPanel)仍然是深的,而其余界面是亮的;反过来也坏。
+   下面 70 多条手写的 `.dark xxx` 规则一直是对的,这一行让工具类与它们同一个口径。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* 细而柔和的滚动条(全局) */
 * {
   scrollbar-width: thin;
@@ -351,6 +359,17 @@
 .dark .cfnote-preview tr:nth-child(even) { background: #1a2234; }
 .dark .cfnote-preview hr { border-top-color: #374151; }
 .dark .cfnote-preview a { color: #34d399; }
+
+/* 右侧抽屉滑入(P18 待办面板)。尊重「减少动态效果」的系统偏好——
+   前庭功能障碍的人会被横向滑动诱发不适,而这个动画没有任何信息量,去掉不损失什么 */
+.cfnote-drawer { animation: cfnote-slide-in 0.18s ease-out; }
+@keyframes cfnote-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cfnote-drawer { animation: none; }
+}
 
 /* 引用高亮(深色下用半透明琥珀) */
 .dark .cfnote-highlight { animation-name: cfnote-flash-dark; }

@@ -161,10 +161,14 @@ export default function TodosPanel({ token, onClose, onOpenArticle, onOpenSettin
   }
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-3" onMouseDown={onClose}>
+    // 右侧抽屉而不是居中弹窗。待办是「边做边看」的东西——在写笔记时想确认今天还剩什么,
+    // 居中弹窗把正文整个盖住,抽屉只推开一条边。设置/统计/日志是「专门去一趟再回来」,
+    // 那些仍然居中。形状上也更合:待办是一列纵向条目,居中的 3xl 框横向全是留白、纵向反而挤。
+    // 窄屏铺满整宽,等价于全屏覆盖层。
+    <div className="fixed inset-0 z-[70] flex justify-end" onMouseDown={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       <div
-        className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden"
+        className="cfnote-drawer relative bg-white dark:bg-gray-800 shadow-2xl w-full sm:w-[26rem] h-full flex flex-col overflow-hidden"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between shrink-0">
@@ -326,7 +330,9 @@ function TodoRow({ t, now, busy, expanded, onToggle, onDone, onReopen, onEdit, o
           </div>
         </button>
 
-        <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        {/* 抽屉窄,且触屏上没有 hover——操作按钮常显。
+            居中弹窗那版是 hover 才现形的,搬进抽屉后那样等于在手机上够不到 */}
+        <div className="shrink-0 flex items-center gap-1">
           <button onClick={onEdit} className="text-[11px] px-2 py-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10">编辑</button>
           <button onClick={onDelete} className="text-[11px] px-2 py-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">删除</button>
         </div>
@@ -419,7 +425,7 @@ function DraftDialog({ draft, busy, onChange, onSave, onCancel }: DraftProps) {
                    placeholder="一句话说清这件事(会一起推送到通知里)" />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className={label}>优先级</label>
               <select value={draft.priority} onChange={(e) => set('priority', Number(e.target.value))} className={field}>
