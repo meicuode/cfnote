@@ -18,6 +18,7 @@ import { comments } from './routes/comments'
 import { pages } from './routes/pages'
 import { backups } from './routes/backups'
 import { todos } from './routes/todos'
+import { ai } from './routes/ai'
 import type { AppEnv } from './types'
 import type { Env } from '../src/types'
 
@@ -66,6 +67,7 @@ app.route('/api/notify', notify)
 app.route('/api/comments', comments)
 app.route('/api/backups', backups)
 app.route('/api/todos', todos)
+app.route('/api/ai', ai)
 
 // 页面级路由(P12.6):/blog/:id 预渲染、/blog/feed.xml、/sitemap.xml、/robots.txt。
 // 免鉴权(上面的中间件只管 /api/*),放在 API 之后注册,互不重叠。

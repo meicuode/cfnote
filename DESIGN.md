@@ -36,6 +36,8 @@
 
 文本生成模型可在设置页面切换：Llama 3.1 8B（~15 neurons/次，最省）、Llama 3.3 70B（默认）、DeepSeek R1 32B（推理）、QwQ 32B（推理，中文佳）。推理模型输出中的 `<think>...</think>` 会被自动清理。
 
+P19 起文本生成也可以接外部渠道（中转站 / 自定义 API，OpenAI Chat、OpenAI Responses、Anthropic Messages 三种协议），默认仍是 Workers AI。**嵌入永远是 bge-m3**：向量库 1024 维、建好后不能改维度，外部渠道只接管文本生成。见 §10 P19.1。
+
 ## 3. 系统架构
 
 ```
@@ -294,7 +296,18 @@ CREATE TABLE system_logs (        -- 系统日志（error/warn/info）
 );
 CREATE INDEX idx_system_logs_level_time ON system_logs(level, created_at);
 CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见 §统计）
+CREATE TABLE ai_providers (       -- P19 外部 AI 渠道（全站配置，无 user_id；不进备份）
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'relay',   -- relay | custom
+  protocol TEXT NOT NULL DEFAULT 'openai-chat',             -- openai-chat | openai-responses | anthropic
+  base_url TEXT NOT NULL, api_key TEXT NOT NULL DEFAULT '',
+  allow_private INTEGER DEFAULT 0,  -- 检索时是否带上私密笔记（默认不带）
+  models TEXT, models_at TEXT,      -- 模型列表 JSON（标星 / 协议覆盖 / 探测结果）与检测时间
+  created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+);
 ```
+
+当前默认用哪个渠道 / 模型 / 思考强度存在 settings 的 `llm_provider`（空 = Workers AI）、`llm_model`、`llm_effort`。
 
 ## 6. API 接口设计
 
@@ -367,6 +380,18 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
 | DELETE | `/api/comments/:id` | 删除评论 |
 | GET/POST | `/api/stats` `/stats/archive` | 统计仪表盘 / 用量归档 |
 | POST | `/api/notify/test` | 用面板填写的渠道配置发一条测试消息 |
+
+外部 AI 渠道（P19，`worker/routes/ai.ts`，鉴权；上游失败一律回 502，不透传 401）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET/POST | `/api/ai/providers` | 渠道列表（Key 掩码，带模型列表）/ 新建 |
+| PUT/DELETE | `/api/ai/providers/:id` | 修改（Key 为空或掩码 = 不改；改地址或协议时旧探测结果作废）/ 删除（删的是当前默认渠道时设置重置回 Workers AI） |
+| POST | `/api/ai/providers/:id/detect` | 拉 `/models` 并与已有列表合并（保留标星、协议覆盖、探测结果、手动模型） |
+| POST | `/api/ai/providers/:id/test` | `{model}` 可用性测试，返回耗时与报错，不落库 |
+| POST | `/api/ai/providers/:id/probe` | `{model, effort}` 探测一档思考强度：rejected / accepted / effective / error |
+| PATCH | `/api/ai/providers/:id/models` | `{id, add \| remove \| starred \| protocol}` 改模型列表里的一项（ID 含斜杠，放请求体） |
+| POST | `/api/ai/chat-test` | `{provider_id, model, effort, messages}` 无状态 SSE：不检索、不落库、不埋点；done 带首字 / 总耗时与 token |
 
 页面级路由（P12.6，`worker/routes/pages.ts`，免登录，不在 `/api` 下）：
 
@@ -747,6 +772,24 @@ CREATE TABLE usage_archive (...); -- 用量按月归档（AE 只留 90 天，见
   - **指定的渠道后来被停用/删除时，既不回落也不静默。** 回落是拿一个人没选的渠道去发他的私事，而他恰恰亲手指定过，说明他在意发到哪里；静默则是这个模块最坏的失败形态。所以推送侧写一条系统日志，同时那一行在面板上标红「指定渠道已失效」——让「这条发不出去」看得见。行内那个标签也刻意**只在指定过渠道时才显示**：「跟随全部」是默认，每行都挂一句「发给全部渠道」是噪音。
   - 周期任务滚出的下一条**继承渠道选择**：上一条指定发飞书，下一条不该悄悄变回发全部。
   - **`channels` 列走 `ALTER` 而不是只写进 `CREATE`。** `todos` 表在 P18 那批就建出来了，而 `CREATE TABLE IF NOT EXISTS` 对已存在的表是空操作——只写 `CREATE` 的话，「P18 那批就建好的库」永远没有这一列，而那正是我们自己的生产库。这是 P16.9.1 那个坑的变形：那次是漏了一处，这次是**建表语句本身对老库无效**。
+- **P19.1，AI 对话接入中转站与自定义 API（后端）**：此前文本生成只有 Workers AI 的四个免费模型。这一批加「渠道」：中转站（填地址 + Key，自动拉模型列表）或自定义（再选协议，模型可以手动加）。协议三种：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages；Gemini、DeepSeek、通义等走它们的 OpenAI 兼容端点，不做原生协议。**只有后端**，界面在 P19.2 / P19.3；不配渠道时行为与此前一致，可以单独部署。嵌入不受影响（见 §2）。
+  - **渠道单独一张表，不放 settings。** 一是备份：`buildExportPayload` 只导指定的几张表，Key 于是**结构性地**不进备份，和 `recovery_code` 放 `users` 表同一个思路——放进 settings 的话就得指望 `SENSITIVE_PATTERNS` 的正则永远匹配得上。二是体积：`GET /api/settings` 每次都整包下发，几百个模型的列表和探测结果不该跟着走。Key 下发时只露后四位，PUT 时为空或仍是掩码就保留原值（同 settings 的约定）。
+  - **模型列表存 D1，不用边缘缓存。** Cache API 按数据中心存、随时可能被逐出，而这份列表上挂着标星和探测结果，丢了就得重做；而且**对话请求本身用不到列表**，只要渠道配置和一个模型 ID，只有选择器要列表。所以存一份、显示「检测于 N 天前」、手动刷新——比一个会悄悄失效的缓存好。重新检测时以上游为准，但保留标星、协议覆盖、探测结果，手动加的模型即使上游没列出来也留着（很多中转站的 `/models` 不全）；上游回空列表算失败，否则一次上游故障就把整个列表清空了。
+  - **思考强度分三层读**，因为 `/models` 不会告诉你一个模型支持哪些档位：① `/models` 里带了能力字段（OpenRouter 的 `supported_parameters`、`reasoning_options.effort.values`）就用；② 否则按模型名查规则表（`effortRule`），只收录文档写明了的系列，认不出的一律不发参数——宁可不发，也不要发一个让上游 400 的；③ 用户点按钮时逐档探测，探测结果优先于前两层。规则表**一定会过时**，这是它只做默认值的原因。
+  - **探测结果分四种，只有 400 / 422 算「拒绝」。** 401 / 403 / 429 / 5xx / 超时与思考参数无关，记为 error，否则一次限流就把这一档永久判成不支持；error 也不覆盖这一档之前的正经结论。2xx 再分「生效」（返回里确实有思考内容、thinking 块或 `reasoning_tokens`）与「接受但未生效」——中转站常把不认识的参数静默丢掉，而模型也可能就是觉得这题不用想，所以后者**仍然可选**，只是界面上要如实标出来。Responses 的 minimal 档也会带一个空的 reasoning 项，判据只能看 token 数。探测只在点按钮时跑，不自动批量跑：每一档都是一次真实计费的请求。
+  - **存着的档位在请求时再过滤一遍**（`makeTarget`）：重新检测或探测之后可选范围会变，存着的旧值原样发出去只会换来 400。
+  - **各协议的坑**：Claude 4.6 起是 `thinking:{type:'adaptive'}` + `output_config.effort`，Opus 4.7 起再发 `budget_tokens` 直接 400；Claude 5 系列的思考默认 `display:'omitted'`——不写 `summarized` 的话思考照样计费、返回里只有空的 thinking 块。3.7 ~ 4.5 是 `budget_tokens`，且 `max_tokens` 必须大于它。Messages API 要求 user / assistant 严格交替，重新生成之类的路径会留下连续同角色，发出前合并。Responses 默认 `store:true` 会在 OpenAI 那边留 30 天，显式关掉——发出去的是知识库片段。OpenAI 兼容协议**不发 `max_tokens`**：o 系列只认 `max_completion_tokens`，发错名字直接 400，而中转站对后者的支持参差不齐。Anthropic 协议先用 `x-api-key`，401 时换 Bearer 再试一次——有的中转站的 Claude 兼容端点只认 Bearer，而 401 不计费。
+  - **上游失败一律回 502，不透传状态码。** 前端 `useApi` 见到 401 会当成登录过期直接登出，而中转站 Key 失效回的正是 401。
+  - **上游报错先给 Key 打码再返回或写日志**（`redactKey`）：部分中转站会在报错里回显 Key，有的只回显一截，所以除了整串替换还按 12 字符的窗口找残段。
+  - **外部渠道默认不发私密笔记。** 检索结果会原样拼进提示词发给中转站，所以 `ragSearch` 加了 `includePrivate`，外部渠道且没开该渠道的「允许发送私密笔记」时跳过 `is_private` 的笔记——私密笔记本里的笔记该列恒为 1，它就是唯一判据。先判私密再查分块，要跳过的就少一趟 D1。Workers AI 不出 Cloudflare，行为不变。**已知限制**：切换渠道后，旧对话的历史消息会随上下文发给新渠道，其中可能有基于私密笔记写出的回答——这条记下，不处理。
+  - **选中的渠道没了时报错，不悄悄回落到 Workers AI。** 回落的话用户以为在用自己选的模型，答案实际出自另一个模型，而且没有任何迹象。删渠道的接口会顺手把设置重置回 Workers AI，所以正常走不到这条；它防的是绕过接口的删除。并且**在写入用户消息之前**报——否则留下一条没有回复的提问。
+  - **`conversations.ts` 里那个 `<think>` 状态机挪进了 Workers AI 适配器**（`createThinkSplitter`），对话路由只管 WEB_SEARCH 门控和落库，落库格式 `<think>…</think>正文` 与前端 SSE 事件都没变。外部渠道用显式模式：只有正文确实以 `<think>` 开头才当思考——Workers AI 那种「开头可能漏标签，一律先当思考」的隐式模式套在普通模型上，会把整段回答吞成思考。只有思考没有正文（token 用完还没想完）时把思考当正文存，这是 P8 起 Workers AI 就有的兜底，否则刷新后是个空气泡。
+  - **历史消息里的 `<think>` 段不再发给模型**：对后续回答没用，外部渠道还按 token 计费。Workers AI 也一并这样做了。
+  - **客户端断开时 cancel 上游读取**：不取消的话中转站会把整段生成完，钱照扣。首包超时（60 秒）和读超时（120 秒没有新数据）分开算，否则一个思考很久的模型会被总超时误杀。
+  - **改模型列表里的一项走 SQLite 的 JSON 函数就地改**（`json_set` / `json_remove` / `json_insert`），不是读出整列改完写回：后者在「探测 A 模型的同时给 B 模型标星」时，后写的会把先写的覆盖掉。对话时取单个模型条目同理走 `json_each`——列表可能上千个模型，每次对话在 Worker 里 `JSON.parse` 一遍是白花免费档的 10ms CPU。
+  - **`PUT /api/settings` 三项联合校验**：换渠道必须同时给模型，否则旧渠道的模型 ID 会被拿去请求新渠道；Workers AI 的模型仍走白名单，所以现有设置页「只发 `llm_model`」的行为不变。
+  - 埋点里外部模型记成 `ext:<渠道 id>:<模型>`：两个中转站的同名模型不是一回事。统计面板的 neurons 只统计 Workers AI，外部渠道只计调用次数。
+  - 与计划的一处出入：纯函数拆成了两个文件，`src/lib/aiProviders.ts`（配置层：地址规整、模型列表、规则表、表单校验，前端也要用）与 `src/lib/aiProtocol.ts`（线上格式：请求体、SSE 解析、探测判定、打码，前端用不到）。真正发请求在 `worker/llm.ts`，fetch 可注入，所以适配器的单测不依赖测试框架的 fetch mock。
 
 ## 11. 项目结构
 

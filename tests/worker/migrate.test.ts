@@ -79,7 +79,7 @@ describe('老库幂等迁移', () => {
       "SELECT name FROM sqlite_master WHERE type = 'table'",
     ).all<{ name: string }>()
     const tables = new Set((results || []).map((r) => r.name))
-    for (const t of ['files', 'folders', 'article_files', 'article_versions', 'comments']) {
+    for (const t of ['files', 'folders', 'article_files', 'article_versions', 'comments', 'todos', 'ai_providers']) {
       expect(tables.has(t), `迁移后缺表: ${t}`).toBe(true)
     }
 

@@ -82,6 +82,13 @@ describe('SCHEMA 与 migrate 的一致性', () => {
     }
   })
 
+  it('ai_providers 两份建表语句的列完全一致(P19:这张表没有 ALTER 补列,两边就该一模一样)', () => {
+    const fresh = columnsOf(createTableBody(SYSTEM_TS, 'ai_providers'))
+    const migrated = columnsOf(createTableBody(MIGRATE_TS, 'ai_providers'))
+    expect(fresh.size).toBeGreaterThan(8)
+    expect([...migrated].sort()).toEqual([...fresh].sort())
+  })
+
   it('is_page 两边都在(P13.4 的回归锁)', () => {
     expect(columnsOf(createTableBody(SYSTEM_TS, 'articles')).has('is_page')).toBe(true)
     expect(addedColumns('articles')).toContain('is_page')

@@ -173,6 +173,24 @@ const TODO_TABLE = `CREATE TABLE IF NOT EXISTS todos (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )`
 
+// P19 外部 AI 渠道。单独一张表而不是放 settings:
+// - 备份(buildExportPayload)不导这张表,API Key 结构性地不进备份,和 recovery_code 放 users 表同一个思路
+// - GET /api/settings 每次都整包下发,几百个模型的列表和探测结果不该跟着走
+// 没有 user_id:和 settings 一样是全站配置(单用户)。models 是 JSON 数组,见 src/lib/aiProviders.ts 的 ModelEntry
+const AI_PROVIDERS_TABLE = `CREATE TABLE IF NOT EXISTS ai_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'relay',
+  protocol TEXT NOT NULL DEFAULT 'openai-chat',
+  base_url TEXT NOT NULL,
+  api_key TEXT NOT NULL DEFAULT '',
+  allow_private INTEGER DEFAULT 0,
+  models TEXT,
+  models_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+)`
+
 export function ensureSchema(env: Env): Promise<void> {
   if (!ensured) {
     ensured = doEnsure(env).catch((e) => {
@@ -254,4 +272,5 @@ async function doEnsure(env: Env): Promise<void> {
   await env.DB.prepare(
     'CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, deleted_at, status, due_at)'
   ).run()
+  await env.DB.prepare(AI_PROVIDERS_TABLE).run()
 }

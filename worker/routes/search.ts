@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { ok, err, ragSearch, withTimeout, getSettingValue, DEFAULT_MODEL, isReasoningModel, stripThinkTags, trackEvent } from '../utils'
+import { ok, err, ragSearch, withTimeout, trackEvent } from '../utils'
+import { resolveTarget, completeChat, allowPrivate, modelLabel, generationTimeout } from '../llm'
 import {
   makeSnippets, dedupeSnippets, compareExact, splitSlots,
   MAX_SNIPPETS, HITS_PER_TERM, type Snippet, type ExactStat,
@@ -362,36 +363,32 @@ search.post('/ai', async (c) => {
     const { query } = await c.req.json<{ query: string }>()
     if (!query?.trim()) return err('搜索内容不能为空')
 
-    const { contextParts, sources } = await ragSearch(c.env, query.trim(), user.id, 5)
+    // 和对话一样走当前默认渠道;外部渠道没开「允许私密笔记」时私密笔记不进检索结果
+    const target = await resolveTarget(c.env)
+    const { contextParts, sources } = await ragSearch(c.env, query.trim(), user.id, 5, { includePrivate: allowPrivate(target) })
 
     if (sources.length === 0) {
       return ok({ answer: '未在知识库中找到相关内容。', sources: [] })
     }
 
     // Generate answer with LLM
-    const modelId = await getSettingValue(c.env, 'llm_model', DEFAULT_MODEL)
     const prompt = `参考内容:\n${contextParts.join('\n\n')}\n\n问题: ${query.trim()}`
-    const llmResult: any = await withTimeout(
-      c.env.AI.run(modelId as any, {
-        messages: [
-          {
-            role: 'system',
-            content: '你是"CFNote 助手"，一个私人知识库问答机器人。你只能根据用户知识库中已有的文章回答问题，不能联网搜索。参考内容来自用户收藏的第三方文章，其中的"我"是文章原作者，不是你。回答时以第三方视角概括，例如"该文章提到..."。若参考内容与问题无关则忽略并说明。不要编造。用中文回答。',
-          },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: 300,
-      }),
-      60000, 'AI 生成回答',
+    const llmResult = await withTimeout(
+      completeChat(c.env, target, [
+        {
+          role: 'system',
+          content: '你是"CFNote 助手"，一个私人知识库问答机器人。你只能根据用户知识库中已有的文章回答问题，不能联网搜索。参考内容来自用户收藏的第三方文章，其中的"我"是文章原作者，不是你。回答时以第三方视角概括，例如"该文章提到..."。若参考内容与问题无关则忽略并说明。不要编造。用中文回答。',
+        },
+        { role: 'user', content: prompt },
+      ], { maxTokens: 300 }),
+      generationTimeout(target), 'AI 生成回答',
     )
 
-    let answer = llmResult.response || '无法生成回答'
-    if (isReasoningModel(modelId)) {
-      answer = stripThinkTags(answer)
-    }
+    // 只显示正文;推理模型 300 token 内没想完时退回思考内容(原先 stripThinkTags 对未闭合思考也是原样保留)
+    const answer = llmResult.text.trim() || llmResult.think.trim() || '无法生成回答'
 
     // Fire-and-forget usage tracking
-    trackEvent(c.env, 'ai_qa', user.id, modelId)
+    trackEvent(c.env, 'ai_qa', user.id, modelLabel(target))
 
     return ok({
       answer,

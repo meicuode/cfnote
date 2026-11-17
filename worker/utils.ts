@@ -346,9 +346,14 @@ export interface RagSource {
   score: number
 }
 
+/**
+ * includePrivate=false 时跳过 is_private 的笔记(P19:外部 AI 渠道默认不发私密笔记,
+ * 检索结果会原样拼进提示词发给中转站)。私密笔记本里的笔记 is_private 恒为 1,这一列就是唯一判据。
+ */
 export async function ragSearch(
-  env: Env, query: string, userId: number, topK = 5
+  env: Env, query: string, userId: number, topK = 5, opts: { includePrivate?: boolean } = {},
 ): Promise<{ contextParts: string[], sources: RagSource[] }> {
+  const includePrivate = opts.includePrivate ?? true
   const empty = { contextParts: [] as string[], sources: [] as RagSource[] }
 
   try {
@@ -391,10 +396,12 @@ export async function ragSearch(
       if (!articleId && articleId !== 0) continue
 
       const article = await env.DB.prepare(
-        `SELECT a.id, a.title, a.notebook_id, a.user_id, n.name as notebook_name
+        `SELECT a.id, a.title, a.notebook_id, a.user_id, a.is_private, n.name as notebook_name
          FROM articles a LEFT JOIN notebooks n ON a.notebook_id = n.id
          WHERE a.id = ? AND a.deleted_at IS NULL`
       ).bind(articleId).first<any>()
+      // 先判私密再查分块:要跳过的就不必多一趟 D1
+      if (article && !includePrivate && article.is_private) continue
 
       const chunk = await env.DB.prepare(
         'SELECT chunk_text FROM chunks WHERE article_id = ? AND chunk_index = ?'

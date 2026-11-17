@@ -39,7 +39,7 @@ describe('全新初始化', () => {
     expect(init.body.ok, init.body.error).toBe(true)
 
     const tables = await tableNames()
-    for (const t of ['users', 'notebooks', 'articles', 'files', 'folders', 'article_files', 'comments', 'article_versions', 'settings']) {
+    for (const t of ['users', 'notebooks', 'articles', 'files', 'folders', 'article_files', 'comments', 'article_versions', 'settings', 'todos', 'ai_providers']) {
       expect(tables.has(t), `缺表: ${t}`).toBe(true)
     }
 

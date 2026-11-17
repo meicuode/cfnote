@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
-import { ok, err, isAllowedModel, DEFAULT_MODEL, contentHash, logSystem, getUser } from '../utils'
+import { ok, err, DEFAULT_MODEL, contentHash, logSystem, getUser } from '../utils'
+import { validateLlmSettings } from '../llm'
 import { vectorizeArticle } from './articles'
 import { syncArticleFiles } from './files'
 import { buildExportPayload, SENSITIVE_PATTERNS, CHANNELS_KEY } from '../backup'
@@ -215,6 +216,20 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 CREATE INDEX IF NOT EXISTS idx_todos_due ON todos(status, deleted_at, due_at, remind_at);
 CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, deleted_at, status, due_at);
+
+CREATE TABLE IF NOT EXISTS ai_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'relay',
+  protocol TEXT NOT NULL DEFAULT 'openai-chat',
+  base_url TEXT NOT NULL,
+  api_key TEXT NOT NULL DEFAULT '',
+  allow_private INTEGER DEFAULT 0,
+  models TEXT,
+  models_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
 `
 
 // GET /api/status - Check if system is initialized
@@ -328,10 +343,9 @@ system.put('/settings', async (c) => {
   try {
     const body = await c.req.json<Record<string, string>>()
 
-    // Validate llm_model if present
-    if (body.llm_model !== undefined && !isAllowedModel(body.llm_model)) {
-      return err('不支持的模型')
-    }
+    // 渠道 / 模型 / 思考强度三项联合校验(P19):Workers AI 的模型仍走白名单,外部渠道必须存在
+    const llmError = await validateLlmSettings(c.env, body)
+    if (llmError) return err(llmError)
 
     for (const [key, value] of Object.entries(body)) {
       // Skip masked values — user didn't change the key
